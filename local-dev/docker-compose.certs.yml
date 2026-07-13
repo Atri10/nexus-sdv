@@ -1,0 +1,27 @@
+# local-dev/docker-compose.certs.yml
+# Init container to generate all self-signed certificates
+
+services:
+  cert-generator:
+    image: alpine:3.20
+    container_name: nexus-cert-generator
+    working_dir: /workspace
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ./certs:/workspace/certs
+    command: >
+      sh -c "
+        apk add --no-cache openssl &&
+        /bin/sh /workspace/scripts/generate-certs.sh
+      "
+    environment:
+      - CERTS_DIR=/workspace/certs
+    restart: "no"
+
+volumes:
+  certs:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/certs
+      o: bind

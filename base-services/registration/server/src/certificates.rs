@@ -5,8 +5,15 @@ use std::sync::Arc;           // provides Arc
 use rcgen::{Issuer, KeyPair};  // provides Issuer and KeyPair
 use rustls_pki_types::{CertificateDer, PrivateKeyDer}; // provides types
 
+// Environment variable names for certificate paths
+const REG_SERVER_CERT_ENV: &str = "REG_SERVER_CERT";
+const REG_SERVER_KEY_ENV: &str = "REG_SERVER_KEY";
+const REG_CA_CERT_ENV: &str = "REG_CA_CERT";
+const REG_CA_KEY_ENV: &str = "REG_CA_KEY";
+const FACTORY_CA_CERT_ENV: &str = "FACTORY_CA_CERT";
+
 pub fn read_trusted_client_certificates_ca() -> anyhow::Result<Arc<rustls::RootCertStore>> {
-    let path = std::env::var("TEST_CA_PATH")
+    let path = std::env::var(FACTORY_CA_CERT_ENV)
         .unwrap_or_else(|_| "certificates/trusted-factory-ca.crt.pem".to_string());
 
     let ca_cert_file = &mut BufReader::new(File::open(path)?);
@@ -21,9 +28,9 @@ pub fn read_trusted_client_certificates_ca() -> anyhow::Result<Arc<rustls::RootC
 }
 
 pub fn read_server_certificate() -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-    let cert_path = std::env::var("TEST_SERVER_CERT_PATH")
+    let cert_path = std::env::var(REG_SERVER_CERT_ENV)
         .unwrap_or_else(|_| "certificates/server/server.crt.pem".to_string());
-    let key_path = std::env::var("TEST_SERVER_KEY_PATH")
+    let key_path = std::env::var(REG_SERVER_KEY_ENV)
         .unwrap_or_else(|_| "certificates/server/server.key.pem".to_string());
 
     let server_cert_chain: Vec<CertificateDer> = rustls_pemfile::certs(&mut BufReader::new(File::open(cert_path)?))
@@ -38,9 +45,9 @@ pub fn read_server_certificate() -> anyhow::Result<(Vec<CertificateDer<'static>>
 }
 
 pub fn read_signing_ca() -> anyhow::Result<Issuer<'static, KeyPair>> {
-    let cert_path = std::env::var("TEST_SIGNING_CA_PATH")
+    let cert_path = std::env::var(REG_CA_CERT_ENV)
         .unwrap_or_else(|_| "certificates/ca/ca.crt.pem".to_string());
-    let key_path = std::env::var("TEST_SIGNING_KEY_PATH")
+    let key_path = std::env::var(REG_CA_KEY_ENV)
         .unwrap_or_else(|_| "certificates/ca/ca.key.pem".to_string());
 
     let signing_cert_chain: Vec<CertificateDer> = rustls_pemfile::certs(&mut BufReader::new(File::open(cert_path)?))

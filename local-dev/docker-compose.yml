@@ -1,0 +1,107 @@
+# local-dev/docker-compose.yml
+# Application services: base-services + sample-services
+# Note: Depends on infrastructure services from docker-compose.infra.yml
+# Start infrastructure first, then services
+
+services:
+  auth-callout:
+    build:
+      context: ../base-services/auth-callout
+      dockerfile: Dockerfile.local
+    container_name: nexus-auth-callout
+    environment:
+      - JWT_ACC_SIGNING_KEY=${JWT_ACC_SIGNING_KEY}
+      - KEYCLOAK_JWK_B64=${KEYCLOAK_JWK_B64}
+      - NATS_URL=${NATS_URL}
+      - NATS_USER=auth-callout-service
+      - NATS_PASSWORD=auth-callout-pass
+      - LOG_LEVEL=DEBUG
+    networks:
+      - nexus-local
+
+  data-api:
+    build:
+      context: ../
+      dockerfile: base-services/data-api/Dockerfile.local
+    container_name: nexus-data-api
+    environment:
+      - GRPC_ADDR=${GRPC_ADDR}
+      - BIGTABLE_EMULATOR_HOST=${BIGTABLE_EMULATOR_HOST}
+      - GCP_PROJECT=${GCP_PROJECT}
+      - BT_INSTANCE=${BT_INSTANCE}
+      - BT_TABLE=${BT_TABLE}
+      - LOG_LEVEL=debug
+    ports:
+      - "9090:8080"
+    networks:
+      - nexus-local
+
+  data-converter:
+    build:
+      context: ../
+      dockerfile: base-services/data-converter/Dockerfile.local
+    container_name: nexus-data-converter
+    environment:
+      - CONFIG_PATH=${CONFIG_PATH}
+      - NATS_HOST=${NATS_HOST}
+      - MQTT_HOST=${MQTT_HOST}
+      - NATS_TOKEN=${NATS_TOKEN}
+      - NATS_USER=connector
+      - NATS_PASSWORD=connector-pass
+    volumes:
+      - ./config/data-converter.yaml:/config/config.yaml:ro
+    networks:
+      - nexus-local
+
+  registration:
+    build:
+      context: ../base-services/registration/server
+      dockerfile: Dockerfile.local
+    container_name: nexus-registration
+    environment:
+      - REG_SERVER_CERT=${REG_SERVER_CERT}
+      - REG_SERVER_KEY=${REG_SERVER_KEY}
+      - REG_CA_CERT=${REG_CA_CERT}
+      - REG_CA_KEY=${REG_CA_KEY}
+      - FACTORY_CA_CERT=${FACTORY_CA_CERT}
+      # Host-reachable URLs registration echoes back to clients (e.g.
+      # sample-clients/vehicle-client running on the host) - distinct from
+      # the in-Docker-network NATS_URL auth-callout/data-converter use.
+      - NATS_URL=${REG_CLIENT_NATS_URL}
+      - KEYCLOAK_URL=${REG_CLIENT_KEYCLOAK_URL}
+    ports:
+      - "8444:8443"  # HTTPS (maps to 8444 to avoid conflict with Keycloak)
+      - "8888:8888"  # HTTP health
+    volumes:
+      - ./certs/registration:/certs/registration:ro
+      - ./certs/registration:/certificates:ro
+    networks:
+      - nexus-local
+
+  data-api-sampler:
+    build:
+      context: ../sample-services/data-api-sampler
+      dockerfile: Dockerfile.local
+    container_name: nexus-data-api-sampler
+    environment:
+      - DATA_API_URL=${DATA_API_GRPC_ADDR}
+    depends_on:
+      - data-api
+    networks:
+      - nexus-local
+
+  trip-analyzer:
+    build:
+      context: ../sample-services/trip_analyzer
+      dockerfile: Dockerfile.local
+    container_name: nexus-trip-analyzer
+    environment:
+      - DATA_API_GRPC_ADDR=${DATA_API_GRPC_ADDR}
+    depends_on:
+      - data-api
+    networks:
+      - nexus-local
+
+networks:
+  nexus-local:
+    external: true
