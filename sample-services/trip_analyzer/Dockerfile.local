@@ -1,0 +1,21 @@
+# Local-dev only build (see local-dev/docker-compose.yml). The GCP-deployed
+# image is built from ./Dockerfile - do not edit that file for local-dev
+# purposes, add changes here instead.
+#
+# Only difference from ./Dockerfile: DOCKER_HUB_MIRROR defaults to a public
+# registry instead of the internal GCP Artifact Registry mirror.
+ARG DOCKER_HUB_MIRROR=docker.io
+FROM ${DOCKER_HUB_MIRROR}/python:3.13-slim AS base
+
+RUN pip install uv
+
+WORKDIR /app
+
+COPY . /app
+
+RUN uv sync
+
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+CMD ["uv", "run", "uvicorn", "trip_analyzer.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

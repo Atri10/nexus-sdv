@@ -31,11 +31,18 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together and wha
 
 `data-api` and `data-converter` build with the repo root as their Docker build context (see `local-dev/docker-compose.yml`), so their Dockerfiles can generate Go protobuf/gRPC stubs directly from the shared `../proto/*.proto` files at build time. Nothing under `proto/` needs to be copied into a service directory by hand, and there's no generated code to commit — `docker compose build` (or `make go`) regenerates the stubs fresh every time.
 
+### `Dockerfile.local`
+
+Every service builds from a `Dockerfile.local` sitting next to its regular `Dockerfile` (see the `dockerfile:` key for each service in `local-dev/docker-compose.yml`). The GCP-deployed image is still built from the original `Dockerfile`, untouched by local-dev — the two files exist so local-dev concerns (a public-registry default for `DOCKER_HUB_MIRROR` instead of the internal GCP Artifact Registry mirror, protobuf generation for `data-api`/`data-converter`) never risk affecting what actually gets deployed to GCP. If a service's local-dev build genuinely doesn't need to differ from its GCP build, its `Dockerfile.local` is still kept as a full copy for consistency and so every service is built the same way locally, rather than mixing `dockerfile: Dockerfile` and `dockerfile: Dockerfile.local` across the compose file.
+
+Do not edit a service's `Dockerfile` to fix a local-dev-only problem — add the fix to `Dockerfile.local` instead.
+
 ## Usage
 
 ```bash
 make go       # First-time setup + start everything (recommended)
 make logs     # Tail all logs
+make ingest   # Write a sample telemetry row into Bigtable
 make query    # Query Bigtable telemetry data
 make test     # Run end-to-end test flow
 make stop     # Stop all containers (keeps volumes)
@@ -47,20 +54,78 @@ make help     # Full command list
 
 If you need finer-grained control, `make setup-auto` runs just the automated setup (certs, keys, tokens, env files) without starting services — you can then bring services up yourself with `docker compose -f docker-compose.infra.yml up -d` followed by `docker compose up -d`.
 
-### Inspect Data
+### Reading & Writing Telemetry Data
+
+> **Important:** local dev has **no NATS → Bigtable writer.** `data-converter`
+> only forwards MQTT → NATS, and `make vehicle-client` only publishes to NATS —
+> nothing consumes those messages into Bigtable. So `make query` returns nothing
+> until you write rows yourself. The Bigtable emulator is also **in-memory**: a
+> container restart (Docker restart / laptop sleep) wipes the table. The ingest
+> and query scripts recreate the table + column families automatically, so you
+> just re-run `make ingest` after a restart.
+
+#### Data model
+
+`data-api` and the query tool expect this exact layout (source of truth:
+`base-services/data-api/src/service/bigtable.go` and `time.go`):
+
+- **Row key:** `<VIN>#<timestamp>`, where the timestamp uses the format
+  `2006-01-02T15:04:05.000000000Z07:00` — e.g. `VIN123#2026-07-13T17:00:00.000000000Z`.
+  data-api scans by a `<VIN>#<start>` .. `<VIN>#<end>` key range, so the `#` and
+  the timestamp format matter.
+- **Columns:** `<family>:<qualifier>`, family is `dynamic` or `static` —
+  e.g. `dynamic:speed`, `static:make`. Values are stored as raw bytes.
+
+#### Ingest (write rows)
 
 ```bash
-# Query Bigtable telemetry data
+# Write one sample row (VIN123, timestamp = now) with dynamic + static columns
+make ingest
+
+# Custom VIN / timestamp
+bash scripts/ingest-sample.sh MYVIN 2026-07-13T17:00:00.000000000Z
+
+# Or raw cbt, run inside the emulator container (note the row-key format)
+docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 nexus-bigtable-emulator \
+  cbt -project test-project -instance test-instance set telemetry \
+  "VIN123#$(date -u +%Y-%m-%dT%H:%M:%S.000000000Z)" \
+  dynamic:speed=72 static:make=Ford
+```
+
+#### Read rows
+
+```bash
+# All rows (raw, via cbt)
 make query
 
-# Query specific row
-bash scripts/query-bigtable.sh "VIN123/2026-07-13"
+# A single row by full key
+bash scripts/query-bigtable.sh "VIN123#2026-07-13T17:00:00.000000000Z"
 
-# View service logs
+# Service logs
 make logs
 docker compose logs data-converter
 docker compose logs data-api
 ```
+
+#### Reading via the data-api gRPC service
+
+`data-api` serves telemetry over gRPC at `localhost:9090` (plaintext; the
+container listens on 8080, remapped to 9090). It reads the same Bigtable rows
+above and is what platform consumers call. A minimal Go client lives at
+`base-services/data-api/client/main.go`:
+
+```bash
+# NOTE: the client imports generated protobuf code (data-api/api/gen/...) that
+# is produced during the Docker build and is NOT committed, so it isn't present
+# on the host by default. To run the client locally you must generate the stubs
+# first (protoc + protoc-gen-go/protoc-gen-go-grpc), the same step
+# base-services/data-api/Dockerfile.local performs. Once generated:
+go -C base-services/data-api run ./client -addr localhost:9090 -vin VIN123
+```
+
+The sample client requests data types `static:index`, `static:test_key`,
+`dynamic:time_passed`, so ingest a row carrying those columns to see it return
+data. `make query` (cbt) is the simplest read path and needs no toolchain.
 
 ### Test End-to-End Flow
 
@@ -68,6 +133,22 @@ docker compose logs data-api
 make test
 # or: bash scripts/test-local-flow.sh
 ```
+
+### Run the Vehicle Client
+
+[`sample-clients/vehicle-client`](../sample-clients/vehicle-client) is a real vehicle simulator: it registers with the registration server via mTLS, authenticates with Keycloak, and publishes telemetry to NATS. Its own `run-vehicle-client.sh` expects a GCP bootstrap env file and Secret Manager access that don't exist locally, so use the local-dev wrapper instead, which supplies all of that from the running stack:
+
+```bash
+make vehicle-client
+# or with options (passed through to the underlying script):
+bash scripts/run-vehicle-client.sh --vin VEHICLE001 --interval 5 --message-type telemetry
+```
+
+This generates a factory certificate signed by local-dev's factory CA (the same one `registration` trusts), stages the TLS cert files the client reads, and forces `PKI_STRATEGY=local` with `REGISTRATION_URL`/`KEYCLOAK_URL`/`NATS_URL` pointed at local-dev's host ports (`https://localhost:8444`, `http://localhost:8080`, `nats://localhost:4222`) instead of a `*.nexus-sdv.io` hostname. Requires the stack to already be running (`make go`), and `protoc`/`go` on `PATH` (the wrapper adds `$(go env GOPATH)/bin` for you, but not `protoc` itself).
+
+**Verified working:** cert generation → mTLS registration → operational certificate issuance. The client correctly receives back `Keycloak URL: http://localhost:8080` / `NATS URL: nats://localhost:4222` from registration, proving the URL-override fix above works end-to-end.
+
+**Known gap:** the Keycloak step after that fails. `vehicle-client`'s Go code hardcodes realm `sdv-telemetry` and `client_id=car`, and authenticates purely via mTLS client certificate (no secret) — local-dev's imported realm (`local-dev/keycloak/nexus-realm.json`) is named `nexus-sdv` and its `vehicle-client` entry uses `client-secret` auth, not X.509 client-cert auth. Fixing this needs real Keycloak X.509-authenticator configuration (trust store, execution flow, cert-to-user mapping) — a separate, larger piece of work, not just a naming fix.
 
 ## Environment Files
 
@@ -134,12 +215,7 @@ make query
 ```
 `make query` runs `cbt` inside the `bigtable-emulator` container (installing it as a gcloud component on first use). `setup-automated.sh`'s `phase_bigtable_schema` creates the `telemetry` table with `dynamic` and `static` column families (the same schema `data-api`'s integration tests bootstrap) right after infra comes up, so a `table ... not found` error means that phase didn't run — re-run `make setup-auto` or check its output.
 
-`make query` returning no rows is expected on a fresh environment even once the table exists: **nothing in local dev currently writes telemetry into Bigtable**. `data-converter` only forwards MQTT → NATS; there is no NATS → Bigtable writer running locally, so `data-api` has nothing to read unless you write rows yourself, e.g.:
-```bash
-docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 nexus-bigtable-emulator \
-  cbt -project test-project -instance test-instance set telemetry \
-  "VIN123#$(date -u +%Y-%m-%dT%H:%M:%S.000000000Z)" dynamic:temp=25.5
-```
+`make query` returning no rows is expected on a fresh environment even once the table exists: **nothing in local dev currently writes telemetry into Bigtable** (there is no NATS → Bigtable writer — see [Reading & Writing Telemetry Data](#reading--writing-telemetry-data)). Write a row yourself with `make ingest`, then `make query`. Because the emulator is in-memory, a container restart also empties the table — just re-run `make ingest` (it recreates the table + families first).
 
 ### Full reset
 ```bash
@@ -175,10 +251,12 @@ local-dev/
 ├── keycloak/
 │   └── nexus-realm.json     # Realm import
 └── scripts/
-    ├── generate-certs.sh     # Run inside the cert-generator container (docker-compose.certs.yml)
-    ├── query-bigtable.sh     # Bigtable query tool
-    ├── test-local-flow.sh    # End-to-end test
-    └── wait-for-services.sh  # Health check polling
+    ├── generate-certs.sh      # Run inside the cert-generator container (docker-compose.certs.yml)
+    ├── ingest-sample.sh       # Write a sample telemetry row into Bigtable
+    ├── query-bigtable.sh      # Bigtable query tool
+    ├── run-vehicle-client.sh  # Wrapper for sample-clients/vehicle-client
+    ├── test-local-flow.sh     # End-to-end test
+    └── wait-for-services.sh   # Health check polling
 ```
 
 ## Data Flow

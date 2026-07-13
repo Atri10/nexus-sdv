@@ -55,15 +55,19 @@ CERT_DIR="${SCRIPT_DIR}/certificates"
 mkdir -p "$CERT_DIR"
 
 # --- Derive URLs ---
+# If REGISTRATION_URL/KEYCLOAK_URL/NATS_URL are already exported (e.g. by
+# local-dev/scripts/run-vehicle-client.sh, which points them at the local
+# stack's own ports instead of a GCP hostname/BASE_DOMAIN pair), honor them
+# as-is instead of overwriting with the hostname-derived values below.
 PKI_STRATEGY_VALUE="${PKI_STRATEGY:-remote}"
 if [ "$PKI_STRATEGY_VALUE" = "remote" ]; then
-    KEYCLOAK_URL="https://${KEYCLOAK_HOSTNAME}.${BASE_DOMAIN}:8443"
-    NATS_URL="nats://${NATS_HOSTNAME}.${BASE_DOMAIN}:4222"
-    REGISTRATION_URL="https://${REGISTRATION_HOSTNAME}.${BASE_DOMAIN}:8443"
+    KEYCLOAK_URL="${KEYCLOAK_URL:-https://${KEYCLOAK_HOSTNAME}.${BASE_DOMAIN}:8443}"
+    NATS_URL="${NATS_URL:-nats://${NATS_HOSTNAME}.${BASE_DOMAIN}:4222}"
+    REGISTRATION_URL="${REGISTRATION_URL:-https://${REGISTRATION_HOSTNAME}.${BASE_DOMAIN}:8443}"
 else
-    KEYCLOAK_URL="https://${KEYCLOAK_HOSTNAME}:8443"
-    NATS_URL="nats://${NATS_HOSTNAME}:4222"
-    REGISTRATION_URL="https://${REGISTRATION_HOSTNAME}:8443"
+    KEYCLOAK_URL="${KEYCLOAK_URL:-https://${KEYCLOAK_HOSTNAME}:8443}"
+    NATS_URL="${NATS_URL:-nats://${NATS_HOSTNAME}:4222}"
+    REGISTRATION_URL="${REGISTRATION_URL:-https://${REGISTRATION_HOSTNAME}:8443}"
 fi
 
 echo ""

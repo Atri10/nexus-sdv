@@ -25,10 +25,17 @@ NATS_USER=connector
 NATS_PASSWORD=connector-pass
 
 # registration
+# NATS_URL/KEYCLOAK_URL here are the URLs registration echoes back to
+# *clients* (e.g. sample-clients/vehicle-client) in its response, so they
+# must be host-reachable - not the in-Docker-network hostnames auth-callout
+# and data-converter use above/below. Matches how GCP's registration helm
+# chart is configured (iac/helm/registration/values.yaml's urls.nats/
+# urls.keycloak are always the vehicle-reachable external hostnames, never
+# internal cluster DNS).
 REG_SERVER_CERT=/certificates/server.crt.pem
 REG_SERVER_KEY=/certificates/server.key.pem
 REG_CA_CERT=/certificates/ca.crt.pem
 REG_CA_KEY=/certificates/ca.key.pem
 FACTORY_CA_CERT=/certificates/factory-ca.crt.pem
-NATS_URL=nats://nats:4222
-KEYCLOAK_URL=https://keycloak:8443
+REG_CLIENT_NATS_URL=nats://localhost:4222
+REG_CLIENT_KEYCLOAK_URL=http://localhost:8080
