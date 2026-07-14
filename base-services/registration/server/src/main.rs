@@ -29,6 +29,12 @@ use crate::certificates::read_signing_ca;
 use crate::csr::{read_csr, sign_csr};
 use crate::listener::{ReloadableTlsListener, TlsConnectInfo, VehicleInfoHolder};
 
+const REG_SERVER_CERT_ENV: &str = "REG_SERVER_CERT";
+const REG_SERVER_KEY_ENV: &str = "REG_SERVER_KEY";
+const REG_CA_CERT_ENV: &str = "REG_CA_CERT";
+const REG_CA_KEY_ENV: &str = "REG_CA_KEY";
+const FACTORY_CA_CERT_ENV: &str = "FACTORY_CA_CERT";
+
 enum AppError {
     ClientCertificate(anyhow::Error),
     Csr(anyhow::Error),
@@ -111,7 +117,10 @@ async fn registration<S: SigningKey + std::fmt::Debug>(
     let issuer = &app_state.issuer;
     let certificate = sign_csr(csr_params, issuer).map_err(AppError::Signing)?;
 
-    let ca_cert_pem = std::fs::read_to_string("certificates/ca/ca.crt.pem")
+    let ca_cert_path = std::env::var(REG_CA_CERT_ENV)
+        .unwrap_or_else(|_| "certificates/ca/ca.crt.pem".to_string());
+
+    let ca_cert_pem = std::fs::read_to_string(&ca_cert_path)
         .context("Failed to read CA certificate")
         .map_err(AppError::Signing)?;
 

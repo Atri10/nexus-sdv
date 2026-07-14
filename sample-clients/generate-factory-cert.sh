@@ -7,8 +7,8 @@ set -e
 # Default values
 VIN="${1:-1HGBH41JXMN109186}"
 OUTPUT_PREFIX="${2:-factory-cert}"
-FACTORY_CA_CERT="../base-services/registration/pki/factory-ca/ca.crt.pem"
-FACTORY_CA_KEY="../base-services/registration/pki/factory-ca/ca.key.pem"
+FACTORY_CA_CERT="${FACTORY_CA_CERT:-../base-services/registration/pki/factory-ca/ca.crt.pem}"
+FACTORY_CA_KEY="${FACTORY_CA_KEY:-../base-services/registration/pki/factory-ca/ca.key.pem}"
 
 echo "=========================================="
 echo "Factory Certificate Generation"
@@ -53,9 +53,17 @@ basicConstraints = CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = clientAuth
 EOF
+# -CAserial is pinned explicitly to a path next to the output cert. Without it,
+# -CAcreateserial makes openssl derive the serial filename from the CA cert path,
+# and LibreSSL (macOS's openssl) truncates that path at the FIRST '.' — so a CA at
+# /Users/jane.doe/.../factory-ca.crt.pem yields a serial file /Users/jane.srl,
+# which the user can't write ("Getting CA Private Key ... Permission denied"). A
+# dotless CA path (as on GCP/Linux) hid this; pinning the serial file makes cert
+# signing work regardless of where the CA lives.
 openssl x509 -req -in "${OUTPUT_PREFIX}.csr" \
   -CA "$FACTORY_CA_CERT" \
   -CAkey "$FACTORY_CA_KEY" \
+  -CAserial "${OUTPUT_PREFIX}.srl" \
   -CAcreateserial \
   -out "${OUTPUT_PREFIX}.pem" \
   -days 365 \

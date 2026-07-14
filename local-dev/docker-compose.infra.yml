@@ -1,0 +1,110 @@
+# local-dev/docker-compose.infra.yml
+# Infrastructure services: NATS, Mosquitto, Bigtable Emulator, Keycloak
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: nexus-nats
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./certs/nats:/etc/nats/certs:ro
+      - ./config/nats.conf:/etc/nats/nats.conf:ro
+    ports:
+      - "4222:4222"    # Client connections
+      - "7422:7422"    # Leaf nodes
+      - "8222:8222"    # HTTP monitoring
+    environment:
+      - NATS_AUTH_CALLOUT_PASSWORD=${NATS_AUTH_CALLOUT_PASSWORD}
+      - NATS_BASIC_AUTH_PASSWORD=${NATS_BASIC_AUTH_PASSWORD}
+      - NATS_CONNECTOR_PASSWORD=${NATS_CONNECTOR_PASSWORD}
+      - NATS_AUTH_CALLOUT_NKEY_PUB=${NATS_AUTH_CALLOUT_NKEY_PUB}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - nexus-local
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: nexus-mosquitto
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "1883"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexus-local
+
+  bigtable-emulator:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+    container_name: nexus-bigtable-emulator
+    command: >
+      sh -c "gcloud beta emulators bigtable start --host-port=0.0.0.0:8086 --project=test-project"
+    ports:
+      - "8086:8086"
+    environment:
+      - BIGTABLE_EMULATOR_HOST=localhost:8086
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8086"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - nexus-local
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: nexus-keycloak
+    command: start-dev --import-realm --http-port=8080 --https-port=8443
+    volumes:
+      - ./certs/keycloak:/etc/keycloak/certs:ro
+      - ./keycloak/nexus-realm.json:/opt/keycloak/data/import/nexus-realm.json:ro
+      # Persist Keycloak's data dir (H2 DB + realm RSA signing keys) across
+      # container restarts. In start-dev mode Keycloak keeps its state in an
+      # in-memory/ephemeral H2 database, so without this volume every restart
+      # (Docker restart, laptop sleep, overnight shutdown) regenerates the
+      # realm's signing keys with a NEW kid. auth-callout is handed a ONE-TIME
+      # JWKS snapshot at setup (setup-automated.sh phase_keycloak_jwks ->
+      # KEYCLOAK_JWK_B64, parsed once at main.go startup) and never refetches,
+      # so a rotated key makes it reject every fresh Keycloak JWT with
+      # "unable to find key with kid" -> NATS "Authorization Violation".
+      # Persisting the data dir keeps the keys stable so the snapshot stays
+      # valid. The realm import above only runs on first start (empty volume);
+      # subsequent starts reuse the persisted realm, which is the intent.
+      - keycloak-data:/opt/keycloak/data
+    ports:
+      - "8080:8080"   # HTTP
+      - "8443:8443"   # HTTPS
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=${KEYCLOAK_ADMIN_USER}
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+      - KC_HOSTNAME=keycloak.local
+      - KC_HTTP_ENABLED=true
+      - KC_HTTPS_PORT=8443
+      - KC_HTTPS_CERTIFICATE_FILE=/etc/keycloak/certs/server.crt.pem
+      - KC_HTTPS_CERTIFICATE_KEY_FILE=/etc/keycloak/certs/server.key.pem
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - nexus-local
+
+volumes:
+  keycloak-data:
+
+networks:
+  nexus-local:
+    name: nexus-local
+    driver: bridge

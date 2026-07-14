@@ -1,0 +1,36 @@
+service:
+  name: data-converter
+  log_level: info
+
+nats:
+  url: "nats://nats:4222"
+  user: "connector"
+  password: "connector-pass"
+
+adapters:
+  mqtt:
+    broker: "tcp://mosquitto:1883"
+    client_id: "nexus-data-converter"
+    buffer_size: 1000
+
+converters:
+  - name: telemetry-sensors
+    source:
+      adapter: mqtt
+      topic: "telemetry/+/sensors/#"
+      qos: 1
+    mapping:
+      device_id: '{{ seg .topic 1 }}'
+      sensors:
+        - sensor: '{{ jsonpath .payload "name" }}'
+          value: '{{ jsonpath .payload "value" }}'
+          data_type: DYNAMIC
+    target:
+      subject_prefix: "prod.bigtable"
+      subject_pattern: 'telemetry.{{ .subject_prefix }}.{{ .device_id }}.{{ .sensor }}'
+
+secrets:
+  natsUser: "connector"
+  natsPassword: "connector-pass"
+  mqttUser: ""
+  mqttPassword: ""

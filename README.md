@@ -15,6 +15,15 @@ Nexus is designed to be deployed directly into your Google Cloud environment. To
 
 Follow our **[Online Setup Guide](https://docs.nexus-sdv.io)** to get started. You will find a comprehensive list of prerequisites and a step-by-step walkthrough on how to provision and configure **your own Nexus platform instance in Google Cloud**.
 
+### Running Locally
+
+To run the full stack on your machine without any cloud dependencies, see **[local-dev/README.md](local-dev/README.md)**. Quick version:
+
+```bash
+cd local-dev
+make go
+```
+
 ## Architecture Overview
 
 ![Nexus Architecture](docs/assets/nexus_architecture_main.png)
