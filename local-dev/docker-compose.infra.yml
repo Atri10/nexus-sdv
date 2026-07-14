@@ -68,6 +68,19 @@ services:
     volumes:
       - ./certs/keycloak:/etc/keycloak/certs:ro
       - ./keycloak/nexus-realm.json:/opt/keycloak/data/import/nexus-realm.json:ro
+      # Persist Keycloak's data dir (H2 DB + realm RSA signing keys) across
+      # container restarts. In start-dev mode Keycloak keeps its state in an
+      # in-memory/ephemeral H2 database, so without this volume every restart
+      # (Docker restart, laptop sleep, overnight shutdown) regenerates the
+      # realm's signing keys with a NEW kid. auth-callout is handed a ONE-TIME
+      # JWKS snapshot at setup (setup-automated.sh phase_keycloak_jwks ->
+      # KEYCLOAK_JWK_B64, parsed once at main.go startup) and never refetches,
+      # so a rotated key makes it reject every fresh Keycloak JWT with
+      # "unable to find key with kid" -> NATS "Authorization Violation".
+      # Persisting the data dir keeps the keys stable so the snapshot stays
+      # valid. The realm import above only runs on first start (empty volume);
+      # subsequent starts reuse the persisted realm, which is the intent.
+      - keycloak-data:/opt/keycloak/data
     ports:
       - "8080:8080"   # HTTP
       - "8443:8443"   # HTTPS
@@ -87,6 +100,9 @@ services:
       start_period: 30s
     networks:
       - nexus-local
+
+volumes:
+  keycloak-data:
 
 networks:
   nexus-local:
