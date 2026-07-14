@@ -21,6 +21,36 @@ LOCAL_DEV_DIR="$SCRIPTS_DIR"
 
 cd "$LOCAL_DEV_DIR"
 
+# Wrapper for the app-services compose project. Passing --env-file for both
+# app env files makes variable interpolation succeed, so read-only commands
+# like 'ps' don't spam 'variable is not set. Defaulting to a blank string'
+# (those warnings are harmless - they only affect compose's own metadata
+# interpolation, not the already-running containers - but they're noise that
+# masks real output). Every app-services compose call goes through here.
+compose_app() {
+    docker compose --env-file .env.base-services --env-file .env.sample-services "$@"
+}
+
+# Poll until a compose service reaches the 'running' state (up to $2 seconds,
+# default 45). 'docker compose up -d' returns once containers are created and
+# start has been requested, but a container may take a moment more to actually
+# be 'running' - so a one-shot check right after 'up' races it and reports a
+# healthy service as down. Match the service name exactly against --services
+# output (grep -x) rather than grepping STATUS text like 'Up', which is
+# format-fragile and, without -x, would let 'data-api' match 'data-api-sampler'.
+wait_running() {
+    local svc=$1
+    local max=${2:-45}
+    local i
+    for i in $(seq 1 "$max"); do
+        if compose_app ps --status running --services 2>/dev/null | grep -qx "$svc"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 log "========================================="
 log "Nexus SDV - FULLY AUTOMATED SETUP"
 log "========================================="
@@ -332,10 +362,15 @@ phase_inject_tokens() {
     sed -i.bak "s|JWT_ACC_SIGNING_KEY=.*|JWT_ACC_SIGNING_KEY=$NATS_ACCOUNT_SIGNING_KEY|" .env.base-services
     sed -i.bak "s|KEYCLOAK_JWK_B64=.*|KEYCLOAK_JWK_B64=$KEYCLOAK_JWK_B64|" .env.base-services
 
-    # Inject service URLs (auto-discovered)
-    sed -i.bak "s|NATS_URL=.*|NATS_URL=nats://nats:4222|" .env.base-services
-    sed -i.bak "s|KEYCLOAK_URL=.*|KEYCLOAK_URL=https://keycloak:8443|" .env.base-services
-    sed -i.bak "s|BIGTABLE_EMULATOR_HOST=.*|BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086|" .env.base-services
+    # Inject service URLs (auto-discovered). Pattern is anchored to line
+    # start (^) so it only matches auth-callout's NATS_URL line - not
+    # registration's REG_CLIENT_NATS_URL/REG_CLIENT_KEYCLOAK_URL, which need
+    # the host-reachable values already in the template (registration echoes
+    # these back to clients like sample-clients/vehicle-client running on
+    # the host, so they can't be the in-Docker-network hostnames
+    # auth-callout/data-converter use).
+    sed -i.bak "s|^NATS_URL=.*|NATS_URL=nats://nats:4222|" .env.base-services
+    sed -i.bak "s|^BIGTABLE_EMULATOR_HOST=.*|BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086|" .env.base-services
 
     # Clean up backup files
     rm -f .env.*.bak
@@ -349,16 +384,18 @@ phase_inject_tokens() {
 phase_app_startup() {
     log "Building and starting application services..."
 
-    docker compose --env-file .env.base-services --env-file .env.sample-services build --no-cache
-    docker compose --env-file .env.base-services --env-file .env.sample-services up -d
+    compose_app build --no-cache
+    compose_app up -d
 
-    # Wait for services
-    log "Waiting for application services to be healthy..."
-    sleep 10
-
-    # Check if services started
-    if docker compose ps | grep -q "Exit"; then
-        error "Some services failed to start. Run 'docker compose logs' for details."
+    # Fail fast if a service exited/crashed on startup. A plain 'ps' (without
+    # -a) omits stopped containers, so an early crash would be invisible to it -
+    # '-a --status exited/dead' is what actually surfaces a crashed service.
+    log "Checking for startup failures..."
+    sleep 3
+    local crashed
+    crashed="$(compose_app ps -a --status exited --status dead --services 2>/dev/null || true)"
+    if [ -n "$crashed" ]; then
+        error "Service(s) failed to start: $(echo "$crashed" | tr '\n' ' ')- run 'docker compose logs' for details."
     fi
 
     info "Application services started"
@@ -388,11 +425,18 @@ phase_verify() {
         failed=1
     fi
 
-    # Check application services
-    if ! docker compose ps | grep -q "nexus-data-api.*Up"; then
-        warn "Data API not running"
-        failed=1
-    fi
+    # Check application services. 'docker compose up -d' returns before a
+    # container is necessarily 'running', so poll each service (wait_running)
+    # instead of checking once after a fixed sleep - the one-shot check raced
+    # a cold first-run and reported a perfectly healthy data-api as "not
+    # running". All app services are verified, not just data-api.
+    local svc
+    for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer; do
+        if ! wait_running "$svc"; then
+            warn "$svc is not running"
+            failed=1
+        fi
+    done
 
     if [ $failed -eq 0 ]; then
         info "✓ All services verified and healthy"

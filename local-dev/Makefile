@@ -1,4 +1,4 @@
-.PHONY: help go setup-auto logs stop clean query test status shell
+.PHONY: help go setup-auto logs stop clean query ingest test status shell vehicle-client
 
 # ============================================================================
 # FASTEST WAY TO START (One command!)
@@ -14,10 +14,12 @@ help:
 	@echo ""
 	@echo "Inspection:"
 	@echo "  make logs            - Tail all logs in real-time"
+	@echo "  make ingest          - Write a sample telemetry row into Bigtable"
 	@echo "  make query           - Query Bigtable for telemetry"
 	@echo "  make test            - Run end-to-end test"
 	@echo "  make status          - Show service status"
 	@echo "  make shell           - Open shell in data-api container"
+	@echo "  make vehicle-client  - Register+publish telemetry with sample-clients/vehicle-client"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make stop            - Stop all containers (keeps volumes)"
@@ -41,6 +43,9 @@ clean:
 	rm -f .env.infra .env.base-services .env.sample-services
 	@echo "✓ All containers and volumes removed"
 
+ingest:
+	@bash scripts/ingest-sample.sh
+
 query:
 	@bash scripts/query-bigtable.sh
 
@@ -54,3 +59,6 @@ status:
 
 shell:
 	docker compose exec data-api /bin/sh
+
+vehicle-client:
+	@bash scripts/run-vehicle-client.sh

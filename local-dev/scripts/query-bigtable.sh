@@ -53,14 +53,17 @@ ROW_KEY="${1:-}"
 
 if [ -n "$ROW_KEY" ]; then
     info "Reading row: $ROW_KEY"
-    exec_in_container cbt -project "$PROJECT" -instance "$INSTANCE" read "$TABLE" "$ROW_KEY"
+    # 'lookup' fetches a single row by its full key. ('read <table> <key>' is
+    # not valid cbt syntax - 'read' takes prefix=/start=/end=/regex=, not a
+    # bare positional row key.)
+    exec_in_container cbt -project "$PROJECT" -instance "$INSTANCE" lookup "$TABLE" "$ROW_KEY"
 else
     info "Reading all rows from table..."
     echo ""
     exec_in_container cbt -project "$PROJECT" -instance "$INSTANCE" read "$TABLE"
     echo ""
     info "Use './scripts/query-bigtable.sh <row-key>' to read a specific row"
-    info "Example: './scripts/query-bigtable.sh VIN123/2026-07-13'"
+    info "Example: './scripts/query-bigtable.sh \"VIN123#2026-07-13T17:00:00.000000000Z\"'"
 fi
 
 echo ""

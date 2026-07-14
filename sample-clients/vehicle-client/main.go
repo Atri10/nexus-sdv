@@ -17,6 +17,7 @@ import (
 	"log"
 	mathrand "math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -227,6 +228,16 @@ func jwtExpiry(token string) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(int64(exp), 0)
+}
+
+// envOr returns the value of environment variable key, or def when it is unset
+// or empty. Used to let local-dev override GCP-default Keycloak identity values
+// without changing production behaviour (empty env => original default).
+func envOr(key, def string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return def
 }
 
 // Register performs the vehicle registration flow
@@ -444,12 +455,28 @@ func (v *VehicleClient) AuthenticateWithKeycloak() (string, error) {
 
 	// Request JWT token from Keycloak
 	log.Printf("Authenticate With Keycloak Step 2: Requesting JWT from Keycloak at %s...", v.keycloakURL)
-	tokenURL := fmt.Sprintf("%s/realms/sdv-telemetry/protocol/openid-connect/token", v.keycloakURL)
 
-	// For client certificate authentication, we use grant_type=client_credentials
-	// The client_id should match the clientId configured in Keycloak (configured as "car")
-	// Request openid scope to get an ID token, and offline_access for a refresh token
-	data := "grant_type=client_credentials&client_id=car&scope=openid+offline_access"
+	// Realm and client_id default to the GCP deployment's values so production
+	// behaviour is unchanged; local-dev overrides them via env (see
+	// local-dev/scripts/run-vehicle-client.sh) because its imported realm is
+	// "nexus-sdv" with a client-secret "vehicle-client" service-account client,
+	// not the GCP mTLS "car" client in realm "sdv-telemetry".
+	realm := envOr("KEYCLOAK_REALM", "sdv-telemetry")
+	clientID := envOr("KEYCLOAK_CLIENT_ID", "car")
+	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", v.keycloakURL, realm)
+
+	// For client certificate authentication, we use grant_type=client_credentials.
+	// The client_id should match the clientId configured in Keycloak.
+	// Request openid scope to get an ID token, and offline_access for a refresh token.
+	data := fmt.Sprintf("grant_type=client_credentials&client_id=%s&scope=openid+offline_access", url.QueryEscape(clientID))
+
+	// When a client secret is supplied (a confidential client, e.g. local-dev's
+	// "vehicle-client"), authenticate with it. When empty (GCP's mTLS "car"
+	// client), the operational client certificate configured above is the sole
+	// credential and no secret is sent - preserving the original behaviour.
+	if secret := os.Getenv("KEYCLOAK_CLIENT_SECRET"); secret != "" {
+		data += "&client_secret=" + url.QueryEscape(secret)
+	}
 
 	req, err := http.NewRequest("POST", tokenURL, bytes.NewBufferString(data))
 	if err != nil {

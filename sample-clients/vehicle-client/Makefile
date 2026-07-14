@@ -1,6 +1,10 @@
 .PHONY: all build clean test deps proto run help
 
-include ../../iac/bootstrapping/.bootstrap_env
+# '-include' (vs 'include') doesn't fail the build if the file is missing -
+# this file only exists after a GCP bootstrap run; local-dev has no
+# equivalent and supplies PKI_STRATEGY/REGISTRATION_URL/etc via exported
+# env vars instead (see local-dev/scripts/run-vehicle-client.sh).
+-include ../../iac/bootstrapping/.bootstrap_env
 
 # Exporting allows sub-processes (like shell scripts) to see them too
 export

@@ -7,7 +7,7 @@ services:
   auth-callout:
     build:
       context: ../base-services/auth-callout
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.local
     container_name: nexus-auth-callout
     environment:
       - JWT_ACC_SIGNING_KEY=${JWT_ACC_SIGNING_KEY}
@@ -22,7 +22,7 @@ services:
   data-api:
     build:
       context: ../
-      dockerfile: base-services/data-api/Dockerfile
+      dockerfile: base-services/data-api/Dockerfile.local
     container_name: nexus-data-api
     environment:
       - GRPC_ADDR=${GRPC_ADDR}
@@ -39,7 +39,7 @@ services:
   data-converter:
     build:
       context: ../
-      dockerfile: base-services/data-converter/Dockerfile
+      dockerfile: base-services/data-converter/Dockerfile.local
     container_name: nexus-data-converter
     environment:
       - CONFIG_PATH=${CONFIG_PATH}
@@ -56,7 +56,7 @@ services:
   registration:
     build:
       context: ../base-services/registration/server
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.local
     container_name: nexus-registration
     environment:
       - REG_SERVER_CERT=${REG_SERVER_CERT}
@@ -64,8 +64,11 @@ services:
       - REG_CA_CERT=${REG_CA_CERT}
       - REG_CA_KEY=${REG_CA_KEY}
       - FACTORY_CA_CERT=${FACTORY_CA_CERT}
-      - NATS_URL=${NATS_URL}
-      - KEYCLOAK_URL=${KEYCLOAK_URL}
+      # Host-reachable URLs registration echoes back to clients (e.g.
+      # sample-clients/vehicle-client running on the host) - distinct from
+      # the in-Docker-network NATS_URL auth-callout/data-converter use.
+      - NATS_URL=${REG_CLIENT_NATS_URL}
+      - KEYCLOAK_URL=${REG_CLIENT_KEYCLOAK_URL}
     ports:
       - "8444:8443"  # HTTPS (maps to 8444 to avoid conflict with Keycloak)
       - "8888:8888"  # HTTP health
@@ -78,7 +81,7 @@ services:
   data-api-sampler:
     build:
       context: ../sample-services/data-api-sampler
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.local
     container_name: nexus-data-api-sampler
     environment:
       - DATA_API_URL=${DATA_API_GRPC_ADDR}
@@ -90,7 +93,7 @@ services:
   trip-analyzer:
     build:
       context: ../sample-services/trip_analyzer
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.local
     container_name: nexus-trip-analyzer
     environment:
       - DATA_API_GRPC_ADDR=${DATA_API_GRPC_ADDR}
