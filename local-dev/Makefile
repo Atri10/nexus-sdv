@@ -1,4 +1,4 @@
-.PHONY: help go setup-auto logs stop clean query ingest test status shell vehicle-client
+.PHONY: help go setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs
 
 # ============================================================================
 # FASTEST WAY TO START (One command!)
@@ -14,6 +14,7 @@ help:
 	@echo ""
 	@echo "Inspection:"
 	@echo "  make logs            - Tail all logs in real-time"
+	@echo "  make connector-logs  - Tail nats-bigtable-connector logs"
 	@echo "  make ingest          - Write a sample telemetry row into Bigtable"
 	@echo "  make query           - Query Bigtable for telemetry"
 	@echo "  make test            - Run end-to-end test"
@@ -62,3 +63,6 @@ shell:
 
 vehicle-client:
 	@bash scripts/run-vehicle-client.sh
+
+connector-logs:
+	docker compose logs -f nats-bigtable-connector

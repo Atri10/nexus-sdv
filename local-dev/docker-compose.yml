@@ -102,6 +102,20 @@ services:
     networks:
       - nexus-local
 
+  nats-bigtable-connector:
+    build:
+      context: ../base-services/nats-bigtable-connector
+      dockerfile: Dockerfile.local
+    container_name: nexus-nats-bigtable-connector
+    environment:
+      - NATS_URL=nats://connector:connector-pass@nats:4222
+      - BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086
+      - GCP_PROJECT=test-project
+      - BT_INSTANCE=test-instance
+      - BT_TABLE=telemetry
+    networks:
+      - nexus-local
+
 networks:
   nexus-local:
     external: true
