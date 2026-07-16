@@ -35,16 +35,21 @@
 │  │ Sources         │              │                                      │  │
 │  │ (Vehicles)      │              │  ┌─────────────────────────────────┐ │  │
 │  └────────┬────────┘              │  │ Data Converter                  │ │  │
-│           │                       │  │ (MQTT → NATS only)             │ │  │
+│           │                       │  │ (MQTT → NATS)                  │ │  │
 │           │ MQTT                  │  │                                 │ │  │
 │           ▼                       │  │  subscribes MQTT telemetry/#    │ │  │
-│     ┌──────────────┐              │  │  publishes NATS telemetry.>     │ │  │
+│     ┌──────────────┐              │  │  publishes NATS telemetry-generic.>│ │  │
 │     │ Mosquitto    │◄─────────────┼──┤                                 │ │  │
 │     │   MQTT       │              │  └─────────────────────────────────┘ │  │
-│     │  :1883       │              │        │ (no NATS→Bigtable writer)   │  │
-│     └──────────────┘              │        ▼  local dev drops here       │  │
-│                                   │      (nothing consumes into BT)      │  │
-│                                   │                                      │  │
+│     │  :1883       │              │        │                               │  │
+│     └──────────────┘              │        ▼                               │  │
+│                                   │  ┌─────────────────────────────────┐ │  │
+│                                   │  │ NATS → Bigtable Connector       │ │  │
+│                                   │  │ (wombat: telemetry-generic.>    │ │  │
+│                                   │  │  → Bigtable emulator)           │ │  │
+│                                   │  └─────────────────────────────────┘ │  │
+│                                   │        │ (closes the ingestion loop) │  │
+│                                   │        ▼                               │  │
 │                                   │  ┌──────────────────────────────────┐ │  │
 │                                   │  │ Auth Callout                     │ │  │
 │                                   │  │ (validates Keycloak JWT → NATS   │ │  │
@@ -65,7 +70,7 @@
 │                                   │  │ SAMPLE SERVICES                  │ │  │
 │  ┌──────────────────────────────┐ │  │  • Data API Sampler              │ │  │
 │  │ make ingest ─► Bigtable      │ │  │  • Trip Analyzer                 │ │  │
-│  │ (the ONLY BT write path)     │ │  └──────────────────────────────────┘ │  │
+│  │ (manual BT write path)       │ │  └──────────────────────────────────┘ │  │
 │  └──────────────────────────────┘ │                                      │  │
 └───────────────────────────────────┴──────────────────────────────────────┘
 ```
@@ -74,34 +79,38 @@
 
 ## Data Flow
 
-### Telemetry ingestion path (and where it stops)
+### Telemetry ingestion path (now closed locally)
 
 ```
 Vehicle / Sensor
       │  MQTT publish  (telemetry/<VIN>/sensors/*)
       ▼
    Mosquitto (MQTT broker, :1883)
-      │  data-converter subscribes telemetry/#
-      ▼
-   Data Converter  ──►  parse / transform
-      │  NATS publish (telemetry.>)
-      ▼
+       │  data-converter subscribes telemetry/#
+       ▼
+   Data Converter  ──►  parse / transform (builds TelemetryMessage protobuf)
+       │  NATS publish (telemetry-generic.>)
+       ▼
    NATS (message broker, :4222)
-      │
-      ✗  NO consumer writes this into Bigtable in local dev.
-         data-converter forwards to NATS and stops there.
-         (See README §"The one thing to know first".)
+       │
+       ✓  nats-bigtable-connector (wombat) subscribes telemetry-generic.>
+          decodes protobuf → writes Bigtable row key <device_id>#<timestamp>
+          with column families dynamic/static
+       ▼
+   Bigtable emulator (:8086)  ← now populated from live NATS stream!
 
    ── separately ──
-   make ingest  ──►  Bigtable emulator (:8086)   ← the only write path locally
+   make ingest  ──►  Bigtable emulator (:8086)   ← manual write path still available
 ```
 
-> ⚠ **This is the single most important thing to understand about local dev.**
-> The NATS stream and the Bigtable table are **not connected** — there is no
-> NATS → Bigtable writer. To get rows into Bigtable, use `make ingest`. To see
-> what flows through NATS, subscribe to it directly (README §"Inspect live NATS
-> messages"). In the GCP deployment a separate managed connector fills this gap;
-> that component is out of scope for local dev.
+> ✅ **The NATS→Bigtable gap is now closed locally.** The `nats-bigtable-connector`
+> (wombat/Redpanda Connect) service subscribes to `telemetry-generic.>`, decodes
+> `telemetry.TelemetryMessage` protobufs, and writes them to the Bigtable emulator.
+> `make ingest` remains available for manual seeding / debugging.
+>
+> In the GCP deployment a separate managed connector (`iac/helm/nats-bigtable-connector/`)
+> fills this same role; the local version mirrors it using the same image and pipeline
+> logic.
 
 ### Query path
 

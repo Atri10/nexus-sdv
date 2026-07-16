@@ -72,24 +72,22 @@ Everything shares the `nexus-local` Docker bridge network.
 ### Data flow (what actually happens)
 
 ```
-                MQTT                    NATS
- Vehicle  ───────────────► Mosquitto ──────────► Data Converter ──────► NATS (telemetry.>)
- client                    :1883                  (MQTT → NATS)                 │
-   │                                                                           │  ⚠ nothing
-   │ mTLS register                                                             │  consumes this
-   ▼                                                                           ▼  into Bigtable
- Registration :8444 ──► issues operational cert + Keycloak/NATS URLs        (dropped)
+                MQTT                    NATS                     Bigtable
+ Vehicle  ───────────────► Mosquitto ──────────► Data Converter ──────► NATS (telemetry-generic.>)
+ client                    :1883                  (MQTT → NATS)                  │
+    │                                                                           │  nats-bigtable-connector
+    │ mTLS register                                                             │  (wombat) consumes
+    ▼                                                                           ▼  into Bigtable
+ Registration :8444 ──► issues operational cert + Keycloak/NATS URLs        (stored)
 
  Keycloak :8080  ──► issues JWT ──► NATS Auth Callout validates JWT ──► grants NATS permissions
 
- make ingest ──────────────────────────────────────────────────────────► Bigtable emulator :8086
-                                                                              ▲
- Data API :9090 (gRPC) ──────────────────────────────────────────────────────┘  (reads)
+ Data API :9090 (gRPC) ◄─────────────────────────────────────────────────────────┘  (reads)
 ```
 
 Read this diagram together with **[the one thing to know
-first](#the-one-thing-to-know-first)** — the gap between the NATS stream and
-Bigtable is deliberate and it trips everyone up once.
+first](#the-one-thing-to-know-first)** — the NATS→Bigtable gap is now closed
+locally by the connector service.
 
 ### Authentication chain (vehicle client)
 
@@ -120,7 +118,8 @@ Run all of these from inside `local-dev/`.
 | `make test` | Run the end-to-end test flow |
 | `make vehicle-client` | Register + publish telemetry using the real vehicle-client simulator |
 | `make shell` | Open a shell in the `data-api` container |
-| `make stop` | Stop all containers (keeps volumes) |
+| `make connector-logs` | Tail nats-bigtable-connector logs |
+| `make stop` | Stop containers (keeps volumes) |
 | `make clean` | Stop containers, remove volumes **and** the generated `.env` files |
 | `make help` | Print the full command list |
 
@@ -165,15 +164,14 @@ tooling. They **bypass** the JWT auth callout, so no Keycloak token is needed.
 
 ### The one thing to know first
 
-> **Local dev has no NATS → Bigtable writer.** `data-converter` only forwards
-> MQTT → NATS, and the vehicle client / MQTT publishes only reach NATS —
-> **nothing consumes those messages into Bigtable.** So `make query` returns
-> nothing until you write rows yourself with `make ingest`.
+> **Local dev now has a NATS → Bigtable writer.** A `wombat` (Redpanda Connect)
+> based `nats-bigtable-connector` service subscribes to `telemetry-generic.>`
+> and writes decoded protobuf messages into the Bigtable emulator. The loop
+> closes: MQTT → data-converter → NATS → connector → Bigtable → Data API.
 >
-> The Bigtable emulator is also **in-memory**: a container restart (Docker
-> restart, laptop sleep) wipes the table. `make ingest`/`make query` recreate
-> the table + column families automatically, so just re-run `make ingest` after
-> a restart.
+> `make ingest` remains available for manual seeding / debugging. The Bigtable
+> emulator is still **in-memory**: a container restart wipes the table.
+> `make ingest`/`make query` recreate the table + column families automatically.
 
 This means there are **two independent things you can watch**:
 
