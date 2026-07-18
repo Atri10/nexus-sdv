@@ -7,6 +7,7 @@ import TimeRangeSelector from '@/components/time-range-selector';
 import type { DeviceDetailResponse, TimeRange } from '@/types/telemetry';
 import { extractGpsPoints } from '@/lib/gps';
 import GpsTrackMap from '@/components/gps-track-map';
+import TelemetryChart from '@/components/telemetry-chart';
 
 interface MapsConfig {
   apiKey: string;
@@ -28,6 +29,9 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
 
   // Use a ref to hold stable columns across pages so the table header doesn't jump
   const [columns, setColumns] = useState<string[]>([]);
+
+  // Chart columns - numeric columns we want to chart
+  const [chartColumns, setChartColumns] = useState<string[]>([]);
 
   useEffect(() => {
     fetch('/api/maps-config')
@@ -56,6 +60,14 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
           const merged = new Set([...prev, ...data.columns]);
           return Array.from(merged);
         });
+        // Auto-detect numeric columns for charting
+        if (data.rows.length > 0) {
+          const numericCols = data.columns.filter(col => {
+            const sample = data.rows[0].values[col];
+            return sample !== undefined && !isNaN(parseFloat(sample));
+          });
+          setChartColumns(numericCols);
+        }
         setLoading(false);
       })
       .catch((e: unknown) => {
@@ -126,7 +138,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
           <Link href="/fleet" className="hover:text-gray-900">
             Fleet
           </Link>
-          <span className="mx-2">›</span>
+          <span className="mx-2">\u203A</span>
           <span className="text-gray-900">{id}</span>
         </nav>
 
@@ -139,6 +151,15 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
         {error && <p className="text-red-500">Error: {error}</p>}
         {(loading || detail) && (
           <div className="space-y-4">
+            {/* Live Telemetry Chart */}
+            {chartColumns.length > 0 && (
+              <TelemetryChart
+                vehicleId={id}
+                columns={chartColumns}
+              />
+            )}
+
+            {/* Data Table */}
             <DataTable
               columnKeys={tableColumnKeys}
               data={tableData}
@@ -152,6 +173,8 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
                 onPageSizeChange: handlePageSizeChange,
               }}
             />
+
+            {/* GPS Track Map */}
             {!loading && gpsPoints.length > 0 && mapsConfig?.apiKey && (
               <GpsTrackMap points={gpsPoints} apiKey={mapsConfig.apiKey} mapId={mapsConfig.mapId} />
             )}
