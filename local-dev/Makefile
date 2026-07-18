@@ -1,4 +1,4 @@
-.PHONY: help go setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs
+.PHONY: help go setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs frontend
 
 # ============================================================================
 # FASTEST WAY TO START (One command!)
@@ -21,6 +21,7 @@ help:
 	@echo "  make status          - Show service status"
 	@echo "  make shell           - Open shell in data-api container"
 	@echo "  make vehicle-client  - Register+publish telemetry with sample-clients/vehicle-client"
+	@echo "  make frontend        - View frontend logs"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make stop            - Stop all containers (keeps volumes)"
@@ -66,3 +67,6 @@ vehicle-client:
 
 connector-logs:
 	docker compose logs -f nats-bigtable-connector
+
+frontend:
+	docker compose logs -f data-web-client
