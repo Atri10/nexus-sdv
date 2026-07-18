@@ -1,0 +1,29 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: telemetry-chart-service
+
+# Bigtable configuration
+bigtable:
+  project-id: ${BIGTABLE_PROJECT_ID:test-project}
+  instance-id: ${BIGTABLE_INSTANCE_ID:test-instance}
+  table-name: ${BIGTABLE_TABLE_NAME:telemetry}
+  emulator-host: ${BIGTABLE_EMULATOR_HOST:}
+
+# Management endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# Logging
+logging:
+  level:
+    com.nexus.sdv.telemetrychartservice: DEBUG
+    com.google.cloud.bigtable: INFO
