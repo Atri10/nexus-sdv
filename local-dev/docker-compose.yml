@@ -116,6 +116,21 @@ services:
     networks:
       - nexus-local
 
+  telemetry-chart-service:
+    build:
+      context: ../sample-services/telemetry-chart-service
+      dockerfile: Dockerfile.local
+    container_name: nexus-telemetry-chart-service
+    environment:
+      - BIGTABLE_PROJECT_ID=test-project
+      - BIGTABLE_INSTANCE_ID=test-instance
+      - BIGTABLE_TABLE_NAME=telemetry
+      - BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086
+    ports:
+      - "8081:8080"
+    networks:
+      - nexus-local
+
 networks:
   nexus-local:
     external: true
