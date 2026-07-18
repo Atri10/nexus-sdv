@@ -131,6 +131,32 @@ services:
     networks:
       - nexus-local
 
+  data-web-client:
+    build:
+      context: ../sample-clients/data-web-client
+      dockerfile: Dockerfile.local
+      args:
+        TELEMETRY_SERVICE_URL: http://telemetry-chart-service:8080
+    container_name: nexus-data-web-client
+    environment:
+      - NEXTAUTH_SECRET=local-dev-secret-change-in-production
+      - NEXTAUTH_URL=http://localhost:3000
+      - KEYCLOAK_CLIENT_ID=nexus-web-client
+      - KEYCLOAK_CLIENT_SECRET=local-dev-secret
+      - KEYCLOAK_ISSUER=http://localhost:8080/realms/nexus-sdv
+      - BIGTABLE_PROJECT_ID=test-project
+      - BIGTABLE_INSTANCE_ID=test-instance
+      - BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086
+      - NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
+      - NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=
+      - TELEMETRY_SERVICE_URL=http://telemetry-chart-service:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - telemetry-chart-service
+    networks:
+      - nexus-local
+
 networks:
   nexus-local:
     external: true
