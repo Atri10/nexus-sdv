@@ -40,6 +40,8 @@ cd local-dev
 make go
 ```
 
+> **For the vehicle client:** Use the local-dev wrapper `make vehicle-client` or `bash scripts/run-vehicle-client.sh` — do NOT run `sample-clients/vehicle-client/run-vehicle-client.sh` directly (it uses GCP settings and wrong TLS config).
+
 `make go` runs `setup-automated.sh` (first time only) then starts every
 service. It generates TLS certs, the NATS NKey pair, and the Keycloak JWKS
 snapshot and injects them automatically. First run takes ~2–3 minutes
@@ -395,6 +397,7 @@ injects the dynamic tokens.
 | **Anonymous NATS is denied** | `nats sub`/`pub` with no creds → `Authorization Violation` | Use `--user connector --password connector-pass` |
 | **Keycloak key rotation** | See below — vehicle-client fails at the NATS step after a restart | `make clean && make go` (fix now persists keys) |
 | **Vehicle-client Keycloak realm mismatch** | See below | Larger piece of work; not yet resolved |
+| **Running vehicle client directly fails with TLS error** | `remote error: tls: error decrypting message` | Must use local-dev wrapper: `make vehicle-client` or `bash scripts/run-vehicle-client.sh` — do NOT run `sample-clients/vehicle-client/run-vehicle-client.sh` directly |
 
 ### Keycloak key rotation (the "worked yesterday, broken today" one)
 
@@ -425,6 +428,7 @@ docker compose --env-file .env.base-services --env-file .env.sample-services \
 ```
 
 ### Vehicle-client Keycloak realm mismatch
+ `remote error: tls: error decrypting message` | Must use local-dev wrapper: `make vehicle-client` or `bash scripts/run-vehicle-client.sh` — do NOT run `sample-clients/vehicle-client/run-vehicle-client.sh` directly |
 
 `vehicle-client`'s Go code historically hardcoded realm `sdv-telemetry` /
 `client_id=car` with **X.509 client-cert** auth (no secret). local-dev's
