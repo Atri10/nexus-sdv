@@ -35,7 +35,7 @@ check() {  # check "<label>" <command...>
 
 log "Test 1: All application services running"
 running="$(compose_app ps --status running --services 2>/dev/null)"
-for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer; do
+for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer nats-bigtable-connector; do
     if echo "$running" | grep -qx "$svc"; then
         log "  OK: $svc running"
     else
@@ -55,13 +55,20 @@ log "Test 3: Bigtable 'telemetry' table exists"
 check "telemetry table" docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 \
     nexus-bigtable-emulator cbt -project test-project -instance test-instance ls telemetry
 
-log "Test 4: Telemetry ingress (MQTT -> data-converter -> NATS)"
+log "Test 4: Telemetry ingress (MQTT -> data-converter -> NATS -> connector -> Bigtable)"
 if command -v mosquitto_pub >/dev/null 2>&1; then
     mosquitto_pub -h localhost -t "telemetry/VIN123/sensors/temp" \
       -m '{"name":"temp","value":25.5,"unit":"C"}'
-    sleep 2
+    sleep 5
     log "  published; recent data-converter logs:"
     compose_app logs --tail 20 data-converter
+    log "  connector logs:"
+    compose_app logs --tail 20 nats-bigtable-connector
+    log "  checking Bigtable for VIN123 row..."
+    check "Bigtable has VIN123 row" \
+      docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 \
+        nexus-bigtable-emulator cbt -project test-project -instance test-instance read telemetry \
+        | grep -q "VIN123"
 else
     skip "  mosquitto_pub not installed on host - skipping publish"
 fi
