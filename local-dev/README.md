@@ -40,6 +40,8 @@ cd local-dev
 make go
 ```
 
+> **For the vehicle client:** Use the local-dev wrapper `make vehicle-client` or `bash scripts/run-vehicle-client.sh` — do NOT run `sample-clients/vehicle-client/run-vehicle-client.sh` directly (it uses GCP settings and wrong TLS config).
+
 `make go` runs `setup-automated.sh` (first time only) then starts every
 service. It generates TLS certs, the NATS NKey pair, and the Keycloak JWKS
 snapshot and injects them automatically. First run takes ~2–3 minutes
@@ -140,9 +142,11 @@ docker compose up -d
 | **NATS** | `nats://localhost:4222` | NKey + auth-callout; HTTP monitor `http://localhost:8222` |
 | **Keycloak** | `http://localhost:8080` (admin UI), `https://localhost:8443` | admin/admin · realm `nexus-sdv` |
 | **Bigtable emulator** | `localhost:8086` | project `test-project`, instance `test-instance`, table `telemetry` |
-| **Mosquitto (MQTT)** | `mqtt://localhost:1883` | topic base `telemetry/#` |
+| **Mosquitto (MQTT)** | `mqtt://localhost:1883` | topic base `telemetry/#`
 | **Data API (gRPC)** | `localhost:9090` | plaintext; container listens on 8080 |
 | **Registration** | `https://localhost:8444` | mTLS |
+| **Telemetry Chart Service** | `http://localhost:8081` | Java REST + WebSocket API |
+| **Frontend (Next.js)** | `http://localhost:3000` | Live charts UI (no auth required) |
 
 ### NATS built-in accounts (from generated `config/nats.conf`)
 
@@ -349,6 +353,47 @@ mismatch).
 
 ---
 
+## 6b. Frontend Dashboard (Live Charts)
+
+The [Next.js frontend](../sample-clients/data-web-client) provides a live dashboard at **http://localhost:3000/device/<VIN>** showing real-time telemetry charts via WebSocket.
+
+### Quick Start
+
+```bash
+# 1. Start the full stack (includes frontend)
+cd local-dev
+make go
+
+# 2. Run vehicle client to generate live data
+./scripts/run-vehicle-client.sh --vin VIN123 --message-type telemetry --interval 5
+
+# 3. Open dashboard
+open http://localhost:3000/device/VIN123
+```
+
+### Features
+
+- **Live line charts** (Chart.js) updating every ~1 second via WebSocket
+- **Historical data** on initial load (last hour by default)
+- **Time range selector** (1h, 6h, 24h, 7d)
+- **Data table** with pagination and column sorting
+- **Multiple sensors** as separate lines on the same chart
+- **GPS track map** (when GPS data available)
+
+### Architecture
+
+\`\`\`
+Frontend (Next.js:3000) → API Proxy (/api/telemetry/[vin]) → Java Service (REST:8081)
+                                      │
+                                      └── WebSocket (/ws/telemetry) → Java Service (WS:8081)
+\`\`\`
+
+The frontend proxies API calls to the Java telemetry-chart-service (port 8081) and establishes a WebSocket connection for live updates. No authentication is required for the device pages.
+
+---
+
+
+
 ## 7. Build model (Dockerfile.local & proto)
 
 `data-api` and `data-converter` build with the **repo root** as their Docker
@@ -395,6 +440,7 @@ injects the dynamic tokens.
 | **Anonymous NATS is denied** | `nats sub`/`pub` with no creds → `Authorization Violation` | Use `--user connector --password connector-pass` |
 | **Keycloak key rotation** | See below — vehicle-client fails at the NATS step after a restart | `make clean && make go` (fix now persists keys) |
 | **Vehicle-client Keycloak realm mismatch** | See below | Larger piece of work; not yet resolved |
+| **Running vehicle client directly fails with TLS error** | `remote error: tls: error decrypting message` | Must use local-dev wrapper: `make vehicle-client` or `bash scripts/run-vehicle-client.sh` — do NOT run `sample-clients/vehicle-client/run-vehicle-client.sh` directly |
 
 ### Keycloak key rotation (the "worked yesterday, broken today" one)
 
@@ -425,6 +471,7 @@ docker compose --env-file .env.base-services --env-file .env.sample-services \
 ```
 
 ### Vehicle-client Keycloak realm mismatch
+ `remote error: tls: error decrypting message` | Must use local-dev wrapper: `make vehicle-client` or `bash scripts/run-vehicle-client.sh` — do NOT run `sample-clients/vehicle-client/run-vehicle-client.sh` directly |
 
 `vehicle-client`'s Go code historically hardcoded realm `sdv-telemetry` /
 `client_id=car` with **X.509 client-cert** auth (no secret). local-dev's
