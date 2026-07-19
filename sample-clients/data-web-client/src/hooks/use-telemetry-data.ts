@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChartSeries, vinColorFamily } from '@/lib/telemetry-chart-utils';
-import { toast } from 'sonner';
+
 
 export interface TelemetryRow {
   timestamp: string;
@@ -74,10 +74,10 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
     try {
       const vins = [vin, ...compareVins.filter((c) => c && c !== vin)];
       const all = (await Promise.all(vins.map((v, i) => fetchHistorical(v, i)))).flat();
-      setSeries(all);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load telemetry';
       setError(msg);
+      const { toast } = await import('sonner');
       toast.error(msg);
     } finally {
       setLoading(false);

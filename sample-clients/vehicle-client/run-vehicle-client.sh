@@ -16,7 +16,7 @@ set -e
 
 # --- Parse flags ---
 VIN_VALUE="VEHICLE001"
-INTERVAL_VALUE="5"
+INTERVAL_VALUE="1"
 MESSAGE_TYPE="metrics_report"
 
 while [[ $# -gt 0 ]]; do
