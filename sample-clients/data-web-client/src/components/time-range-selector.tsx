@@ -19,7 +19,7 @@ export default function TimeRangeSelector({ value, onChange }: TimeRangeSelector
           className={`px-3 py-1 text-sm rounded ${
             value === range
               ? 'bg-blue-600 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              : 'bg-muted text-muted-foreground hover:bg-accent'
           }`}
         >
           {range}
