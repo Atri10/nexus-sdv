@@ -50,6 +50,7 @@ export interface TelemetryDataResult {
 
 export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataResult {
   const { vin, range, compareVins = [] } = opts;
+  const compareKey = compareVins.join('|');
   const [series, setSeries] = useState<ChartSeries[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +79,7 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
     } finally {
       setLoading(false);
     }
-  }, [vin, compareVins, fetchHistorical]);
+  }, [vin, compareKey, fetchHistorical]);
 
   useEffect(() => {
     load();
@@ -107,12 +108,14 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
               column: col,
               key: `${vin}|${col}`,
               label: col.replace('dynamic:', '').replace('static:', ''),
-              color: vinColorFamily(0, i),
+              color: vinColorFamily(0, prev.filter((s) => s.vin === vin).length + i),
               points: [point],
             } as ChartSeries;
           });
+          const additionsByKey = new Map(additions.map((a) => [a.key, a]));
           const existingKeys = new Set(prev.map((s) => s.key));
-          return [...prev, ...additions.filter((a) => !existingKeys.has(a.key))];
+          const merged = prev.map((s) => additionsByKey.get(s.key) ?? s);
+          return [...merged, ...additions.filter((a) => !existingKeys.has(a.key))];
         });
       } catch {
         /* ignore parse errors */
@@ -122,7 +125,7 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
       ws.close();
       wsRef.current = null;
     };
-  }, [vin, range, compareVins, load]);
+  }, [vin, range, compareKey, load]);
 
   return { series, loading, error, refetch: load };
 }
