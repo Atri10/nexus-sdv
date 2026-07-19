@@ -54,15 +54,15 @@ export function extractGpsPoints(detail: DeviceDetailResponse): GpsPoint[] {
 
     // Values may be bare strings or JSON-encoded strings (e.g. "\"41.49\"").
     // parseNumeric handles both.
-    const parseNumeric = (s: string): number => {
-      const stripped = s.replace(/^"+|"+$/g, '');
-      return Number(stripped);
+    const parseNumeric = (v: string | number): number => {
+      if (typeof v === 'number') return v;
+      const s = String(v).replace(/^"+|"+$/g, '');
+      return Number(s);
     };
 
     const lat = parseNumeric(latStr);
     const lng = parseNumeric(lngStr);
     const alt = altStr ? parseNumeric(altStr) : 0;
-
     if (!isFinite(lat) || !isFinite(lng) || !isFinite(alt)) continue;
 
     points.push({ timestamp, lat, lng, alt });
