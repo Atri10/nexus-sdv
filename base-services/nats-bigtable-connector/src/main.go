@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"cloud.google.com/go/bigtable"
 	"github.com/nats-io/nats.go"
@@ -104,6 +106,76 @@ func main() {
 	defer sub.Unsubscribe()
 
 	logger.Info("Subscribed to telemetry-generic.>")
+	// Subscribe to MetricsReport subjects (telemetry.{VIN}).
+	// MetricsReport is an envelope; the real payload lives in report_data,
+	// a google.protobuf.Any wrapping VehicleTelemetryData.
+	subMetrics, err := nc.Subscribe("telemetry.>", func(msg *nats.Msg) {
+		var mr telemetry.MetricsReport
+		if err := proto.Unmarshal(msg.Data, &mr); err != nil {
+			logger.Error("Failed to unmarshal MetricsReport", zap.Error(err))
+			return
+		}
+
+		// Subject format: telemetry.{VIN}
+		parts := strings.Split(msg.Subject, ".")
+		if len(parts) < 2 {
+			logger.Warn("MetricsReport subject missing VIN", zap.String("subject", msg.Subject))
+			return
+		}
+		vin := parts[1]
+
+		if mr.ReportData == nil {
+			logger.Warn("MetricsReport has no report_data", zap.String("subject", msg.Subject))
+			return
+		}
+		var vtd telemetry.VehicleTelemetryData
+		if err := mr.ReportData.UnmarshalTo(&vtd); err != nil {
+			logger.Error("Failed to unpack VehicleTelemetryData", zap.Error(err))
+			return
+		}
+
+		ts := mr.ReportTimestamp.AsTime()
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+		timestampStr := ts.Format("2006-01-02T15:04:05.000000000Z07:00")
+		rowKey := fmt.Sprintf("%s#%s", vin, timestampStr)
+
+		// Write each scalar field as a dynamic sensor column.
+		mut := bigtable.NewMutation()
+		addMetric := func(qualifier string, value float64) {
+			mut.Set("dynamic", qualifier, bigtable.Now(), []byte(fmt.Sprintf("%.2f", value)))
+		}
+		addMetric("ENGINE_POWER", float64(vtd.ENGINE_POWER))
+		addMetric("ENGINE_RPM", float64(vtd.ENGINE_RPM))
+		addMetric("FUEL_CAPACITY", float64(vtd.FUEL_CAPACITY))
+		addMetric("FUEL_LEVEL", float64(vtd.FUEL_LEVEL))
+		addMetric("TIRE_PRESSURE", float64(vtd.TIRE_PRESSURE))
+		addMetric("VELOCITY", float64(vtd.VELOCITY))
+		if vtd.GPS_LATITUDE != nil {
+			addMetric("GPS_LATITUDE", float64(*vtd.GPS_LATITUDE))
+		}
+		if vtd.GPS_LONGITUDE != nil {
+			addMetric("GPS_LONGITUDE", float64(*vtd.GPS_LONGITUDE))
+		}
+
+		if err := tbl.Apply(ctx, rowKey, mut); err != nil {
+			logger.Error("Failed to write MetricsReport to Bigtable",
+				zap.String("row_key", rowKey),
+				zap.Error(err))
+			return
+		}
+
+		logger.Debug("Wrote MetricsReport to Bigtable",
+			zap.String("row_key", rowKey),
+			zap.String("vin", vin))
+	})
+	if err != nil {
+		logger.Fatal("Failed to subscribe to telemetry.>", zap.Error(err))
+	}
+	defer subMetrics.Unsubscribe()
+
+	logger.Info("Subscribed to telemetry.> (MetricsReport)")
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
