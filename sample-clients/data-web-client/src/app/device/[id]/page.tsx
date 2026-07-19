@@ -8,6 +8,8 @@ import type { TimeRange } from '@/types/telemetry';
 import { extractGpsPoints } from '@/lib/gps';
 import GpsTrackMap from '@/components/gps-track-map';
 import TelemetryChart from '@/components/telemetry-chart';
+import { useTelemetryData } from '@/hooks/use-telemetry-data';
+import { useChartTheme } from '@/hooks/use-chart-theme';
 
 interface MapsConfig {
   apiKey: string;
@@ -25,10 +27,11 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
 
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null]);
   const [pageIndex, setPageIndex] = useState(0);
-
   const [columns, setColumns] = useState<string[]>([]);
 
-  const [chartColumns, setChartColumns] = useState<string[]>([]);
+  const { series } = useTelemetryData({ vin: id, range });
+  const theme = useChartTheme();
+
 
   useEffect(() => {
     fetch('/api/maps-config')
@@ -71,16 +74,6 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
           const merged = new Set([...prev, ...data.columns]);
           return Array.from(merged);
         });
-        // Auto-detect numeric columns for charting (check ALL rows, not just first)
-        const numericCols = data.columns.filter((col) => {
-          return data.rows.some((row) => {
-            const val = row.values[col];
-            return val !== undefined && !isNaN(parseFloat(val));
-          });
-        });
-        if (numericCols.length > 0) {
-          setChartColumns(numericCols);
-        }
         setLoading(false);
       })
       .catch((e: unknown) => {
@@ -177,10 +170,15 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
         {(loading || detail) && (
           <div className="space-y-4">
             {/* Live Telemetry Chart */}
-            {chartColumns.length > 0 && (
+            {series.length > 0 && (
               <TelemetryChart
                 vehicleId={id}
-                columns={chartColumns}
+                series={series}
+                type="line"
+                axisMode="single"
+                hidden={new Set<string>()}
+                theme={theme}
+                resetZoomToken={0}
               />
             )}
 
