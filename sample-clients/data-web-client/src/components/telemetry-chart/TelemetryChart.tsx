@@ -29,10 +29,10 @@ export default function TelemetryChart({
   resetZoomToken,
 }: TelemetryChartProps) {
   const chartRef = useRef<ChartJS<'line'>>(null);
-  const { left, right } =
+  const { right } =
     axisMode === 'dual'
       ? groupAxes(series)
-      : { left: series.map((s) => s.key), right: [] };
+      : { right: [] as string[] };
 
   useEffect(() => {
     if (resetZoomToken > 0) chartRef.current?.resetZoom();
