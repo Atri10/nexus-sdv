@@ -100,17 +100,17 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
   }
 
   return (
-    <div className="flex flex-col rounded border border-gray-200 overflow-hidden">
+    <div className="flex flex-col rounded border-border overflow-hidden">
       {/* Fixed-height scrollable body with sticky header */}
       <div className="overflow-auto" style={{ maxHeight: '360px' }}>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0 z-10">
+          <thead className="bg-muted sticky top-0 z-10">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200"
+                    className="px-4 py-2 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider border-border"
                   >
                     {flexRender(header.column.columnDef.header, header.getContext())}
                   </th>
@@ -118,10 +118,10 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
               </tr>
             ))}
           </thead>
-          <tbody className="divide-y divide-gray-100 bg-white">
+          <tbody className="divide-y divide-border bg-card">
             {serverPagination?.loading ? (
               <tr>
-                <td colSpan={columnKeys.length} className="px-4 py-6 text-center text-gray-400">
+                <td colSpan={columnKeys.length} className="px-4 py-6 text-center text-muted-foreground">
                   Loading…
                 </td>
               </tr>
@@ -137,10 +137,10 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
                     }
                   }}
                   tabIndex={onRowClick ? 0 : undefined}
-                  className={onRowClick ? 'cursor-pointer hover:bg-gray-50' : ''}
+                  className={onRowClick ? 'cursor-pointer hover:bg-muted' : ''}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-4 py-2 text-gray-700 whitespace-nowrap">
+                  <td key={cell.id} className="px-4 py-2 text-foreground whitespace-nowrap">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>
                   ))}
@@ -152,13 +152,13 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
       </div>
 
       {/* Pagination controls */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-gray-200 bg-gray-50 text-sm text-gray-600">
+      <div className="flex items-center justify-between px-4 py-2 border-border bg-muted text-sm text-muted-foreground">
         <div className="flex items-center gap-2">
           <span>Rows per page:</span>
           <select
             value={pageSize}
             onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-            className="border border-gray-300 rounded px-1 py-0.5 text-sm bg-white"
+            className="border-border rounded px-1 py-0.5 text-sm bg-card"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (
               <option key={n} value={n}>{n}</option>
@@ -178,27 +178,27 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
               <button
                 onClick={handleFirst}
                 disabled={!canPrev}
-                className="px-2 py-1 rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 disabled:cursor-not-allowed"
+                className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
                 aria-label="First page"
               >«</button>
             )}
             <button
               onClick={handlePrev}
               disabled={!canPrev}
-              className="px-2 py-1 rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 disabled:cursor-not-allowed"
+              className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
               aria-label="Previous page"
             >‹</button>
             <button
               onClick={handleNext}
               disabled={!canNext}
-              className="px-2 py-1 rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 disabled:cursor-not-allowed"
+              className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
               aria-label="Next page"
             >›</button>
             {!serverPagination && (
               <button
                 onClick={handleLast}
                 disabled={!canNext}
-                className="px-2 py-1 rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 disabled:cursor-not-allowed"
+              className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
                 aria-label="Last page"
               >»</button>
             )}
