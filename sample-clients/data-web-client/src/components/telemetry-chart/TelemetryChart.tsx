@@ -110,7 +110,7 @@ export default function TelemetryChart({ vehicleId, columns, wsUrl }: TelemetryC
 
   // Connect to WebSocket
   useEffect(() => {
-    const url = wsUrl || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/v1/vehicles/${vehicleId}/telemetry/live`;
+    const url = wsUrl || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//localhost:8081/api/v1/vehicles/${vehicleId}/telemetry/live`;
     
     const ws = new WebSocket(url);
     wsRef.current = ws;

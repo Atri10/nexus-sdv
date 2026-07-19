@@ -1,10 +1,10 @@
 'use client';
-import { use, useCallback, useEffect, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import AppLayout from '@/components/app-layout';
 import DataTable from '@/components/data-table';
 import TimeRangeSelector from '@/components/time-range-selector';
-import type { DeviceDetailResponse, TimeRange } from '@/types/telemetry';
+import type { TimeRange } from '@/types/telemetry';
 import { extractGpsPoints } from '@/lib/gps';
 import GpsTrackMap from '@/components/gps-track-map';
 import TelemetryChart from '@/components/telemetry-chart';
@@ -16,56 +16,69 @@ interface MapsConfig {
 
 export default function DevicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [range, setRange] = useState<TimeRange>('1h');
+  const [range, setRange] = useState<'1h' | '6h' | '24h' | '7d'>('1h');
   const [pageSize, setPageSize] = useState(25);
-  const [detail, setDetail] = useState<DeviceDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mapsConfig, setMapsConfig] = useState<MapsConfig | null>(null);
+  const [detail, setDetail] = useState<{ deviceId: string; rows: { timestamp: string; values: Record<string, number> }[]; columns: string[]; nextCursor?: string | null } | null>(null);
+  const [mapsConfig, setMapsConfig] = useState<{ apiKey: string; mapId: string } | null>(null);
 
-  // cursor stack: index 0 = first page (no cursor), each subsequent entry is the nextCursor for that page
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null]);
   const [pageIndex, setPageIndex] = useState(0);
 
-  // Use a ref to hold stable columns across pages so the table header doesn't jump
   const [columns, setColumns] = useState<string[]>([]);
 
-  // Chart columns - numeric columns we want to chart
   const [chartColumns, setChartColumns] = useState<string[]>([]);
 
   useEffect(() => {
     fetch('/api/maps-config')
-      .then((r) => r.json() as Promise<MapsConfig>)
+      .then((r) => r.json() as Promise<{ apiKey: string; mapId: string }>)
       .then(setMapsConfig)
-      .catch(() => {/* maps config unavailable */});
+      .catch(() => { /* maps config unavailable */ });
   }, []);
 
-  const fetchPage = useCallback((cursor: string | null, size: number, currentRange: TimeRange) => {
+  const fetchPage = useCallback((cursor: string | null, size: number, currentRange: '1h' | '6h' | '24h' | '7d') => {
     setLoading(true);
     setError(null);
-    const url = new URL(`/api/devices/${id}`, window.location.origin);
-    url.searchParams.set('range', currentRange);
-    url.searchParams.set('pageSize', String(size));
+    const url = new URL(`/api/telemetry/${id}`, window.location.origin);
+    const end = new Date();
+    const start = new Date(end.getTime() - parseTimeRange(currentRange));
+    url.searchParams.set('start', start.toISOString());
+    url.searchParams.set('end', end.toISOString());
+    url.searchParams.set('limit', String(size));
     if (cursor) url.searchParams.set('cursor', cursor);
 
     fetch(url.toString())
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<DeviceDetailResponse>;
+        return r.json();
       })
-      .then((data) => {
-        setDetail(data);
+      .then((data: { rows: { timestamp: string; values: Record<string, string> }[]; columns: string[]; nextCursor?: string | null }) => {
+        // Convert string values to numbers for charting
+        const rows = data.rows.map((row) => {
+          const values: Record<string, number> = {};
+          for (const [k, v] of Object.entries(row.values)) {
+            values[k] = parseFloat(v);
+          }
+          return {
+            timestamp: row.timestamp,
+            values,
+          };
+        });
+        setDetail({ deviceId: id, rows, columns: data.columns, nextCursor: data.nextCursor });
         // Merge new columns into the known set so header is stable across pages
         setColumns((prev) => {
           const merged = new Set([...prev, ...data.columns]);
           return Array.from(merged);
         });
-        // Auto-detect numeric columns for charting
-        if (data.rows.length > 0) {
-          const numericCols = data.columns.filter(col => {
-            const sample = data.rows[0].values[col];
-            return sample !== undefined && !isNaN(parseFloat(sample));
+        // Auto-detect numeric columns for charting (check ALL rows, not just first)
+        const numericCols = data.columns.filter((col) => {
+          return data.rows.some((row) => {
+            const val = row.values[col];
+            return val !== undefined && !isNaN(parseFloat(val));
           });
+        });
+        if (numericCols.length > 0) {
           setChartColumns(numericCols);
         }
         setLoading(false);
@@ -75,6 +88,17 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
         setLoading(false);
       });
   }, [id]);
+
+  // Helper to parse TimeRange string to milliseconds
+  function parseTimeRange(range: '1h' | '6h' | '24h' | '7d'): number {
+    switch (range) {
+      case '1h': return 60 * 60 * 1000;
+      case '6h': return 6 * 60 * 60 * 1000;
+      case '24h': return 24 * 60 * 60 * 1000;
+      case '7d': return 7 * 24 * 60 * 60 * 1000;
+      default: return 60 * 60 * 1000;
+    }
+  }
 
   // Reset on range or pageSize change
   useEffect(() => {
@@ -149,6 +173,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
         </div>
 
         {error && <p className="text-red-500">Error: {error}</p>}
+
         {(loading || detail) && (
           <div className="space-y-4">
             {/* Live Telemetry Chart */}
@@ -166,7 +191,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
               serverPagination={{
                 pageIndex,
                 pageSize,
-                hasMore: detail?.hasMore ?? false,
+                hasMore: detail?.nextCursor ? true : false,
                 loading,
                 onNext: handleNext,
                 onPrev: handlePrev,

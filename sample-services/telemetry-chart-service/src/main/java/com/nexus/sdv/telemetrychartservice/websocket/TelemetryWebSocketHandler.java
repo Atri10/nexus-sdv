@@ -9,13 +9,13 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
-
 import java.io.IOException;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -32,32 +32,29 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
 
     public TelemetryWebSocketHandler(TelemetryService telemetryService) {
         this.telemetryService = telemetryService;
-        // Start periodic live data broadcast
-        scheduler.scheduleAtFixedRate(this::broadcastLiveData, 2, 2, TimeUnit.SECONDS);
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        String sessionId = session.getId();
+        log.info("WebSocket connection established: sessionId={}, path={}", session.getId(), session.getUri());
         String vin = extractVin(session);
-
         if (vin == null) {
-            log.warn("WebSocket connection without VIN, closing: {}", sessionId);
+            log.warn("Could not extract VIN from session: {}", session.getUri());
             try {
-                session.close(CloseStatus.BAD_DATA.withReason("VIN required in path"));
+                session.close(CloseStatus.BAD_DATA.withReason("VIN not found in path"));
             } catch (IOException e) {
-                log.error("Error closing session", e);
+                log.error("Failed to close session", e);
             }
             return;
         }
 
         SessionInfo info = new SessionInfo(session, vin, ConcurrentHashMap.newKeySet());
-        sessions.put(sessionId, info);
+        sessions.put(session.getId(), info);
 
         // Subscribe to live updates
         telemetryService.subscribeLive(vin, info.subscribedColumns());
 
-        log.info("WebSocket connected: sessionId={}, vin={}", sessionId, vin);
+        log.info("WebSocket connected: sessionId={}, vin={}", session.getId(), vin);
 
         // Start polling for new data
         startPolling(info);
@@ -73,67 +70,48 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
         }
 
         try {
-            @SuppressWarnings("unchecked")
             Map<String, Object> msg = objectMapper.readValue(message.getPayload(), Map.class);
             String type = (String) msg.get("type");
 
-            switch (type) {
-                case "subscribe" -> handleSubscribe(session, info, msg);
-                case "unsubscribe" -> handleUnsubscribe(session, info, msg);
-                case "ping" -> sendMessage(session, Map.of("type", "pong", "timestamp", Instant.now().toString()));
-                default -> log.warn("Unknown message type: {}", type);
+            if ("subscribe".equals(type)) {
+                @SuppressWarnings("unchecked")
+                List<String> columns = (List<String>) msg.get("columns");
+                handleSubscribe(session, info, new HashSet<>(columns));
+            } else if ("unsubscribe".equals(type)) {
+                @SuppressWarnings("unchecked")
+                List<String> columns = (List<String>) msg.get("columns");
+                handleUnsubscribe(session, info, new HashSet<>(columns));
+            } else if ("ping".equals(type)) {
+                sendMessage(session, Map.of("type", "pong"));
             }
         } catch (Exception e) {
-            log.error("Error handling WebSocket message: {}", e.getMessage(), e);
+            log.error("Error handling WebSocket message", e);
+            sendError(session, "Invalid message format");
         }
     }
 
-    private void handleSubscribe(WebSocketSession session, SessionInfo info, Map<String, Object> msg) {
-        String vehicleId = (String) msg.get("vehicleId");
-        @SuppressWarnings("unchecked")
-        List<String> columns = (List<String>) msg.getOrDefault("columns", List.of());
-
-        if (vehicleId == null || vehicleId.isEmpty()) {
-            sendError(session, "vehicleId is required");
-            return;
+    private void handleSubscribe(WebSocketSession session, SessionInfo info, Set<String> columns) {
+        if (columns != null) {
+            info.subscribedColumns().addAll(columns);
         }
-
-        info.subscribedColumns().addAll(columns);
-        telemetryService.subscribeLive(vehicleId, info.subscribedColumns());
-
-        sendMessage(session, Map.of(
-                "type", "subscribed",
-                "vehicleId", vehicleId,
-                "columns", columns
-        ));
-        log.info("Session {} subscribed to {} with columns {}", session.getId(), vehicleId, columns);
+        telemetryService.subscribeLive(info.vin(), info.subscribedColumns());
+        sendMessage(session, Map.of("type", "subscribed", "vehicleId", info.vin(), "columns", info.subscribedColumns()));
     }
 
-    private void handleUnsubscribe(WebSocketSession session, SessionInfo info, Map<String, Object> msg) {
-        String vehicleId = (String) msg.get("vehicleId");
-        @SuppressWarnings("unchecked")
-        List<String> columns = (List<String>) msg.getOrDefault("columns", List.of());
-
-        info.subscribedColumns().removeAll(columns);
-        telemetryService.unsubscribeLive(vehicleId, new HashSet<>(columns));
-
-        sendMessage(session, Map.of(
-                "type", "unsubscribed",
-                "vehicleId", vehicleId
-        ));
+    private void handleUnsubscribe(WebSocketSession session, SessionInfo info, Set<String> columns) {
+        if (columns != null) {
+            info.subscribedColumns().removeAll(columns);
+        }
+        telemetryService.unsubscribeLive(info.vin(), info.subscribedColumns());
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         String sessionId = session.getId();
         SessionInfo info = sessions.remove(sessionId);
-
         if (info != null) {
             telemetryService.unsubscribeLive(info.vin(), info.subscribedColumns());
-            if (info.pollTask() != null) {
-                info.pollTask().cancel(false);
-            }
-            log.info("WebSocket disconnected: sessionId={}, vin={}, status={}", sessionId, info.vin(), status);
+            log.info("WebSocket disconnected: sessionId={}, vin={}, reason={}", sessionId, info.vin(), status);
         }
     }
 
@@ -143,74 +121,26 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void broadcastLiveData() {
-        // Get all active subscriptions
-        Map<String, Set<String>> allSubs = telemetryService.getLiveSubscriptions();
-        if (allSubs.isEmpty()) {
-            return;
-        }
-
-        for (Map.Entry<String, Set<String>> entry : allSubs.entrySet()) {
-            String vehicleId = entry.getKey();
-            Set<String> columns = entry.getValue();
-
-            // Get latest data for this vehicle
-            Optional<TelemetryService.TelemetryPoint> latest = telemetryService.getLatestTelemetry(vehicleId,
-                    new ArrayList<>(columns));
-
-            latest.ifPresent(point -> {
-                Map<String, Object> message = Map.of(
-                        "type", "telemetry",
-                        "vehicleId", vehicleId,
-                        "timestamp", point.timestamp().toString(),
-                        "values", point.values()
-                );
-
-                // Send to all sessions subscribed to this vehicle
-                for (Map.Entry<String, SessionInfo> sessionEntry : sessions.entrySet()) {
-                    WebSocketSession session = sessionEntry.getValue().session();
-                    SessionInfo info = sessionEntry.getValue();
-                    if (session != null && session.isOpen() && info.vin().equals(vehicleId)) {
-                        sendMessage(session, message);
-                    }
-                }
-            });
-        }
+        // Polling-based live updates - this is called by the scheduler per session
     }
 
     private void startPolling(SessionInfo info) {
         info.pollTask(scheduler.scheduleAtFixedRate(() -> {
-            if (!info.session().isOpen()) {
-                return;
-            }
-
             try {
-                // Query for latest data since last poll
-                Instant now = Instant.now();
-                Instant since = info.lastPollTime() != null ? info.lastPollTime() : now.minusSeconds(5);
-
-                List<TelemetryService.TelemetryPoint> points = telemetryService.queryTelemetry(
-                        info.vin(), since, now, new ArrayList<>(info.subscribedColumns()));
-
-                if (!points.isEmpty()) {
-                    info.lastPollTime(points.get(points.size() - 1).timestamp());
-
-                    Map<String, Object> message = Map.of(
-                            "type", "telemetry",
-                            "vehicleId", info.vin(),
-                            "timestamp", Instant.now().toString(),
-                            "data", points.stream()
-                                    .map(p -> Map.of(
-                                            "timestamp", p.timestamp().toString(),
-                                            "values", p.values()))
-                                    .toList()
-                    );
-
+                Optional<TelemetryService.TelemetryPoint> latest = telemetryService.getLatestTelemetry(info.vin(), new ArrayList<>(info.subscribedColumns()));
+                if (latest.isPresent()) {
+                    TelemetryService.TelemetryPoint point = latest.get();
+                    Map<String, Object> message = new HashMap<>();
+                    message.put("type", "telemetry");
+                    message.put("vehicleId", info.vin());
+                    message.put("timestamp", point.timestamp().toString());
+                    message.put("values", point.values());
                     sendMessage(info.session(), message);
                 }
             } catch (Exception e) {
-                log.error("Error polling telemetry for session {}: {}", info.session().getId(), e.getMessage());
+                log.error("Error polling telemetry for {}", info.vin(), e);
             }
-        }, 2, 2, TimeUnit.SECONDS));
+        }, 1, 1, TimeUnit.SECONDS));
     }
 
     private void sendMessage(WebSocketSession session, Object message) {
@@ -230,14 +160,18 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
 
     private String extractVin(WebSocketSession session) {
         String uri = session.getUri().toString();
-        // Extract VIN from /api/v1/vehicles/{vin}/telemetry/live
-        String[] parts = uri.split("/");
-        for (int i = 0; i < parts.length - 1; i++) {
-            if ("vehicles".equals(parts[i])) {
-                return parts[i + 1];
-            }
+        // Expected format: /api/v1/vehicles/{vin}/telemetry/live
+        String prefix = "/api/v1/vehicles/";
+        int start = uri.indexOf(prefix);
+        if (start == -1) {
+            return null;
         }
-        return null;
+        start += prefix.length();
+        int end = uri.indexOf('/', start);
+        if (end == -1) {
+            end = uri.length();
+        }
+        return uri.substring(start, end);
     }
 
     // SessionInfo as a regular class instead of record to allow mutable fields
@@ -246,12 +180,13 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
         private final String vin;
         private final Set<String> subscribedColumns;
         private volatile Instant lastPollTime;
-        private volatile java.util.concurrent.ScheduledFuture<?> pollTask;
+        private volatile ScheduledFuture<?> pollTask;
 
         public SessionInfo(WebSocketSession session, String vin, Set<String> subscribedColumns) {
             this.session = session;
             this.vin = vin;
             this.subscribedColumns = subscribedColumns;
+            this.lastPollTime = Instant.now();
         }
 
         public WebSocketSession session() { return session; }
@@ -259,7 +194,7 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
         public Set<String> subscribedColumns() { return subscribedColumns; }
         public Instant lastPollTime() { return lastPollTime; }
         public void lastPollTime(Instant lastPollTime) { this.lastPollTime = lastPollTime; }
-        public java.util.concurrent.ScheduledFuture<?> pollTask() { return pollTask; }
-        public void pollTask(java.util.concurrent.ScheduledFuture<?> pollTask) { this.pollTask = pollTask; }
+        public ScheduledFuture<?> pollTask() { return pollTask; }
+        public void pollTask(ScheduledFuture<?> pollTask) { this.pollTask = pollTask; }
     }
 }

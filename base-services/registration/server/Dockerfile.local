@@ -8,6 +8,9 @@ ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/rust:bookworm AS builder
 
 # Install cross-compilation toolchains for both target architectures
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GODEBUG=netdns=go
+
 # cmake is required by aws-lc-sys (rustls dependency)
 RUN apt-get update && apt-get install -y \
     musl-tools \
