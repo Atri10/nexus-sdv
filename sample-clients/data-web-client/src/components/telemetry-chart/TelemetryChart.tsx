@@ -1,257 +1,117 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler,
-  ChartOptions,
-} from 'chart.js';
+import { useEffect, useRef } from 'react';
+import { Chart as ChartJS, ChartData, ChartOptions } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import { registerChart } from '@/lib/register-chart';
+import { type ChartThemeColors } from '@/hooks/use-chart-theme';
+import { groupAxes, type ChartSeries } from '@/lib/telemetry-chart-utils';
 
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler
-);
+registerChart();
 
 interface TelemetryChartProps {
   vehicleId: string;
-  columns: string[];
-  wsUrl?: string;
+  series: ChartSeries[];
+  type: 'line' | 'area' | 'bar';
+  axisMode: 'single' | 'dual';
+  hidden: Set<string>;
+  theme: ChartThemeColors;
+  resetZoomToken: number;
 }
 
-interface TelemetryPoint {
-  timestamp: string;
-  values: Record<string, string>;
-}
+export default function TelemetryChart({
+  vehicleId,
+  series,
+  type,
+  axisMode,
+  hidden,
+  theme,
+  resetZoomToken,
+}: TelemetryChartProps) {
+  const chartRef = useRef<ChartJS<'line'>>(null);
+  const { left, right } =
+    axisMode === 'dual'
+      ? groupAxes(series)
+      : { left: series.map((s) => s.key), right: [] };
 
-interface WebSocketMessage {
-  type: string;
-  vehicleId?: string;
-  timestamp?: string;
-  values?: Record<string, string>;
-  columns?: string[];
-  message?: string;
-}
+  useEffect(() => {
+    if (resetZoomToken > 0) chartRef.current?.resetZoom();
+  }, [resetZoomToken]);
 
-export default function TelemetryChart({ vehicleId, columns, wsUrl }: TelemetryChartProps) {
-  const [dataPoints, setDataPoints] = useState<TelemetryPoint[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const maxPoints = 100; // Keep last 100 points
+  const datasets = series
+    .filter((s) => !hidden.has(s.key))
+    .map((s) => {
+      const isRight = right.includes(s.key);
+      const base: Record<string, unknown> = {
+        label: `${s.vin !== vehicleId ? s.vin + ' · ' : ''}${s.label}`,
+        data: s.points,
+        borderColor: s.color,
+        backgroundColor: type === 'area' ? s.color + '33' : s.color,
+        yAxisID: isRight ? 'y1' : 'y',
+        spanGaps: true,
+        pointRadius: 2,
+        pointHoverRadius: 5,
+        tension: 0.2,
+        fill: type === 'area',
+      };
+      if (type === 'bar') {
+        base.type = 'bar';
+        base.borderWidth = 0;
+        base.borderRadius = 2;
+      } else {
+        base.type = 'line';
+      }
+      return base as unknown as ChartData<'line'>['datasets'][number];
+    });
 
-  // Initialize chart data structure
-  const chartData = {
-    labels: dataPoints.map((p) => new Date(p.timestamp).toLocaleTimeString()),
-    datasets: columns.map((col, index) => ({
-      label: col.replace('dynamic:', '').replace('static:', ''),
-      data: dataPoints.map((p) => parseFloat(p.values[col] ?? 'NaN')),
-      borderColor: COLORS[index % COLORS.length],
-      backgroundColor: COLORS[index % COLORS.length] + '33', // 20% opacity
-      fill: false,
-      tension: 0.2,
-      pointRadius: 2,
-      pointHoverRadius: 5,
-    })),
+  const data: ChartData<'line'> = {
+    datasets: datasets as ChartData<'line'>['datasets'],
   };
 
-  const chartOptions: ChartOptions<'line'> = {
+  const options: ChartOptions<'line'> = {
     responsive: true,
     maintainAspectRatio: false,
-    animation: {
-      duration: 200,
-    },
-    interaction: {
-      mode: 'index',
-      intersect: false,
-    },
+    animation: { duration: 200 },
+    interaction: { mode: 'index', intersect: false },
     scales: {
       x: {
-        display: true,
-        title: {
-          display: true,
-          text: 'Time',
-        },
+        type: 'time',
+        time: { tooltipFormat: 'HH:mm:ss' },
+        grid: { color: theme.grid },
+        ticks: { color: theme.ticks },
+        title: { display: true, text: 'Time', color: theme.ticks },
       },
       y: {
-        display: true,
-        title: {
-          display: true,
-          text: 'Value',
-        },
         type: 'linear',
-        // Allow dynamic scaling
+        display: true,
+        position: 'left',
+        grid: { color: theme.grid },
+        ticks: { color: theme.ticks },
+        title: { display: true, text: 'Value', color: theme.ticks },
+      },
+      y1: {
+        type: 'linear',
+        display: right.length > 0,
+        position: 'right',
+        grid: { drawOnChartArea: false },
+        ticks: { color: theme.ticks },
+        title: { display: true, text: '0–100', color: theme.ticks },
       },
     },
     plugins: {
-      legend: {
-        display: true,
-        position: 'top',
-      },
-      title: {
-        display: true,
-        text: `Live Telemetry: ${vehicleId}`,
+      legend: { display: true, position: 'top', labels: { color: theme.legend } },
+      title: { display: true, text: `Telemetry: ${vehicleId}`, color: theme.title },
+      zoom: {
+        zoom: { wheel: { enabled: true }, drag: { enabled: true }, mode: 'x' },
+        pan: { enabled: true, mode: 'xy' },
+        limits: { y: { min: 'original', max: 'original' } },
       },
     },
   };
 
-  // Connect to WebSocket
-  useEffect(() => {
-    const url = wsUrl || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//localhost:8081/api/v1/vehicles/${vehicleId}/telemetry/live`;
-    
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-      setConnected(true);
-      setError(null);
-      
-      // Subscribe to columns
-      ws.send(JSON.stringify({
-        type: 'subscribe',
-        vehicleId,
-        columns,
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg: WebSocketMessage = JSON.parse(event.data);
-        
-        switch (msg.type) {
-          case 'telemetry':
-            if (msg.timestamp && msg.values) {
-              setDataPoints((prev) => {
-                const newPoints = [...prev, { timestamp: msg.timestamp!, values: msg.values! }];
-                if (newPoints.length > maxPoints) {
-                  return newPoints.slice(-maxPoints);
-                }
-                return newPoints;
-              });
-            }
-            break;
-          case 'subscribed':
-            console.log('Subscribed to:', msg.vehicleId, msg.columns);
-            break;
-          case 'error':
-            setError(msg.message || 'WebSocket error');
-            break;
-          case 'pong':
-            // Heartbeat response
-            break;
-        }
-      } catch (e) {
-        console.error('Failed to parse WebSocket message:', e);
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.error('WebSocket error:', err);
-      setError('Connection error');
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      setConnected(false);
-      // Attempt reconnect after 5 seconds
-      setTimeout(() => {
-        if (wsRef.current?.readyState === WebSocket.CLOSED) {
-          // Trigger reconnect by updating state
-          setDataPoints((prev) => prev);
-        }
-      }, 5000);
-    };
-
-    return () => {
-      ws.close();
-      wsRef.current = null;
-    };
-  }, [vehicleId, columns, wsUrl]);
-
-  // Send ping every 30 seconds to keep connection alive
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Transform data for chart
-  const chartLabels = dataPoints.map((p) => new Date(p.timestamp).toLocaleTimeString());
-  
-  const chartDatasets = columns.map((col, index) => ({
-    label: col.replace('dynamic:', '').replace('static:', ''),
-    data: dataPoints.map((p) => {
-      const val = p.values[col];
-      return val !== undefined ? parseFloat(val) : null;
-    }),
-    borderColor: COLORS[index % COLORS.length],
-    backgroundColor: COLORS[index % COLORS.length] + '33',
-    fill: false,
-    tension: 0.2,
-    pointRadius: 2,
-    pointHoverRadius: 5,
-    spanGaps: true,
-  }));
-
   return (
-    <div className="w-full h-96 bg-white rounded-lg border border-gray-200 p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900">Live Telemetry: {vehicleId}</h3>
-        <div className="flex items-center gap-4 text-sm">
-          <span className={`flex items-center gap-1 ${connected ? 'text-green-600' : 'text-red-600'}`}>
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
-            {connected ? 'Live' : 'Disconnected'}
-          </span>
-          {error && <span className="text-red-500">{error}</span>}
-        </div>
-      </div>
-      
-      <div className="relative h-[350px]">
-        <Line
-          data={{
-            labels: chartLabels,
-            datasets: chartDatasets,
-          }}
-          options={chartOptions}
-        />
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-4 text-xs text-gray-600">
-        {columns.map((col, index) => (
-          <span key={col} className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-            {col.replace('dynamic:', '').replace('static:', '')}
-          </span>
-        ))}
-      </div>
+    <div className="relative h-[400px] w-full">
+      <Line ref={chartRef} data={data} options={options} />
     </div>
   );
 }
-
-const COLORS = [
-  '#3B82F6', // blue
-  '#10B981', // emerald
-  '#F59E0B', // amber
-  '#EF4444', // red
-  '#8B5CF6', // violet
-  '#EC4899', // pink
-  '#06B6D4', // cyan
-  '#84CC16', // lime
-];
