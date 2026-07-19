@@ -3,6 +3,9 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import AppLayout from '@/components/app-layout';
 import DataTable from '@/components/data-table';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import type { DevicesResponse, DeviceRow } from '@/types/telemetry';
 
 function formatLastSeen(iso: string): string {
@@ -41,7 +44,6 @@ export default function FleetPage() {
     return qualifier.toLowerCase().startsWith('gps.');
   };
 
-  // Build flat rows and column key list for the table, excluding GPS columns
   const allColumnKeys = Array.from(
     new Set(devices.flatMap((d) => Object.keys(d.columns).filter((k) => !isGpsColumn(k))))
   ).sort();
@@ -54,23 +56,32 @@ export default function FleetPage() {
     ...d.columns,
   }));
 
+  const state = error ? 'error' : loading ? 'loading' : devices.length === 0 ? 'empty' : 'ready';
+
   return (
     <AppLayout>
-      <div className="space-y-4">
-        <h1 className="text-xl font-semibold text-gray-900">
-          Fleet{!loading && ` · ${devices.length} devices`}
-        </h1>
-
-        {loading && <p className="text-gray-500">Loading...</p>}
-        {error && <p className="text-red-500">Error: {error}</p>}
-        {!loading && !error && (
-          <DataTable
-            columnKeys={tableColumnKeys}
-            data={tableData}
-            onRowClick={(row) => router.push(`/device/${row.deviceId}`)}
-          />
-        )}
-      </div>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>Fleet</CardTitle>
+            {state === 'ready' && <Badge variant="default">{devices.length} devices</Badge>}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {state === 'loading' && <Skeleton className="h-[300px] w-full rounded-lg" />}
+          {state === 'error' && <p className="text-destructive">Error: {error}</p>}
+          {state === 'empty' && (
+            <p className="py-8 text-center text-muted-foreground">No devices found.</p>
+          )}
+          {state === 'ready' && (
+            <DataTable
+              columnKeys={tableColumnKeys}
+              data={tableData}
+              onRowClick={(row) => router.push(`/device/${row.deviceId}`)}
+            />
+          )}
+        </CardContent>
+      </Card>
     </AppLayout>
   );
 }
