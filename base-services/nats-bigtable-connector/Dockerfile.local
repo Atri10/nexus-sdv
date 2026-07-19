@@ -13,14 +13,14 @@ RUN apk add --no-cache protobuf protobuf-dev \
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy proto files from repo root
-COPY ../../../proto ./proto/
+# Copy proto files (telemetry + metrics_report/vehicle_telemetry)
+COPY proto ./proto/
 
-# Generate Go protobuf code
+# Generate Go protobuf code (TelemetryMessage + MetricsReport/VehicleTelemetryData)
 RUN mkdir -p api/gen/telemetry \
-    && protoc --proto_path=./proto \
+    && protoc --proto_path=./proto --proto_path=/usr/include \
         --go_out=api/gen/telemetry --go_opt=paths=source_relative \
-        ./proto/telemetry.proto
+        ./proto/telemetry.proto ./proto/metrics_report.proto ./proto/vehicle_telemetry.proto
 
 # Copy generated protobuf code
 COPY api/gen/telemetry ./api/gen/telemetry/
