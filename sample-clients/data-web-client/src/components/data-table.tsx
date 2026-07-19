@@ -100,7 +100,7 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
   }
 
   return (
-    <div className="flex flex-col rounded border-border overflow-hidden">
+    <div className="flex flex-col rounded border border-border overflow-hidden">
       {/* Fixed-height scrollable body with sticky header */}
       <div className="overflow-auto" style={{ maxHeight: '360px' }}>
         <table className="w-full text-sm">
@@ -110,7 +110,7 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="px-4 py-2 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider border-border"
+                    className="px-4 py-2 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider border-b border-border"
                   >
                     {flexRender(header.column.columnDef.header, header.getContext())}
                   </th>
@@ -152,13 +152,13 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
       </div>
 
       {/* Pagination controls */}
-      <div className="flex items-center justify-between px-4 py-2 border-border bg-muted text-sm text-muted-foreground">
+      <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted text-sm text-muted-foreground">
         <div className="flex items-center gap-2">
           <span>Rows per page:</span>
           <select
             value={pageSize}
             onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-            className="border-border rounded px-1 py-0.5 text-sm bg-card"
+            className="border border-border rounded px-1 py-0.5 text-sm bg-card"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (
               <option key={n} value={n}>{n}</option>
@@ -178,27 +178,27 @@ export default function DataTable({ columnKeys, data, onRowClick, serverPaginati
               <button
                 onClick={handleFirst}
                 disabled={!canPrev}
-                className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
+                className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
                 aria-label="First page"
               >«</button>
             )}
             <button
               onClick={handlePrev}
               disabled={!canPrev}
-              className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
+              className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
               aria-label="Previous page"
             >‹</button>
             <button
               onClick={handleNext}
               disabled={!canNext}
-              className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
+              className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
               aria-label="Next page"
             >›</button>
             {!serverPagination && (
               <button
                 onClick={handleLast}
                 disabled={!canNext}
-              className="px-2 py-1 rounded border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
+              className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:bg-muted disabled:cursor-not-allowed"
                 aria-label="Last page"
               >»</button>
             )}
