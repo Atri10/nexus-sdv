@@ -18,9 +18,14 @@ export interface TimeSeriesRow {
 export interface DeviceDetailResponse {
   deviceId: string;
   columns: string[];
-  rows: TimeSeriesRow[];
+  rows: { timestamp: string; values: Record<string, string | number> }[];
   nextCursor?: string | null;
   hasMore?: boolean;
+}
+
+export interface TelemetryPoint {
+  timestamp: string;
+  values: Record<string, number>;
 }
 
 export type TimeRange = '1h' | '6h' | '24h' | '7d';

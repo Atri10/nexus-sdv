@@ -17,12 +17,15 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/api/v1/**").permitAll()
                         .requestMatchers("/websocket/**").permitAll()
-                        .anyRequest().permitAll() // Allow all for local dev
+                        .anyRequest().permitAll()
                 )
                 .csrf(csrf -> csrf.disable())
                 .headers(headers -> headers
                         .frameOptions(frame -> frame.sameOrigin())
-                );
+                )
+                // Allow WebSocket upgrades
+                .httpBasic(httpBasic -> httpBasic.disable())
+                .formLogin(form -> form.disable());
 
         return http.build();
     }

@@ -35,7 +35,29 @@ export async function GET(
     }
 
     const data = await response.json();
-    return NextResponse.json(data);
+
+    // Transform Java service response to frontend format
+    // Java returns: [{ timestamp: string, values: { col: string } }]
+    // Frontend expects: { rows: TimeSeriesRow[], columns: string[], nextCursor?: string }
+    
+    if (!Array.isArray(data) || data.length === 0) {
+      return NextResponse.json({ rows: [], columns: [], nextCursor: null });
+    }
+
+    // Collect ALL columns from ALL rows (different rows may have different columns)
+    const columns = Array.from(new Set(data.flatMap((row: { values?: Record<string, string> }) => Object.keys(row.values || {}))));
+
+    // Transform rows - keep values as strings for DeviceDetailResponse
+    const rows = data.map((row: { timestamp: string; values: Record<string, string> }) => ({
+      timestamp: row.timestamp,
+      values: row.values || {},
+    }));
+
+    return NextResponse.json({
+      rows,
+      columns,
+      nextCursor: null,
+    });
   } catch (error) {
     console.error('Telemetry proxy error:', error);
     return NextResponse.json(
