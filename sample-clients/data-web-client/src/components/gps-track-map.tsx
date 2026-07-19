@@ -56,7 +56,7 @@ export default function GpsTrackMap({ points, apiKey, mapId = 'DEMO_MAP_ID' }: P
 
   return (
     <APIProvider apiKey={apiKey}>
-      <div style={{ height: '400px', width: '100%' }} className="rounded border-border overflow-hidden">
+      <div style={{ height: '400px', width: '100%' }} className="rounded border border-border overflow-hidden">
         <Map
           style={{ width: '100%', height: '100%' }}
           defaultCenter={firstPos}
