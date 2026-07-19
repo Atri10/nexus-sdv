@@ -50,7 +50,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
         ...Object.fromEntries(series.map((s) => [s.column, s.points[i]?.y ?? '—'])),
       }))
     : [];
-  const gpsColumns = Array.from(new Set(series.flatMap((s) => s.column)));
+  const gpsColumns = tableColumnKeys.slice(1);
   const gpsRows = tableData.map((r) => ({ timestamp: r.timestamp, values: r as Record<string, string | number> }));
   const gpsPoints = extractGpsPoints({ rows: gpsRows, columns: gpsColumns } as any);
 
