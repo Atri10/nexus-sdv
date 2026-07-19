@@ -82,6 +82,7 @@ services:
     build:
       context: ../sample-services/data-api-sampler
       dockerfile: Dockerfile.local
+      network: host  # Maven Central (Cloudflare) is unreachable on the BuildKit bridge net; host egress works
     container_name: nexus-data-api-sampler
     environment:
       - DATA_API_URL=${DATA_API_GRPC_ADDR}
@@ -120,6 +121,7 @@ services:
     build:
       context: ../sample-services/telemetry-chart-service
       dockerfile: Dockerfile.local
+      network: host  # Maven Central (Cloudflare) is unreachable on the BuildKit bridge net; host egress works
     container_name: nexus-telemetry-chart-service
     environment:
       - BIGTABLE_PROJECT_ID=test-project
