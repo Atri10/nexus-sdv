@@ -165,3 +165,7 @@ local-dev/.env.sample-services
 local-dev/config/nats.conf
 !local-dev/keycloak/
 !local-dev/configs/*.template
+
+
+/.claude
+/CLAUDE.md

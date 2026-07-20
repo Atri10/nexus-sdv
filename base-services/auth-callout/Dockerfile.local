@@ -9,10 +9,6 @@
 ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:1.24-alpine AS builder
 
-# Force IPv4 DNS resolution and use reliable Go module proxy
-ENV GOPROXY=https://goproxy.cn,direct
-ENV GODEBUG=netdns=go
-
 # Set the working directory inside the container
 WORKDIR /app
 
