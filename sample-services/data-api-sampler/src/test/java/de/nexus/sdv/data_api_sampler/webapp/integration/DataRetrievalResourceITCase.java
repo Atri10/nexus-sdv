@@ -7,13 +7,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.client.EntityExchangeResult;
-import org.springframework.test.web.servlet.client.RestTestClient;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.web.reactive.server.EntityExchangeResult;
+import org.springframework.test.web.reactive.server.WebTestClient;
 
 import dataapi.v1.DataApi;
 import dataapi.v1.TelemetryDataAPIGrpc;
@@ -32,7 +32,7 @@ import static org.mockito.Mockito.when;
  *
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureRestTestClient
+@AutoConfigureWebTestClient
 @ExtendWith(MockitoExtension.class)
 @TestPropertySource(locations = "classpath:application-test.properties")
 class DataRetrievalResourceITCase {
@@ -40,30 +40,30 @@ class DataRetrievalResourceITCase {
     @LocalServerPort
     private int port;
 
-    @MockitoBean
+    @MockBean
     private TelemetryDataAPIGrpc.TelemetryDataAPIBlockingV2Stub telemetryDataApiBlockingV2Stub;
 
     private static String BASE_URL = "http://localhost:%d/";
 
     @Autowired
-    private RestTestClient restTestClient;
+    private WebTestClient webTestClient;
 
     @BeforeEach
     void setUp() throws StatusException, InterruptedException {
         final BlockingClientCall clientCall = mock(BlockingClientCall.class);
         when(telemetryDataApiBlockingV2Stub.getTelemetryData(any())).thenReturn(clientCall);
         when(clientCall.hasNext()).thenReturn(true, true, false);
-        final DataApi.TelemetryPoint telemetryPoint1 =
-                DataApi.TelemetryPoint.newBuilder().putValues("dataType", ByteString.copyFromUtf8("data")).build();
-        final DataApi.TelemetryPoint telemetryPoint2 =
-                DataApi.TelemetryPoint.newBuilder().putValues("dataType", ByteString.copyFromUtf8("data2")).build();
+        final DataApi.TelemetryPoint telemetryPoint1 = DataApi.TelemetryPoint.newBuilder()
+                .putValues("dataType", ByteString.copyFromUtf8("data")).build();
+        final DataApi.TelemetryPoint telemetryPoint2 = DataApi.TelemetryPoint.newBuilder()
+                .putValues("dataType", ByteString.copyFromUtf8("data2")).build();
         when(clientCall.read()).thenReturn(telemetryPoint1, telemetryPoint2);
     }
 
     @Test
     void retrieveDataForVin() {
-        final EntityExchangeResult<String> stringEntityExchangeResult = restTestClient.get().uri(
-                        BASE_URL.formatted(port) + "/data/VEHICLE001/datatypes/dynamic:battery.temp")
+        final EntityExchangeResult<String> stringEntityExchangeResult = webTestClient.get().uri(
+                BASE_URL.formatted(port) + "/data/VEHICLE001/datatypes/dynamic:battery.temp")
                 .exchange().expectStatus().isOk()
                 .expectBody(String.class)
                 .returnResult();
@@ -73,8 +73,8 @@ class DataRetrievalResourceITCase {
 
     @Test
     void retrieveDataForVin_withLookBack() {
-        final EntityExchangeResult<String> stringEntityExchangeResult = restTestClient.get().uri(
-                        BASE_URL.formatted(port) + "/data/VEHICLE001/datatypes/dynamic:battery.temp?lookback=5d")
+        final EntityExchangeResult<String> stringEntityExchangeResult = webTestClient.get().uri(
+                BASE_URL.formatted(port) + "/data/VEHICLE001/datatypes/dynamic:battery.temp?lookback=5d")
                 .exchange().expectStatus().isOk()
                 .expectBody(String.class)
                 .returnResult();

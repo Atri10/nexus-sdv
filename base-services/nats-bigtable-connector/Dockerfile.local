@@ -1,6 +1,4 @@
 FROM golang:1.25-alpine AS builder
-ENV GOPROXY=https://goproxy.cn,direct
-ENV GODEBUG=netdns=go
 
 
 WORKDIR /app
@@ -19,8 +17,8 @@ COPY proto ./proto/
 # Generate Go protobuf code (TelemetryMessage + MetricsReport/VehicleTelemetryData)
 RUN mkdir -p api/gen/telemetry \
     && protoc --proto_path=./proto --proto_path=/usr/include \
-        --go_out=api/gen/telemetry --go_opt=paths=source_relative \
-        ./proto/telemetry.proto ./proto/metrics_report.proto ./proto/vehicle_telemetry.proto
+    --go_out=api/gen/telemetry --go_opt=paths=source_relative \
+    ./proto/telemetry.proto ./proto/metrics_report.proto ./proto/vehicle_telemetry.proto
 
 # Copy generated protobuf code
 COPY api/gen/telemetry ./api/gen/telemetry/
