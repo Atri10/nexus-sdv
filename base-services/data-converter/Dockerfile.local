@@ -7,8 +7,6 @@
 # stubs, instead of requiring pre-generated code to already exist on disk.
 ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:1.25-alpine AS builder
-ENV GOPROXY=https://goproxy.cn,direct
-ENV GODEBUG=netdns=go
 
 
 WORKDIR /app
@@ -28,8 +26,8 @@ COPY base-services/data-converter/src ./src
 ENV PATH="/root/go/bin:${PATH}"
 RUN mkdir -p api/gen/telemetry && \
     protoc --go_out=api/gen/telemetry --go_opt=paths=source_relative \
-        -I api \
-        api/telemetry.proto
+    -I api \
+    api/telemetry.proto
 
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /data-converter ./src
