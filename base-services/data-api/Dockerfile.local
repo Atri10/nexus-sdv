@@ -7,8 +7,6 @@
 # stubs, instead of requiring pre-generated code to already exist on disk.
 ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:1.25-alpine AS builder
-ENV GOPROXY=https://goproxy.cn,direct
-ENV GODEBUG=netdns=go
 
 
 WORKDIR /app
@@ -28,8 +26,8 @@ COPY proto/data-api.proto api/data-api.proto
 ENV PATH="/root/go/bin:${PATH}"
 RUN mkdir -p api/gen/dataapi/v1 && \
     protoc --go_out=. --go_opt=module=data-api \
-        --go-grpc_out=. --go-grpc_opt=module=data-api \
-        api/data-api.proto
+    --go-grpc_out=. --go-grpc_opt=module=data-api \
+    api/data-api.proto
 
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /server ./src
