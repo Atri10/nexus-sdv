@@ -8,9 +8,12 @@ import { extractGpsPoints } from '@/lib/gps';
 import GpsTrackMap from '@/components/gps-track-map';
 import TelemetryChart from '@/components/telemetry-chart';
 import { ChartControls } from '@/components/chart-controls';
+import { LatestStats } from '@/components/latest-stats';
 import { StateView } from '@/components/state-view';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
+import { buildTableRows } from '@/lib/telemetry-table';
+import type { DeviceDetailResponse } from '@/types/telemetry';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -38,21 +41,54 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
   const toggle = (key: string) =>
     setHidden((prev) => {
       const n = new Set(prev);
-      n.has(key) ? n.delete(key) : n.add(key);
+      if (n.has(key)) {
+        n.delete(key);
+      } else {
+        n.add(key);
+      }
       return n;
     });
 
   const stateView = error ? 'error' : loading ? 'loading' : series.length === 0 ? 'empty' : 'ready';
-  const tableColumnKeys = ['timestamp', ...Array.from(new Set(series.flatMap((s) => s.column)))];
-  const tableData = series.length
-    ? series[0].points.map((_, i) => ({
-        timestamp: new Date(series[0].points[i].x).toLocaleString(),
-        ...Object.fromEntries(series.map((s) => [s.column, s.points[i]?.y ?? '—'])),
-      }))
-    : [];
-  const gpsColumns = tableColumnKeys.slice(1);
-  const gpsRows = tableData.map((r) => ({ timestamp: r.timestamp, values: r as Record<string, string | number> }));
-  const gpsPoints = extractGpsPoints({ rows: gpsRows, columns: gpsColumns } as any);
+
+  // One column per series (unique key), display label without the VIN prefix
+  // for the primary vehicle and "VIN · label" for compare vehicles.
+  const columnKeys = series.map((s) =>
+    s.vin === id ? s.label : `${s.vin} · ${s.label}`
+  );
+  const tableColumnKeys = ['timestamp', ...columnKeys];
+
+  // Join by timestamp — never by array index — so live-appended and
+  // compare-VIN series stay aligned (see lib/telemetry-table).
+  const tableRows = buildTableRows(series);
+  const tableData = tableRows.map((r) => ({
+    timestamp: new Date(r.tsKey).toLocaleString(),
+    ...Object.fromEntries(
+      series.map((s) => {
+        const display = s.vin === id ? s.label : `${s.vin} · ${s.label}`;
+        const v = r.values[s.key];
+        return [display, v ?? '—'];
+      })
+    ),
+  }));
+
+  // GPS extraction uses raw column names (not series keys) with ISO timestamps.
+  const gpsColumns = series.map((s) => s.column);
+  const gpsRows: DeviceDetailResponse['rows'] = tableRows.map((r) => ({
+    timestamp: r.iso,
+    // Omit absent cells — extractGpsPoints skips rows without lat/lng anyway.
+    values: Object.fromEntries(
+      series.flatMap((s) => {
+        const v = r.values[s.key];
+        return v == null ? [] : [[s.column, v] as const];
+      })
+    ) as Record<string, string | number>,
+  }));
+  const gpsPoints = extractGpsPoints({
+    deviceId: id,
+    columns: gpsColumns,
+    rows: gpsRows,
+  });
 
   return (
     <AppLayout>
@@ -60,7 +96,15 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-semibold">Vehicle {id}</h1>
-            <Badge variant={error ? 'destructive' : 'default'}>{error ? 'Error' : loading ? 'Loading' : 'Live'}</Badge>
+            <Badge variant={error ? 'destructive' : 'default'} className="gap-1.5">
+              <span className="relative flex h-2 w-2" aria-hidden="true">
+                {!error && (
+                  <span className={`live-ping absolute inline-flex h-full w-full rounded-full ${loading ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                )}
+                <span className={`relative inline-flex h-2 w-2 rounded-full ${error ? 'bg-destructive' : loading ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+              </span>
+              {error ? 'Error' : loading ? 'Loading' : 'Live'}
+            </Badge>
           </div>
           <TimeRangeSelector value={range} onChange={setRange} />
         </div>
@@ -73,6 +117,8 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
           onAddCompare={(v) => setCompareVins((c) => c.includes(v) ? c : [...c, v])}
           compareVins={compareVins}
         />
+
+        {series.length > 0 && <LatestStats series={series} hidden={hidden} />}
 
         <Card>
           <CardHeader><CardTitle>Telemetry</CardTitle></CardHeader>
