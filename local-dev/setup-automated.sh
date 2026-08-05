@@ -64,12 +64,17 @@ log ""
 phase_cleanup() {
     if [ -f ".env.infra" ] || [ -f ".env.base-services" ] || [ -f ".env.sample-services" ]; then
         warn "Previous setup detected"
-        read -p "Remove old configuration? (y/n) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        local reply=n
+        if [ -t 0 ]; then
+            read -p "Remove old configuration? (y/n) " -n 1 -r reply
+            echo
+        fi
+        if [[ $reply =~ ^[Yy]$ ]]; then
             log "Removing old config files..."
             rm -f .env.infra .env.base-services .env.sample-services
             info "Old configuration removed"
+        else
+            info "Keeping existing .env files (templates will only fill missing ones)"
         fi
     fi
 }
@@ -234,12 +239,15 @@ EOF
 # ============================================================================
 phase_base_env() {
     log "Creating base environment files..."
-
-    cp configs/infra.template .env.infra
-    cp configs/base-services.template .env.base-services
-    cp configs/sample-services.template .env.sample-services
-
-    info "Base environment files created"
+    local f
+    for f in infra base-services sample-services; do
+        if [ ! -f ".env.$f" ]; then
+            cp "configs/$f.template" ".env.$f"
+            info "Created .env.$f from template"
+        else
+            info "Keeping existing .env.$f"
+        fi
+    done
 }
 
 # ============================================================================
@@ -323,7 +331,7 @@ phase_keycloak_jwks() {
     local attempt=0
 
     while [ $attempt -lt $max_attempts ]; do
-        if curl -sf "$jwks_url" > certs/keycloak/jwks.json 2>/dev/null; then
+        if curl -sfL "$jwks_url" > certs/keycloak/jwks.json 2>/dev/null; then
             break
         fi
         attempt=$((attempt + 1))
@@ -336,7 +344,7 @@ phase_keycloak_jwks() {
 
     # Base64 encode JWKS
     local jwks_b64
-    jwks_b64=$(cat certs/keycloak/jwks.json | base64 -b 0)
+    jwks_b64=$(base64 < certs/keycloak/jwks.json | tr -d '\n')
 
     if [ -z "$jwks_b64" ]; then
         error "JWKS base64 encoding failed"
@@ -375,6 +383,11 @@ phase_inject_tokens() {
     # Clean up backup files
     rm -f .env.*.bak
 
+    # Fail fast if any placeholder secret was not replaced by injection.
+    if grep -lq "REPLACE_ME" .env.infra .env.base-services .env.sample-services; then
+        error "Placeholder secret(s) still present after token injection - refusing to continue"
+    fi
+
     info "All tokens injected (no manual copying needed)"
 }
 
@@ -393,7 +406,7 @@ phase_app_startup() {
     log "Checking for startup failures..."
     sleep 3
     local crashed
-    crashed="$(compose_app ps -a --status exited --status dead --services 2>/dev/null || true)"
+    crashed="$(compose_app ps -a --status exited --services 2>/dev/null || true)"
     if [ -n "$crashed" ]; then
         error "Service(s) failed to start: $(echo "$crashed" | tr '\n' ' ')- run 'docker compose logs' for details."
     fi
@@ -431,7 +444,7 @@ phase_verify() {
     # a cold first-run and reported a perfectly healthy data-api as "not
     # running". All app services are verified, not just data-api.
     local svc
-    for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer; do
+    for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer nats-bigtable-connector telemetry-chart-service data-web-client; do
         if ! wait_running "$svc"; then
             warn "$svc is not running"
             failed=1
