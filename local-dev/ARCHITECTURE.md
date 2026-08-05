@@ -12,8 +12,8 @@
 MQTT publish (telemetry/<VIN>/sensors/*)          vehicle-simulator (compose; idle until commanded)
         │                                                      │  start → publishes to NATS
         ▼                                                      ▼
-   Mosquitto (:1883)                                    NATS telemetry.{VIN}
-        │  data-converter subscribes telemetry/#                │  (TelemetryMessage + MetricsReport)
+   Mosquitto (:1883)                                    NATS telemetry-generic.{VIN}.battery
+        │  data-converter subscribes telemetry/#                │  (TelemetryMessage) + telemetry.{VIN} (MetricsReport)
         ▼                                                       │
    Data Converter ──NATS telemetry-generic.>────────────────────┤
         │                                                       │
@@ -42,7 +42,8 @@ The web frontend's `/demo` page drives it through the web control route
 a NATS request on `commands.<VIN>.demo` using the connector account (the
 generated `config/nats.conf` grants it `commands.>` publish). The simulator
 replies with its running state and published counter; `start` begins the
-publish ticker (`telemetry.<VIN>`, TelemetryMessage + MetricsReport), `stop`
+publish ticker (TelemetryMessage on `telemetry-generic.<VIN>.battery`,
+MetricsReport on `telemetry.<VIN>`), `stop`
 pauses it while keeping the NATS connection. Every message lands in Bigtable
 via the connector, which persists `dynamic:*` and `static:*` readings — the
 connector now also writes `dynamic:STEERING_ANGLE_DEG`, `dynamic:ACCELERATOR_PEDAL_PCT`

@@ -322,8 +322,9 @@ The `/demo` page is the interactive dashboard:
 - **Start / Stop buttons** — control the simulator per VIN: the page POSTs to
   the web control route (`/api/demo/vehicle`), which sends a NATS
   request/reply on `commands.<VIN>.demo`; the simulator publishes
-  TelemetryMessage + MetricsReport on `telemetry.<VIN>` while running, and the
-  connector persists everything into Bigtable.
+  TelemetryMessage on `telemetry-generic.<VIN>.battery` and MetricsReport on
+  `telemetry.<VIN>` while running, and the connector persists everything into
+  Bigtable.
 
 The simulator starts **idle** on stack startup (random VIN from the pool
 `VIN1001`–`VIN1010`) — telemetry only flows once you press Start, or use the
