@@ -1,8 +1,7 @@
-// Reset module registry between tests so the singleton is fresh
-beforeEach(() => {
-  jest.resetModules();
-});
-
+// getTelemetryTable() reads env vars lazily on first call and the module
+// singletons start null, so no module reset is needed (bun's test runner has
+// no jest.resetModules(), and nothing else in the suite calls the real
+// getTelemetryTable).
 describe('getTelemetryTable', () => {
   it('returns a Table object pointing at the telemetry table for configured project and instance', () => {
     process.env.BIGTABLE_PROJECT_ID = 'test-project';

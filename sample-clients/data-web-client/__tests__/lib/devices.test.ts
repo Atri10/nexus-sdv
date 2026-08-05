@@ -1,8 +1,9 @@
+import { beforeEach, describe, it, expect, jest, mock } from 'bun:test';
 import { Readable } from 'stream';
 import { getDevices } from '@/lib/devices';
 import { getTelemetryTable } from '@/lib/bigtable';
 
-jest.mock('@/lib/bigtable');
+mock.module('@/lib/bigtable', () => ({ getTelemetryTable: jest.fn() }));
 
 function makeStream(rows: { id: string }[]) {
   return Readable.from(rows, { objectMode: true });

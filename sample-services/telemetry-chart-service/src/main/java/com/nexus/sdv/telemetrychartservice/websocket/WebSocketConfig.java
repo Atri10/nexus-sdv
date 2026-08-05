@@ -18,6 +18,6 @@ public class WebSocketConfig implements WebSocketConfigurer {
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(telemetryWebSocketHandler, "/api/v1/vehicles/{vin}/telemetry/live")
-                .setAllowedOrigins("*");
+                .setAllowedOrigins("http://localhost:3000", "http://127.0.0.1:3000");
     }
 }
