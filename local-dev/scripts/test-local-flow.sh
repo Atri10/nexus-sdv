@@ -1,9 +1,10 @@
 #!/bin/bash
 # local-dev/scripts/test-local-flow.sh
 # Smoke-test a running local stack. Asserts only what is reliably true of a
-# healthy deployment; the full vehicle flow (factory cert -> mTLS registration
-# -> operational cert -> Keycloak JWT -> NATS publish) is exercised separately
-# by 'make vehicle-client', which mints the correct factory-signed cert.
+# healthy deployment. The full vehicle flow (registration -> Keycloak JWT ->
+# NATS publish -> Bigtable) is exercised by Test 5 below via the client-secret
+# flow with the per-VIN Keycloak client VIN123; X.509 cert-auth (factory cert
+# -> mTLS registration -> operational cert) remains out of scope for local dev.
 
 set -uo pipefail
 
@@ -35,7 +36,7 @@ check() {  # check "<label>" <command...>
 
 log "Test 1: All application services running"
 running="$(compose_app ps --status running --services 2>/dev/null)"
-for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer nats-bigtable-connector; do
+for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer nats-bigtable-connector telemetry-chart-service data-web-client; do
     if echo "$running" | grep -qx "$svc"; then
         log "  OK: $svc running"
     else
@@ -74,11 +75,37 @@ else
 fi
 
 echo ""
-skip "Full registration + Keycloak JWT + NATS publish: run 'make vehicle-client'"
-skip "  (Keycloak X.509 client-auth is a documented gap - see local-dev/README.md)"
+log "Test 5: Vehicle flow (registration -> Keycloak JWT -> NATS publish -> Bigtable)"
+if command -v go >/dev/null 2>&1 && command -v protoc >/dev/null 2>&1 \
+   && command -v jq >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+    count_rows() {
+        docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 \
+            nexus-bigtable-emulator cbt -project test-project -instance test-instance \
+            read telemetry 2>/dev/null | grep -c "VIN123#"
+    }
+    before=$(count_rows || echo 0)
+    log "  VIN123 rows before: $before"
+    log "  starting vehicle-client (up to 35s for registration + first publish)..."
+    bash scripts/run-vehicle-client.sh --vin "${VIN:-VIN123}" >/tmp/vehicle-client-smoke.log 2>&1 &
+    smoke_pid=$!
+    sleep 35
+    kill "$smoke_pid" 2>/dev/null || true
+    pkill -f "vehicle-client/vehicle-client" 2>/dev/null || true
+    wait "$smoke_pid" 2>/dev/null || true
+    after=$(count_rows || echo 0)
+    log "  VIN123 rows after: $after"
+    if [ "$after" -gt "$before" ]; then
+        log "  OK: vehicle flow published new telemetry rows"
+    else
+        fail "  vehicle flow produced no new rows (see /tmp/vehicle-client-smoke.log)"
+        failed=1
+    fi
+else
+    skip "  go/protoc/jq/openssl not all on PATH - skipping vehicle flow"
+fi
 echo ""
 if [ "$failed" -eq 0 ]; then
-    log "Smoke test passed (all health checks green; see SKIP notes above)."
+    log "Smoke test passed (all health checks green)."
 else
     fail "Smoke test finished with failures."
     exit 1
