@@ -32,7 +32,6 @@ export async function GET(request: Request) {
   let nc;
   try {
     nc = await getNatsScoringConnection();
-    console.log('[/api/scoring/stream] NATS connected, subscribing to scoring.*');
   } catch (err) {
     console.error('[/api/scoring/stream] NATS connection failed:', err);
     return new Response('Service Unavailable', { status: 503 });
@@ -83,14 +82,17 @@ export async function GET(request: Request) {
           if (next.kind === 'abort') break;
           if (next.result.done) break;
           const msg = next.result.value;
-          console.log('[/api/scoring/stream] Received NATS message, subject:', msg.subject, 'bytes:', msg.data.length);
           try {
             const decoded = ScoringMessage.decode(msg.data).toJSON() as Record<string, unknown>;
             const vehicleId = decoded['vehicleId'] ?? decoded['vehicle_id'] ?? '';
             const score = decoded['score'] ?? '';
             const suggestions = (decoded['suggestions'] as string[] | undefined) ?? [];
-            const text = `${vehicleId} - ${score} - ${suggestions.join(', ')}`;
-            controller.enqueue(encoder.encode(`data: ${text}\n\n`));
+            const payload = JSON.stringify({
+              vehicle: vehicleId,
+              score,
+              message: suggestions.join(', '),
+            });
+            controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
           } catch (decodeErr: unknown) {
             console.error('[/api/scoring/stream] Failed to decode message:', decodeErr);
           }
