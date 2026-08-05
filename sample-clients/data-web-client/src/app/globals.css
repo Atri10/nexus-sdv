@@ -128,3 +128,26 @@
     @apply font-sans;
   }
 }
+
+/* Pulsing live indicator for KPI cards and status badges */
+@keyframes live-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  75%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+.live-ping {
+  animation: live-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-ping {
+    animation: none;
+  }
+}

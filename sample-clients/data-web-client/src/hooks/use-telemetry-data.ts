@@ -60,7 +60,7 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
   const fetchHistorical = useCallback(async (v: string, baseIdx: number): Promise<ChartSeries[]> => {
     const end = Date.now();
     const start = end - RANGE_MS[range];
-    const url = `/api/telemetry/${encodeURIComponent(v)}?start=${new Date(start).toISOString()}&end=${new Date(end).toISOString()}`;
+    const url = `/api/telemetry/${encodeURIComponent(v)}?start=${new Date(start).toISOString()}&end=${new Date(end).toISOString()}&limit=1000`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -107,7 +107,14 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
             const existing = prev.find((s) => s.key === key);
             const point = { x: Date.parse(msg.timestamp), y: isFinite(num) ? num : null };
             if (existing) {
-              const points = [...existing.points, point].slice(-300);
+              // The server re-pushes the current row on every poll (and on
+              // connect, once for the row the historical fetch already has) —
+              // skip a point identical to the series' last one.
+              const last = existing.points[existing.points.length - 1];
+              if (last && last.x === point.x) return existing;
+              // Keep the fetched history plus a bounded live window; a tiny
+              // slice(-300) here would silently erase the historical tail.
+              const points = [...existing.points, point].slice(-1500);
               return { ...existing, points };
             }
             return {
