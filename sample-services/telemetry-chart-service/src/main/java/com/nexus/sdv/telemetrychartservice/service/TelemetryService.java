@@ -90,7 +90,8 @@ public class TelemetryService {
                 .filter(Filters.FILTERS.chain()
                         .filter(Filters.FILTERS.key().regex(vehicleKeyRegex(vehicleId)))
                         .filter(buildColumnFilter(columns)))
-                .limit(limit);
+                .limit(limit)
+                .reversed(true);
 
         List<TelemetryPoint> results = new ArrayList<>();
 
