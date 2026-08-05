@@ -37,9 +37,9 @@ export function VehicleSchematic({ componentId, onSelect, series }: VehicleSchem
   return (
     <Card>
       <CardContent className="p-4">
-        <svg viewBox="0 0 640 240" className="w-full" aria-hidden="true">
+        <svg viewBox="0 0 640 240" className="w-full">
           {/* car silhouette — decorative */}
-          <g>
+          <g aria-hidden="true">
             <rect x="60" y="155" width="520" height="55" rx="26" fill="#e2e8f0" stroke="#94a3b8" strokeWidth="2" />
             <path
               d="M 195 155 L 215 100 Q 225 86 245 86 L 385 86 Q 405 86 415 100 L 440 155 Z"
