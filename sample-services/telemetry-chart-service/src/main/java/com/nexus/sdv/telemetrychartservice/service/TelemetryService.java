@@ -2,8 +2,6 @@ package com.nexus.sdv.telemetrychartservice.service;
 
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.*;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,7 +15,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -30,8 +27,6 @@ public class TelemetryService {
     private static final DateTimeFormatter BIGTABLE_FORMATTER =
         DateTimeFormatter.ofPattern(BIGTABLE_TIMESTAMP_FORMAT).withZone(ZoneOffset.UTC);
     private static final Pattern ROW_KEY_PATTERN = Pattern.compile("^(.+)#(.+)$");
-    private static final String DYNAMIC_FAMILY = "dynamic";
-    private static final String STATIC_FAMILY = "static";
 
     private final String projectId;
     private final String instanceId;
@@ -39,10 +34,6 @@ public class TelemetryService {
     private final String emulatorHost;
 
     private BigtableDataClient dataClient;
-    private BigtableTableAdminClient adminClient;
-
-    // Live subscriptions tracking: vehicleId -> Set of column qualifiers
-    private final Map<String, Set<String>> liveSubscriptions = new ConcurrentHashMap<>();
 
     public TelemetryService(
             @Value("${bigtable.project-id:test-project}") String projectId,
@@ -68,16 +59,6 @@ public class TelemetryService {
 
             dataClient = BigtableDataClient.create(settingsBuilder.build());
 
-            BigtableTableAdminSettings adminSettings = BigtableTableAdminSettings.newBuilder()
-                    .setProjectId(projectId)
-                    .setInstanceId(instanceId)
-                    .build();
-
-            if (emulatorHost != null && !emulatorHost.isEmpty()) {
-                System.setProperty("BIGTABLE_EMULATOR_HOST", emulatorHost);
-            }
-            adminClient = BigtableTableAdminClient.create(adminSettings);
-
             log.info("Bigtable client initialized: project={}, instance={}, table={}, emulator={}",
                     projectId, instanceId, tableId, emulatorHost);
         } catch (IOException e) {
@@ -91,25 +72,25 @@ public class TelemetryService {
         if (dataClient != null) {
             dataClient.close();
         }
-        if (adminClient != null) {
-            adminClient.close();
-        }
     }
 
     /**
      * Query telemetry for a vehicle within a time range
      */
     public List<TelemetryPoint> queryTelemetry(String vehicleId, Instant startTime, Instant endTime,
-                                               List<String> columns) {
+                                               List<String> columns, int limit) {
         String startKey = buildRowKey(vehicleId, startTime);
-        String endKey = buildRowKey(vehicleId, endTime);
+        String endKey = buildEndKeyInclusive(vehicleId, endTime);
 
         log.debug("Querying telemetry: vehicle={}, start={}, end={}, columns={}",
                 vehicleId, startKey, endKey, columns);
 
         Query query = Query.create(tableId)
                 .range(startKey, endKey)
-                .filter(buildColumnFilter(columns));
+                .filter(Filters.FILTERS.chain()
+                        .filter(Filters.FILTERS.key().regex(vehicleKeyRegex(vehicleId)))
+                        .filter(buildColumnFilter(columns)))
+                .limit(limit);
 
         List<TelemetryPoint> results = new ArrayList<>();
 
@@ -133,12 +114,11 @@ public class TelemetryService {
      * Get latest telemetry point for a vehicle
      */
     public Optional<TelemetryPoint> getLatestTelemetry(String vehicleId, List<String> columns) {
-        String startKey = vehicleId + "#";
-        String endKey = vehicleId + "0"; // Lexicographically after all timestamps
-
         Query query = Query.create(tableId)
-                .range(startKey, endKey)
-                .filter(buildColumnFilter(columns))
+                .range(vehicleId + "#", vehicleId + "#\uffff")
+                .filter(Filters.FILTERS.chain()
+                        .filter(Filters.FILTERS.key().regex(vehicleKeyRegex(vehicleId)))
+                        .filter(buildColumnFilter(columns)))
                 .limit(1)
                 .reversed(true);
 
@@ -158,9 +138,32 @@ public class TelemetryService {
     /**
      * Build Bigtable row key: VIN#timestamp (RFC3339Nano format)
      */
-    private String buildRowKey(String vehicleId, Instant timestamp) {
+    static String buildRowKey(String vehicleId, Instant timestamp) {
         String ts = BIGTABLE_FORMATTER.format(timestamp);
         return vehicleId + "#" + ts;
+    }
+
+    /**
+     * RE2-safe regex escape (Bigtable filters do NOT support Java's \Q...\E).
+     */
+    static String escapeRegex(String input) {
+        return input.replaceAll("([.^$*+?()\\[\\]{}|\\\\-])", "\\\\$1");
+    }
+
+    /**
+     * Key regex matching exactly this vehicle's rows (VIN#...), never
+     * sibling-prefixed VINs like VIN123-... or VIN1230#... .
+     */
+    static String vehicleKeyRegex(String vehicleId) {
+        return "^" + escapeRegex(vehicleId) + "#.*";
+    }
+
+    /**
+     * Exclusive end key that includes the exact end instant:
+     * Bigtable ranges are half-open [start, end).
+     */
+    static String buildEndKeyInclusive(String vehicleId, Instant endTime) {
+        return buildRowKey(vehicleId, endTime.plusNanos(1));
     }
 
     /**
@@ -170,14 +173,16 @@ public class TelemetryService {
         String rowKey = row.getKey().toStringUtf8();
         Matcher matcher = ROW_KEY_PATTERN.matcher(rowKey);
 
-        Instant timestamp = Instant.now();
-        if (matcher.matches()) {
-            String tsStr = matcher.group(2);
-            try {
-                timestamp = Instant.parse(tsStr);
-            } catch (Exception e) {
-                log.warn("Failed to parse timestamp from row key: {}", rowKey);
-            }
+        if (!matcher.matches()) {
+            log.warn("Skipping row with unparseable key (no VIN#timestamp shape): {}", rowKey);
+            return null;
+        }
+        Instant timestamp;
+        try {
+            timestamp = Instant.parse(matcher.group(2));
+        } catch (Exception e) {
+            log.warn("Skipping row with unparseable timestamp in key {}: {}", rowKey, e.getMessage());
+            return null;
         }
 
         Map<String, String> values = new HashMap<>();
@@ -208,59 +213,54 @@ public class TelemetryService {
             return Filters.FILTERS.pass();
         }
 
-        // Group by family
         Map<String, Set<String>> familyToQualifiers = new HashMap<>();
         for (String col : columns) {
             String[] parts = col.split(":", 2);
-            if (parts.length == 2) {
-                familyToQualifiers.computeIfAbsent(parts[0], k -> new HashSet<>()).add(parts[1]);
-            }
+            String family = parts.length == 2 ? parts[0] : "dynamic";
+            String qualifier = parts[parts.length - 1];
+            familyToQualifiers.computeIfAbsent(family, k -> new HashSet<>()).add(qualifier);
         }
 
-        if (familyToQualifiers.isEmpty()) {
-            return Filters.FILTERS.pass();
-        }
-
-        // Build family filters and combine with interleave
-        Filters.InterleaveFilter interleave = Filters.FILTERS.interleave();
+        List<Filters.Filter> chains = new ArrayList<>();
         for (Map.Entry<String, Set<String>> entry : familyToQualifiers.entrySet()) {
-            String family = entry.getKey();
-            Set<String> qualifiers = entry.getValue();
-
-            // Build qualifier regex filter
-            String qualifierRegex = "^(" + String.join("|", qualifiers.stream()
-                    .map(Pattern::quote)
-                    .toList()) + ")$";
-
-            Filters.Filter qualFilter = Filters.FILTERS.qualifier().regex(qualifierRegex);
-            Filters.Filter familyFilter = Filters.FILTERS.family().exactMatch(family);
-
-            // Add both filters to interleave
-            interleave.filter(familyFilter);
-            interleave.filter(qualFilter);
+            String qualifierRegex = "^(" + entry.getValue().stream()
+                    .map(TelemetryService::escapeRegex)
+                    .collect(Collectors.joining("|")) + ")$";
+            chains.add(Filters.FILTERS.chain()
+                    .filter(Filters.FILTERS.family().exactMatch(entry.getKey()))
+                    .filter(Filters.FILTERS.qualifier().regex(qualifierRegex)));
         }
 
+        if (chains.size() == 1) {
+            return chains.get(0);
+        }
+        Filters.InterleaveFilter interleave = Filters.FILTERS.interleave();
+        for (Filters.Filter chain : chains) {
+            interleave.filter(chain);
+        }
         return interleave;
     }
 
-    // Live subscription management
-    public void subscribeLive(String vehicleId, Set<String> columns) {
-        liveSubscriptions.compute(vehicleId, (k, v) -> {
-            if (v == null) v = ConcurrentHashMap.newKeySet();
-            v.addAll(columns);
-            return v;
-        });
-    }
-
-    public void unsubscribeLive(String vehicleId, Set<String> columns) {
-        liveSubscriptions.computeIfPresent(vehicleId, (k, v) -> {
-            v.removeAll(columns);
-            return v.isEmpty() ? null : v;
-        });
-    }
-
-    public Map<String, Set<String>> getLiveSubscriptions() {
-        return new HashMap<>(liveSubscriptions);
+    /**
+     * List all vehicles (VINs) that have telemetry data
+     */
+    public List<String> listVehicles() {
+        Set<String> vins = new TreeSet<>();
+        Query query = Query.create(tableId)
+                .filter(Filters.FILTERS.key().regex("^[^#]+#.*"))
+                .limit(1000);
+        try {
+            dataClient.readRows(query).forEach(row -> {
+                String key = row.getKey().toStringUtf8();
+                int hash = key.indexOf('#');
+                if (hash > 0) {
+                    vins.add(key.substring(0, hash));
+                }
+            });
+        } catch (Exception e) {
+            log.error("Error listing vehicles", e);
+        }
+        return new ArrayList<>(vins);
     }
 
     public record TelemetryPoint(Instant timestamp, Map<String, String> values) {}
