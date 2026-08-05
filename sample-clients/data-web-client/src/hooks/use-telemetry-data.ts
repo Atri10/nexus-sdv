@@ -74,6 +74,7 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
     try {
       const vins = [vin, ...compareVins.filter((c) => c && c !== vin)];
       const all = (await Promise.all(vins.map((v, i) => fetchHistorical(v, i)))).flat();
+      setSeries(all);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load telemetry';
       setError(msg);
