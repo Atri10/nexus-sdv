@@ -1,0 +1,9 @@
+.git
+node_modules
+.env*
+**/vehicle-client
+**/certificates
+**/*.pem
+**/*.key
+.superpowers
+tmp
