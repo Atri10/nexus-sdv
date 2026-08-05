@@ -55,6 +55,8 @@ terraform.rc
 **/.sts4-cache
 **/target
 **/.mvn/**
+!**/.mvn/wrapper/
+!**/.mvn/wrapper/*
 !**/src/main/**/target/
 !**/src/test/**/target/
 **/.gemini

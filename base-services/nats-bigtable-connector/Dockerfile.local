@@ -20,9 +20,6 @@ RUN mkdir -p api/gen/telemetry \
     --go_out=api/gen/telemetry --go_opt=paths=source_relative \
     ./proto/telemetry.proto ./proto/metrics_report.proto ./proto/vehicle_telemetry.proto
 
-# Copy generated protobuf code
-COPY api/gen/telemetry ./api/gen/telemetry/
-
 # Copy source code
 COPY src/ ./src/
 
