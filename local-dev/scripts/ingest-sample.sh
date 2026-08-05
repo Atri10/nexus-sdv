@@ -2,10 +2,12 @@
 # local-dev/scripts/ingest-sample.sh
 # Write one sample telemetry row directly into the Bigtable emulator.
 #
-# Why this exists: local dev has NO NATS -> Bigtable writer. data-converter
-# only forwards MQTT -> NATS, and the vehicle-client only publishes to NATS -
-# nothing consumes those messages into Bigtable. So to give 'make query' and
-# the data-api something to read, rows must be written directly here.
+# Why this exists: the nats-bigtable-connector already persists telemetry
+# into Bigtable (telemetry.{VIN} as MetricsReport and
+# telemetry-generic.{VIN}.{sensor} as TelemetryMessage), so live rows flow
+# through the full ingestion path in normal operation. This script just seeds
+# a single sample row directly, giving 'make query' and the data-api something
+# to read without running the full flow.
 #
 # Row key / column layout matches exactly what data-api expects
 # (see base-services/data-api/src/service/bigtable.go & time.go):

@@ -136,9 +136,8 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
     private void startPolling(SessionInfo info) {
         info.pollTask(scheduler.scheduleAtFixedRate(() -> {
             try {
-                if (info.subscribedColumns().isEmpty()) {
-                    return;
-                }
+                // Empty subscribedColumns means "all columns" (server-side pass() filter);
+                // the web client never sends a subscribe message, so always poll.
                 Optional<TelemetryService.TelemetryPoint> latest = telemetryService.getLatestTelemetry(info.vin(), new ArrayList<>(info.subscribedColumns()));
                 if (latest.isPresent()) {
                     TelemetryService.TelemetryPoint point = latest.get();
