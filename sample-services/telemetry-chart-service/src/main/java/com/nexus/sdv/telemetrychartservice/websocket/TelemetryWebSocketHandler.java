@@ -113,7 +113,10 @@ public class TelemetryWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
         log.error("WebSocket transport error: sessionId={}", session.getId(), exception);
-        cancelPoll(sessions.get(session.getId()));
+        SessionInfo info = sessions.get(session.getId());
+        if (info != null) {
+            cancelPoll(info);
+        }
     }
 
     @PreDestroy
