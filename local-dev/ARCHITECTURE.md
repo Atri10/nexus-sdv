@@ -79,7 +79,7 @@ snapshot stays valid (see README §Known gaps & gotchas).
 - Accounts (from `config/nats.conf`, generated at setup): `AUTH`
   (auth-callout-service), `APP` (app-user), `SYS` (system).
 - Subjects in use:
-  - `telemetry.<VIN>.battery` — TelemetryMessage (`--message-type telemetry`)
+  - `telemetry-generic.<VIN>.battery` — TelemetryMessage (`--message-type telemetry`)
   - `telemetry.<VIN>` — MetricsReport (`--message-type metrics_report`, default)
   - `telemetry-generic.<VIN>.<sensor>` — data-converter output
   - `commands.<VIN>.>`, `scoring.<VIN>` — commands / trip-analyzer scores
