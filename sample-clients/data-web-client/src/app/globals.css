@@ -128,3 +128,50 @@
     @apply font-sans;
   }
 }
+
+/* Pulsing live indicator for KPI cards and status badges */
+@keyframes live-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  75%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+.live-ping {
+  animation: live-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-ping {
+    animation: none;
+  }
+}
+
+/* Animated data-flow dashes on the /demo pipeline */
+@keyframes flow-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.flow-dash {
+  stroke-dasharray: 8 4;
+  animation: flow-dash 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-dash {
+    animation: none;
+  }
+}
+
+/* Visible keyboard focus on the /demo schematic nodes (SVG has no box-shadow rings) */
+g:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 4px;
+}

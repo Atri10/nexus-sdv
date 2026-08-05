@@ -2,3 +2,6 @@
 # Sample services configuration - COPY TO .env.sample-services
 
 DATA_API_GRPC_ADDR=data-api:8080
+
+# vehicle-simulator (local-dev demo) — space/comma separated VIN pool
+VIN_POOL=VIN1001 VIN1002 VIN1003 VIN1004 VIN1005 VIN1006 VIN1007 VIN1008 VIN1009 VIN1010

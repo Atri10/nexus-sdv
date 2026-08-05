@@ -51,6 +51,8 @@ func TestCreateNATSUserJWT(t *testing.T) {
 			roles:    []any{"telemetry-client"},
 			validatePerms: func(t *testing.T, claims *natsjwt.UserClaims) {
 				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-456.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-456.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "_INBOX.>")
 			},
 		},
 		{
@@ -68,6 +70,8 @@ func TestCreateNATSUserJWT(t *testing.T) {
 			validatePerms: func(t *testing.T, claims *natsjwt.UserClaims) {
 				assert.Contains(t, claims.Permissions.Sub.Allow, "commands.vin-mixed.>")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-mixed.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-mixed.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "_INBOX.>")
 			},
 		},
 		{

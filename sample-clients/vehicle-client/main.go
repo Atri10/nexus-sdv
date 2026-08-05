@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,7 +58,8 @@ type VehicleClient struct {
 	FactoryCertFile       string
 	FactoryKeyFile        string
 	RegistrationServerURL string
-	MessageType           string // "telemetry" or "metrics_report"
+	MessageType           string // "telemetry", "metrics_report", or "both"
+	controlSubject        string // NATS subject for start/stop commands ("" = publish immediately)
 
 	// Generated during registration
 	operationalCert    *x509.Certificate
@@ -67,10 +69,339 @@ type VehicleClient struct {
 	natsURL            string
 }
 
+// --- Randomized drive simulation -------------------------------------------
+
+type driveState struct {
+	velocity       float64
+	engineRPM      float64
+	enginePower    float64
+	fuelLevel      float64
+	steeringAngle  float64
+	acceleratorPct float64
+	brakePct       float64
+	phase          int    // 0 accelerate, 1 cruise, 2 brake, 3 idle
+	phaseLeft      float64 // seconds remaining in current phase
+	baseLat        float64
+	baseLng        float64
+	lat            float64
+	lng            float64
+}
+
+type batteryState struct {
+	voltage float64
+	current float64
+	soc     float64
+	temp    float64
+}
+
+type publishMsg struct {
+	kind    string // "telemetry" or "metrics_report" (used for logging only)
+	subject string
+	payload []byte
+}
+
+func clamp(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func parseVINPool(raw string) []string {
+	var pool []string
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		if part != "" {
+			pool = append(pool, part)
+		}
+	}
+	return pool
+}
+
+func randomVinFromPool(pool []string) string {
+	if len(pool) == 0 {
+		return "VIN1001"
+	}
+	return pool[mathrand.Intn(len(pool))]
+}
+
+func newDriveState() driveState {
+	return driveState{
+		fuelLevel:     20 + mathrand.Float64()*60,
+		phase:         0,
+		phaseLeft:     5 + mathrand.Float64()*10,
+		baseLat:       12.9716 + (mathrand.Float64()-0.5)*0.02,
+		baseLng:       77.5946 + (mathrand.Float64()-0.5)*0.02,
+		lat:           12.9716,
+		lng:           77.5946,
+		steeringAngle: (mathrand.Float64() - 0.5) * 4,
+	}
+}
+
+// driveCycleStep advances the drive profile by dt seconds. Velocity follows a
+// smooth accelerate/cruise/brake/idle cycle; derived sensors correlate.
+func driveCycleStep(s *driveState, dt float64) {
+	s.phaseLeft -= dt
+	if s.phaseLeft <= 0 {
+		s.phase = (s.phase + 1) % 4
+		switch s.phase {
+		case 0:
+			s.phaseLeft = 6 + mathrand.Float64()*12 // accelerate
+		case 1:
+			s.phaseLeft = 8 + mathrand.Float64()*15 // cruise
+		case 2:
+			s.phaseLeft = 4 + mathrand.Float64()*8 // brake
+		case 3:
+			s.phaseLeft = 3 + mathrand.Float64()*6 // idle
+		}
+	}
+
+	switch s.phase {
+	case 0: // accelerate
+		s.velocity += 1.5 * dt
+		s.acceleratorPct = clamp(40+mathrand.Float64()*40, 0, 100)
+		s.brakePct = 0
+	case 1: // cruise
+		s.velocity += (mathrand.Float64() - 0.5) * 0.6 * dt
+		s.acceleratorPct = clamp(15+mathrand.Float64()*20, 0, 100)
+		s.brakePct = 0
+	case 2: // brake
+		s.velocity -= 3.0 * dt
+		s.acceleratorPct = 0
+		s.brakePct = clamp(20+mathrand.Float64()*40, 0, 100)
+	case 3: // idle
+		s.velocity -= 0.5 * dt
+		s.acceleratorPct = 0
+		s.brakePct = 0
+	}
+	s.velocity = clamp(s.velocity, 0, 200)
+	s.brakePct = clamp(s.brakePct, 0, 100)
+
+	// Derived engine state.
+	targetRPM := 800 + s.velocity*35 + s.acceleratorPct*8
+	s.engineRPM = clamp(targetRPM+(mathrand.Float64()-0.5)*150, 0, 6000)
+	s.enginePower = clamp(s.velocity*0.35+s.acceleratorPct*0.8+(mathrand.Float64()-0.5)*5, 0, 150)
+	s.fuelLevel -= dt * 0.002 * (0.5 + s.engineRPM/4000)
+	if s.fuelLevel < 5 {
+		s.fuelLevel = 60
+	}
+	s.steeringAngle = clamp(s.steeringAngle+(mathrand.Float64()-0.5)*0.8, -45, 45)
+
+	// GPS random walk around the base position.
+	s.lat, s.lng = gpsWalk(s.baseLat, s.baseLng)
+}
+
+// gpsWalk returns a position within ~0.001 deg of base (roughly 100m). The
+// step is small so that chained walks (each call receives the previous
+// position) stay bounded over long test runs; the ±0.012 clamp is the hard
+// cap on the distance from the passed base.
+func gpsWalk(baseLat, baseLng float64) (float64, float64) {
+	lat := clamp(baseLat+(mathrand.Float64()-0.5)*0.002, baseLat-0.012, baseLat+0.012)
+	lng := clamp(baseLng+(mathrand.Float64()-0.5)*0.002, baseLng-0.012, baseLng+0.012)
+	return lat, lng
+}
+
+// buildBatteryTelemetry constructs the TelemetryMessage with the battery
+// readings plus the static make/index readings (Cabin/static demo story).
+func buildBatteryTelemetry(vin string, b batteryState, now time.Time) (*pb.TelemetryMessage, error) {
+	return &pb.TelemetryMessage{
+		MessageId:     uuid.New().String(),
+		SchemaVersion: 1,
+		DeviceId:      vin,
+		SensorData: []*pb.SensorReading{
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     fmt.Sprintf("%.2f", b.voltage),
+				DataType:  pb.DataType_DYNAMIC,
+				Sensor:    "battery.voltage",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     fmt.Sprintf("%.2f", b.current),
+				DataType:  pb.DataType_DYNAMIC,
+				Sensor:    "battery.current",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     fmt.Sprintf("%.2f", b.soc),
+				DataType:  pb.DataType_DYNAMIC,
+				Sensor:    "battery.soc",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     fmt.Sprintf("%.2f", b.temp),
+				DataType:  pb.DataType_DYNAMIC,
+				Sensor:    "battery.temp",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     "Nexus SDV",
+				DataType:  pb.DataType_STATIC,
+				Sensor:    "make",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     fmt.Sprintf("%d", 2026),
+				DataType:  pb.DataType_STATIC,
+				Sensor:    "index",
+			},
+		},
+	}, nil
+}
+
+// buildMetricsReport constructs the MetricsReport wrapping VehicleTelemetryData
+// with the drive cycle values, walked GPS position, tire pressure walk and
+// vehicle dynamics.
+func buildMetricsReport(vin string, drive driveState, now time.Time, count int) (*pbMetrics.MetricsReport, error) {
+	ignitionState := drive.engineRPM > 0
+	gpsLat := float32(drive.lat)
+	gpsLon := float32(drive.lng)
+	tirePressure := 2.2 + (mathrand.Float64()-0.5)*0.1
+
+	vehicleData := &pbVehicle.VehicleTelemetryData{
+		ENGINE_POWER:  float32(drive.enginePower),
+		ENGINE_RPM:    float32(drive.engineRPM),
+		FUEL_CAPACITY: 50.0, // Static value
+		FUEL_LEVEL:    float32(drive.fuelLevel),
+		TIRE_PRESSURE: float32(tirePressure),
+		VELOCITY:      float32(drive.velocity),
+		IGNITION_STATE: &ignitionState,
+		GPS_LATITUDE:   &gpsLat,
+		GPS_LONGITUDE:  &gpsLon,
+		VehicleDynamics: &pbVehicle.CarlaVehicleDynamics{
+			SteeringAngleDeg:    drive.steeringAngle,
+			AcceleratorPedalPct: drive.acceleratorPct,
+			BrakePedalPct:       drive.brakePct,
+		},
+		GearStatus: &pbVehicle.CarlaVehicleGearStatus{
+			Gear: pbVehicle.CarlaVehicleGearStatus_NEUTRAL,
+		},
+	}
+
+	anyPayload, err := anypb.New(vehicleData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Any payload: %w", err)
+	}
+
+	return &pbMetrics.MetricsReport{
+		ReportNumber:         int32(count) + 1,
+		ReportTimestamp:      timestamppb.New(now),
+		ReportReason:         pbMetrics.MetricsReport_REGULAR,
+		MetricsConfigUuid:    uuid.New().String(),
+		MetricsConfigVersion: 1,
+		ReportConfigName:     "default",
+		ReportData:           anyPayload,
+		ReportUuid:           uuid.New().String(),
+	}, nil
+}
+
+// buildPayloads constructs the NATS publish messages for one simulation tick
+// for the requested message type. "telemetry" emits the battery
+// TelemetryMessage, "metrics_report" the MetricsReport, and "both" emits the
+// TelemetryMessage followed by the MetricsReport.
+func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive driveState, messageType string, count int) []publishMsg {
+	var out []publishMsg
+	if messageType == "telemetry" || messageType == "both" {
+		msg, err := buildBatteryTelemetry(v.VIN, battery, now)
+		if err != nil {
+			log.Printf("Failed to build TelemetryMessage: %v", err)
+			return nil
+		}
+		payload, err := proto.Marshal(msg)
+		if err != nil {
+			log.Printf("Failed to marshal TelemetryMessage: %v", err)
+			return nil
+		}
+		out = append(out, publishMsg{kind: "telemetry", subject: v.buildTelemetrySubject("battery"), payload: payload})
+	}
+	if messageType == "metrics_report" || messageType == "both" {
+		report, err := buildMetricsReport(v.VIN, drive, now, count)
+		if err != nil {
+			log.Printf("Failed to build MetricsReport: %v", err)
+			return nil
+		}
+		payload, err := proto.Marshal(report)
+		if err != nil {
+			log.Printf("Failed to marshal MetricsReport: %v", err)
+			return nil
+		}
+		out = append(out, publishMsg{kind: "metrics_report", subject: v.buildMetricsReportSubject(), payload: payload})
+	}
+	return out
+}
+
+// --- NATS control mode ------------------------------------------------------
+
+// controlState tracks start/stop/status commands received on the control
+// subject. In control mode the publish loop only emits telemetry while running
+// is true; control messages are plain JSON on the control subject and replies
+// go to the request's reply subject.
+type controlState struct {
+	mu          sync.Mutex
+	running     bool
+	published   int64
+	startedAt   time.Time
+	vin         string
+	messageType string
+}
+
+// handle processes one control request: {"action": "start"|"stop"|"status"}.
+// start/stop are idempotent; status reports the current state. Replies are
+// JSON {vin, running, published, messageType} on the request's reply subject,
+// or {"error": ...} for invalid JSON or an unknown action.
+func (c *controlState) handle(msg *nats.Msg) {
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.reply(msg, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	c.mu.Lock()
+	switch req.Action {
+	case "start":
+		if !c.running {
+			c.running = true
+			c.startedAt = time.Now()
+		}
+	case "stop":
+		c.running = false
+	case "status":
+	default:
+		c.mu.Unlock()
+		c.reply(msg, map[string]any{"error": "unknown action"})
+		return
+	}
+	state := map[string]any{
+		"vin":         c.vin,
+		"running":     c.running,
+		"published":   c.published,
+		"messageType": c.messageType,
+	}
+	c.mu.Unlock()
+	c.reply(msg, state)
+}
+
+// isRunning reports whether publishing is currently enabled.
+func (c *controlState) isRunning() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.running
+}
+
+func (c *controlState) reply(msg *nats.Msg, body map[string]any) {
+	data, _ := json.Marshal(body)
+	_ = msg.Respond(data)
+}
+
 func main() {
 	defaultRegistrationURL := os.Getenv("REGISTRATION_URL")
 
-	vin := flag.String("vin", "1HGBH41JXMN109186", "Vehicle Identification Number")
+	vin := flag.String("vin", "", "Vehicle Identification Number (empty = random from VIN_POOL env)")
 	pkiStrategy := flag.String("pki_strategy", "local", "PKI Strategy")
 	factoryCert := flag.String("factory-cert", "", "Path to factory-issued certificate (required when registration is needed)")
 	factoryKey := flag.String("factory-key", "", "Path to factory-issued private key (required when registration is needed)")
@@ -78,19 +409,29 @@ func main() {
 	keycloakURL := flag.String("keycloak-url", "", "Keycloak URL (used when reusing existing certificates)")
 	natsURL := flag.String("nats-url", "", "NATS URL (used when reusing existing certificates)")
 	interval := flag.Int("interval", 5, "Interval in seconds between telemetry messages")
-	messageType := flag.String("message-type", "telemetry", "Message type to send: 'telemetry' (TelemetryMessage) or 'metrics_report' (MetricsReport)")
+	messageType := flag.String("message-type", "both", "Message type to send: 'telemetry' (TelemetryMessage), 'metrics_report' (MetricsReport), or 'both' (default: both per tick)")
+	controlSubject := flag.String("control-subject", "", "NATS subject to listen for start/stop commands (empty = publish immediately)")
 	flag.Parse()
 
-	if *messageType != "telemetry" && *messageType != "metrics_report" {
-		log.Fatal("Message type must be either 'telemetry' or 'metrics_report'")
+	if *messageType != "telemetry" && *messageType != "metrics_report" && *messageType != "both" {
+		log.Fatal("Message type must be 'telemetry', 'metrics_report', or 'both'")
 	}
 
 	mathrand.Seed(time.Now().UnixNano())
 
+	// Random VIN selection when none given: pick from the pool env (set by the
+	// local-dev simulator service / entrypoint) or fall back to a fixed VIN.
+	vinPool := parseVINPool(os.Getenv("VIN_POOL"))
+	if *vin == "" {
+		*vin = randomVinFromPool(vinPool)
+		log.Printf("Random VIN selected from pool: %s", *vin)
+	}
+
 	client := &VehicleClient{
-		VIN:         *vin,
-		pkiStrategy: *pkiStrategy,
-		MessageType: *messageType,
+		VIN:            *vin,
+		pkiStrategy:    *pkiStrategy,
+		MessageType:    *messageType,
+		controlSubject: *controlSubject,
 	}
 
 	log.Printf("================================================")
@@ -341,6 +682,17 @@ func (v *VehicleClient) Register() error {
 	v.operationalCertPEM = []byte(regResp.Certificate)
 	v.keycloakURL = regResp.KeycloakURL
 	v.natsURL = regResp.NatsURL
+
+	// The registration server echoes host-reachable URLs (REG_CLIENT_*),
+	// which is right for host-run clients but wrong in-container. Env
+	// overrides win on the fresh path too (the local-dev simulator service
+	// sets these to the in-network hostnames).
+	if u := os.Getenv("KEYCLOAK_URL"); u != "" {
+		v.keycloakURL = u
+	}
+	if u := os.Getenv("NATS_URL"); u != "" {
+		v.natsURL = u
+	}
 
 	log.Printf("  Keycloak URL: %s", v.keycloakURL)
 	log.Printf("  NATS URL: %s", v.natsURL)
@@ -628,27 +980,50 @@ func (v *VehicleClient) PublishTelemetry() error {
 }
 
 // PublishTelemetryContinuously sends telemetry data to NATS continuously
-// Supports two message types: "telemetry" (TelemetryMessage) and "metrics_report" (MetricsReport)
+// Supports three message types: "telemetry" (TelemetryMessage), "metrics_report" (MetricsReport), and "both" (one of each per tick)
 func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error {
 	// Initial battery state
-	batteryVoltage := 12.6
-	batteryCurrent := 45.2
-	batterySoC := 85.5
-	batteryTemp := 25.3
+	battery := batteryState{
+		voltage: 12.6,
+		current: 45.2,
+		soc:     85.5,
+		temp:    25.3,
+	}
 
-	// Engine state (for metrics reports)
-	enginePower := 50.0
-	engineRPM := 1000.0
-	fuelLevel := 50.0
-	velocity := 0.0
-	steeringAngle := 0.0
-	acceleratorPct := 0.0
-	brakePct := 0.0
+	// Randomized drive cycle state (velocity, engine, GPS, dynamics)
+	drive := newDriveState()
 
 	// JWT refresh parameters
 	var nc *nats.Conn
 	var jwtExpiry time.Time
 	refreshBuffer := 60 * time.Second // Refresh JWT 60 seconds before expiry
+
+	// Control state for start/stop/status when a control subject is configured.
+	// Declared before the refresh helpers so ensureControlSub can re-attach the
+	// same handler to every fresh connection.
+	ctl := &controlState{vin: v.VIN, messageType: v.MessageType}
+
+	// controlSub tracks the live control subscription. NATS subscriptions are
+	// bound to a connection: refreshConnection() closes and re-dials, which
+	// silently kills the old subscription. ensureControlSub must therefore run
+	// after every successful refresh so start/stop/status keep working.
+	var controlSub *nats.Subscription
+	ensureControlSub := func() error {
+		if v.controlSubject == "" {
+			return nil
+		}
+		if controlSub != nil {
+			_ = controlSub.Unsubscribe() // stale: bound to the closed connection
+		}
+		sub, err := nc.Subscribe(v.controlSubject, func(msg *nats.Msg) {
+			ctl.handle(msg)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to subscribe to control subject: %w", err)
+		}
+		controlSub = sub
+		return nil
+	}
 
 	// Helper function to get fresh connection
 	refreshConnection := func() error {
@@ -672,7 +1047,12 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		}
 		log.Println("  Telemetry NATS connection established")
 
-		return nil
+		// A fresh connection carries no subscriptions. Re-establish the
+		// control subscription here so it survives every refresh path: the
+		// initial connect, publishOnce's JWT refresh, the publish-error
+		// reconnect, and the idle-loop refresh. Subscribing outside the
+		// control-mode branch also keeps non-control mode a no-op.
+		return ensureControlSub()
 	}
 
 	// Initial connection
@@ -687,220 +1067,88 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 
 	messageCount := 0
 
-	for range ticker.C {
+	// publishOnce performs one full simulation tick: refresh the JWT when
+	// needed, advance battery + drive state, build the payload(s) for the
+	// configured message type, publish each, and track the published count.
+	publishOnce := func() {
 		// Check if JWT needs refresh
 		if time.Until(jwtExpiry) < refreshBuffer {
 			log.Println("JWT expiring soon, refreshing connection...")
 			if err := refreshConnection(); err != nil {
 				log.Printf("Failed to refresh connection: %v", err)
-				continue
+				return
 			}
 		}
 
 		// Simulate realistic battery variations
-		batteryVoltage += (mathrand.Float64() - 0.5) * 0.2 // ±0.1V
-		batteryCurrent += (mathrand.Float64() - 0.5) * 5.0 // ±2.5A
-		batterySoC -= mathrand.Float64() * 0.1             // Slowly discharge
-		batteryTemp += (mathrand.Float64() - 0.5) * 1.0    // ±0.5°C
-
-		// Simulate engine variations (for metrics reports)
-		enginePower += (mathrand.Float64() - 0.5) * 10.0
-		engineRPM += (mathrand.Float64() - 0.5) * 100.0
-		fuelLevel -= mathrand.Float64() * 0.05 // Slowly consume fuel
-		velocity += (mathrand.Float64() - 0.5) * 5.0
-		steeringAngle += (mathrand.Float64() - 0.5) * 2.0
-		acceleratorPct += (mathrand.Float64() - 0.5) * 5.0
-		brakePct += (mathrand.Float64() - 0.5) * 5.0
+		battery.voltage += (mathrand.Float64() - 0.5) * 0.2 // ±0.1V
+		battery.current += (mathrand.Float64() - 0.5) * 5.0 // ±2.5A
+		battery.soc -= mathrand.Float64() * 0.1             // Slowly discharge
+		battery.temp += (mathrand.Float64() - 0.5) * 1.0    // ±0.5°C
 
 		// Keep battery values in realistic ranges
-		if batteryVoltage < 11.0 {
-			batteryVoltage = 11.0
+		battery.voltage = clamp(battery.voltage, 11.0, 14.5)
+		battery.current = clamp(battery.current, 0, 100)
+		if battery.soc < 10 {
+			battery.soc = 90.0 // Reset to charged state
 		}
-		if batteryVoltage > 14.5 {
-			batteryVoltage = 14.5
-		}
-		if batteryCurrent < 0 {
-			batteryCurrent = 0
-		}
-		if batteryCurrent > 100 {
-			batteryCurrent = 100
-		}
-		if batterySoC < 10 {
-			batterySoC = 90.0 // Reset to charged state
-		}
-		if batteryTemp < 15 {
-			batteryTemp = 15
-		}
-		if batteryTemp > 45 {
-			batteryTemp = 45
-		}
+		battery.temp = clamp(battery.temp, 15, 45)
 
-		// Keep engine values in realistic ranges
-		if enginePower < 0 {
-			enginePower = 0
-		}
-		if enginePower > 150 {
-			enginePower = 150
-		}
-		if engineRPM < 0 {
-			engineRPM = 0
-		}
-		if engineRPM > 6000 {
-			engineRPM = 6000
-		}
-		if fuelLevel < 5 {
-			fuelLevel = 60 // Reset fuel
-		}
-		if velocity < 0 {
-			velocity = 0
-		}
-		if velocity > 200 {
-			velocity = 200
-		}
-		if steeringAngle < -45 {
-			steeringAngle = -45
-		}
-		if steeringAngle > 45 {
-			steeringAngle = 45
-		}
-		if acceleratorPct < 0 {
-			acceleratorPct = 0
-		}
-		if acceleratorPct > 100 {
-			acceleratorPct = 100
-		}
-		if brakePct < 0 {
-			brakePct = 0
-		}
-		if brakePct > 100 {
-			brakePct = 100
-		}
+		// Advance the randomized drive cycle (velocity, engine, GPS, dynamics).
+		driveCycleStep(&drive, float64(intervalSeconds))
 
 		now := time.Now()
 
-		// Build and publish message based on message type
-		var subject string
-		var payload []byte
-		var err error
-
-		if v.MessageType == "telemetry" {
-			// Publish TelemetryMessage
-			subject = v.buildTelemetrySubject("battery")
-
-			msg := &pb.TelemetryMessage{
-				MessageId:     uuid.New().String(),
-				SchemaVersion: 1,
-				DeviceId:      v.VIN,
-				SensorData: []*pb.SensorReading{
-					{
-						Timestamp: timestamppb.New(now),
-						Value:     fmt.Sprintf("%.2f", batteryVoltage),
-						DataType:  pb.DataType_DYNAMIC,
-						Sensor:    "battery.voltage",
-					},
-					{
-						Timestamp: timestamppb.New(now),
-						Value:     fmt.Sprintf("%.2f", batteryCurrent),
-						DataType:  pb.DataType_DYNAMIC,
-						Sensor:    "battery.current",
-					},
-					{
-						Timestamp: timestamppb.New(now),
-						Value:     fmt.Sprintf("%.2f", batterySoC),
-						DataType:  pb.DataType_DYNAMIC,
-						Sensor:    "battery.soc",
-					},
-					{
-						Timestamp: timestamppb.New(now),
-						Value:     fmt.Sprintf("%.2f", batteryTemp),
-						DataType:  pb.DataType_DYNAMIC,
-						Sensor:    "battery.temp",
-					},
-				},
-			}
-
-			payload, err = proto.Marshal(msg)
-			if err != nil {
-				log.Printf("Failed to marshal TelemetryMessage: %v", err)
+		// Build the payload(s) for this tick based on the configured message
+		// type and publish each one.
+		for _, m := range v.buildPayloads(now, battery, drive, v.MessageType, messageCount) {
+			// Publish to NATS
+			if err := nc.Publish(m.subject, m.payload); err != nil {
+				log.Printf("Failed to publish: %v", err)
+				// Try to reconnect on publish error
+				if err := refreshConnection(); err != nil {
+					log.Printf("Failed to reconnect: %v", err)
+				}
 				continue
 			}
 
-		} else if v.MessageType == "metrics_report" {
-			// Publish MetricsReport with VehicleTelemetryData
-			subject = v.buildMetricsReportSubject()
-
-			// Build the inner VehicleTelemetryData payload
-			ignitionState := engineRPM > 0
-			gpsLat := float32(0.0)
-			gpsLon := float32(0.0)
-
-			vehicleData := &pbVehicle.VehicleTelemetryData{
-				ENGINE_POWER:   float32(enginePower),
-				ENGINE_RPM:     float32(engineRPM),
-				FUEL_CAPACITY:  50.0, // Static value
-				FUEL_LEVEL:     float32(fuelLevel),
-				TIRE_PRESSURE:  2.2, // Static value
-				VELOCITY:       float32(velocity),
-				IGNITION_STATE: &ignitionState,
-				GPS_LATITUDE:   &gpsLat,
-				GPS_LONGITUDE:  &gpsLon,
-				VehicleDynamics: &pbVehicle.CarlaVehicleDynamics{
-					SteeringAngleDeg:    steeringAngle,
-					AcceleratorPedalPct: acceleratorPct,
-					BrakePedalPct:       brakePct,
-				},
-				GearStatus: &pbVehicle.CarlaVehicleGearStatus{
-					Gear: pbVehicle.CarlaVehicleGearStatus_NEUTRAL,
-				},
+			messageCount++
+			ctl.mu.Lock()
+			ctl.published++
+			ctl.mu.Unlock()
+			if m.kind == "telemetry" {
+				log.Printf("[%d] Published TelemetryMessage to %s: SoC=%.1f%%, Voltage=%.2fV, Current=%.2fA, Temp=%.1f°C",
+					messageCount, m.subject, battery.soc, battery.voltage, battery.current, battery.temp)
+			} else {
+				log.Printf("[%d] Published MetricsReport to %s: Power=%.1fW, RPM=%.0f, Speed=%.1fkm/h, Fuel=%.1f%%",
+					messageCount, m.subject, drive.enginePower, drive.engineRPM, drive.velocity, drive.fuelLevel)
 			}
-
-			// Marshal inner payload to Any
-			anyPayload, err := anypb.New(vehicleData)
-			if err != nil {
-				log.Printf("Failed to create Any payload: %v", err)
-				continue
-			}
-
-			// Build the outer MetricsReport
-			report := &pbMetrics.MetricsReport{
-				ReportNumber:         int32(messageCount) + 1,
-				ReportTimestamp:      timestamppb.New(now),
-				ReportReason:         pbMetrics.MetricsReport_REGULAR,
-				MetricsConfigUuid:    uuid.New().String(),
-				MetricsConfigVersion: 1,
-				ReportConfigName:     "default",
-				ReportData:           anyPayload,
-				ReportUuid:           uuid.New().String(),
-			}
-
-			payload, err = proto.Marshal(report)
-			if err != nil {
-				log.Printf("Failed to marshal MetricsReport: %v", err)
-				continue
-			}
-		} else {
-			log.Printf("Unknown message type: %s", v.MessageType)
-			continue
 		}
+	}
 
-		// Publish to NATS
-		if err := nc.Publish(subject, payload); err != nil {
-			log.Printf("Failed to publish: %v", err)
-			// Try to reconnect on publish error
-			if err := refreshConnection(); err != nil {
-				log.Printf("Failed to reconnect: %v", err)
+	// Control loop: wait for start/stop over NATS when a control subject is
+	// given; otherwise behave exactly as before (start publishing immediately).
+	if v.controlSubject != "" {
+		defer func() {
+			if controlSub != nil {
+				_ = controlSub.Unsubscribe()
 			}
-			continue
+		}()
+		log.Printf("Awaiting start command on %s", v.controlSubject)
+		for range ticker.C {
+			if ctl.isRunning() {
+				publishOnce() // one tick while running
+			}
+			if time.Until(jwtExpiry) < refreshBuffer {
+				if err := refreshConnection(); err != nil { // keep JWT fresh while idle too
+					log.Printf("Failed to refresh connection: %v", err)
+				}
+			}
 		}
-
-		messageCount++
-		if v.MessageType == "telemetry" {
-			log.Printf("[%d] Published TelemetryMessage to %s: SoC=%.1f%%, Voltage=%.2fV, Current=%.2fA, Temp=%.1f°C",
-				messageCount, subject, batterySoC, batteryVoltage, batteryCurrent, batteryTemp)
-		} else {
-			log.Printf("[%d] Published MetricsReport to %s: Power=%.1fW, RPM=%.0f, Speed=%.1fkm/h, Fuel=%.1f%%",
-				messageCount, subject, enginePower, engineRPM, velocity, fuelLevel)
-		}
+		return nil
+	}
+	for range ticker.C {
+		publishOnce()
 	}
 
 	return nil

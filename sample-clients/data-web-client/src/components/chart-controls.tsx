@@ -34,8 +34,9 @@ export function ChartControls(props: {
       <div className="flex flex-wrap items-center gap-2">
         {props.series.map((s) => (
           <button key={s.key} onClick={() => props.onToggle(s.key)}
-            className={`flex items-center gap-1 rounded px-2 py-1 text-xs ${props.hidden.has(s.key) ? 'opacity-40 line-through' : ''}`}>
-            <span className="h-3 w-3 rounded" style={{ backgroundColor: s.color }} />
+            type="button"
+            className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${props.hidden.has(s.key) ? 'opacity-40 line-through' : ''}`}>
+            <span className="h-3 w-3 shrink-0 rounded" style={{ backgroundColor: s.color }} />
             {s.label}
           </button>
         ))}
