@@ -180,8 +180,6 @@ services:
       - ./certs:/certs:ro
     depends_on:
       - registration
-      - keycloak
-      - nats
       - nats-bigtable-connector
     networks:
       - nexus-local
