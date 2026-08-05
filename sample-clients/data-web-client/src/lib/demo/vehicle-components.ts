@@ -83,8 +83,10 @@ export function latestValuesFor(series: ChartSeries[], componentId: string): Map
       return (colon > -1 ? s.column.slice(colon + 1) : s.column) === sensor.qualifier;
     });
     if (!match) continue;
-    const last = [...match.points].reverse().find((p) => p.y != null);
-    if (last?.y != null) out.set(sensor.qualifier, last.y);
+    const last = [...match.points].reverse().find((p) => p.y != null || p.raw != null);
+    if (!last) continue;
+    if (last.raw != null) out.set(sensor.qualifier, last.raw);
+    else if (last.y != null) out.set(sensor.qualifier, last.y);
   }
   return out;
 }

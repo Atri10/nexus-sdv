@@ -51,6 +51,8 @@ exec /vehicle-client \
     -factory-cert="$FACTORY_PREFIX-chain.pem" \
     -factory-key="$FACTORY_PREFIX-key.pem" \
     -registration-url="${REGISTRATION_URL:-https://registration:8443}" \
+    -keycloak-url="${KEYCLOAK_URL:-http://keycloak:8080}" \
+    -nats-url="${NATS_URL:-nats://nats:4222}" \
     -message-type=both \
     -control-subject="commands.$VIN.demo" \
     -interval="${INTERVAL:-2}"

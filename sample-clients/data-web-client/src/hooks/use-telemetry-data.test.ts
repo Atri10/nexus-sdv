@@ -20,6 +20,17 @@ describe('shapeRows', () => {
     const series = shapeRows('V1', rows);
     expect(series[0].points[0].y).toBeNull();
   });
+
+  it('carries non-numeric strings as raw values (static readings)', () => {
+    const rows = [
+      { timestamp: '2026-07-19T10:00:00Z', values: { 'static:make': 'Nexus SDV', 'static:index': '42' } },
+    ];
+    const series = shapeRows('VIN1', rows);
+    const make = series.find((s) => s.column === 'static:make')!;
+    expect(make.points[0]).toEqual({ x: Date.parse('2026-07-19T10:00:00Z'), y: null, raw: 'Nexus SDV' });
+    const index = series.find((s) => s.column === 'static:index')!;
+    expect(index.points[0]).toEqual({ x: Date.parse('2026-07-19T10:00:00Z'), y: 42 });
+  });
 });
 
 class FakeWebSocket {
