@@ -43,7 +43,8 @@ clean:
 	docker compose -f docker-compose.infra.yml down -v 2>/dev/null || true
 	docker compose down -v 2>/dev/null || true
 	rm -f .env.infra .env.base-services .env.sample-services
-	@echo "✓ All containers and volumes removed"
+	rm -rf certs
+	@echo "✓ All containers, volumes, env files and generated PKI removed"
 
 ingest:
 	@bash scripts/ingest-sample.sh

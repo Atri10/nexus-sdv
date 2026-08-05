@@ -2,7 +2,7 @@
   "realm": "nexus-sdv",
   "enabled": true,
   "displayName": "Nexus SDV Local",
-  "sslRequired": "external",
+  "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": false,
   "duplicateEmailsAllowed": false,
