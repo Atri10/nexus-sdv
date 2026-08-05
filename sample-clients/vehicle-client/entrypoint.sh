@@ -2,7 +2,9 @@
 # Local-dev simulator entrypoint: mint a factory cert for the chosen VIN,
 # stage the TLS certs the client reads unconditionally, then run in control
 # mode. VIN_POOL is space/comma-separated; the binary picks a random member
-# when -vin is empty.
+# when -vin is empty. The chosen VIN is persisted to certificates/vin so
+# restarts reuse the same identity (the client reuses its operational cert
+# and JWT, which are only valid for the VIN that minted them).
 set -eu
 
 CERTS_DIR=/certs
@@ -17,9 +19,18 @@ cp "$CERTS_DIR/keycloak/server.crt.pem"     "$WORK_DIR/certificates/KEYCLOAK_TLS
 # Pick VIN (binary randomizes when VIN is empty) and mint a factory cert.
 VIN="${VIN:-}"
 if [ -z "$VIN" ]; then
-    VIN=$(printf '%s\n' "$VIN_POOL" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d' | shuf -n 1)
+    if [ -f "$WORK_DIR/certificates/operational-cert.pem" ]; then
+        # Existing operational cert + JWT are tied to the VIN that minted
+        # them; reuse that VIN instead of re-randomizing.
+        VIN="$(cat "$WORK_DIR/certificates/vin" 2>/dev/null || true)"
+        [ -n "$VIN" ] || VIN="VIN1001"
+    else
+        VIN=$(printf '%s\n' "$VIN_POOL" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d' | shuf -n 1)
+        [ -n "$VIN" ] || VIN="VIN1001"
+    fi
 fi
-[ -n "$VIN" ] || VIN="VIN1001"
+# Persist the chosen VIN so restarts reuse the same identity.
+printf '%s\n' "$VIN" > "$WORK_DIR/certificates/vin"
 
 FACTORY_PREFIX="$WORK_DIR/certificates/factory-$VIN"
 openssl req -newkey rsa:2048 -nodes \

@@ -76,7 +76,7 @@ export function VehicleSchematic({ componentId, onSelect, series }: VehicleSchem
                     onSelect(comp.id);
                   }
                 }}
-                className={`cursor-pointer focus:outline-none ${isActive ? '' : 'opacity-75 hover:opacity-100'}`}
+                className={`cursor-pointer ${isActive ? '' : 'opacity-75 hover:opacity-100'}`}
               >
                 {isActive && (
                   <circle
