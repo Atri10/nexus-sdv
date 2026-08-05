@@ -169,3 +169,9 @@
     animation: none;
   }
 }
+
+/* Visible keyboard focus on the /demo schematic nodes (SVG has no box-shadow rings) */
+g:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 4px;
+}

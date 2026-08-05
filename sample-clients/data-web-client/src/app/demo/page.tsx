@@ -54,9 +54,12 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     return () => window.clearTimeout(t);
   }, [urlVin]);
 
-  // Initial status check + refresh whenever the vehicle changes. SetState only
-  // inside .then callbacks (lint: react-hooks/set-state-in-effect).
+  // Initial status check + refresh whenever the vehicle changes. Ignore stale
+  // replies for a previous VIN: an out-of-order response must never overwrite
+  // the current vehicle's status. SetState only inside .then callbacks (lint:
+  // react-hooks/set-state-in-effect).
   useEffect(() => {
+    let ignore = false;
     fetch('/api/demo/vehicle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,9 +67,15 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     })
       .then((res) => res.json().catch(() => null))
       .then((reply: (DemoStatus & { error?: string }) | null) => {
+        if (ignore) return;
         setStatus(reply && !reply.error ? { running: reply.running, published: reply.published } : null);
       })
-      .catch(() => setStatus(null));
+      .catch(() => {
+        if (!ignore) setStatus(null);
+      });
+    return () => {
+      ignore = true;
+    };
   }, [vin]);
 
   const runAction = useCallback(
