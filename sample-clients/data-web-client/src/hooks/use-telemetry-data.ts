@@ -24,7 +24,11 @@ export function shapeRows(vin: string, rows: TelemetryRow[]): ChartSeries[] {
     points: rows.map((r) => {
       const raw = r.values[col];
       const num = raw != null && raw !== '---' && raw !== '' ? Number(raw) : NaN;
-      return { x: Date.parse(r.timestamp), y: isFinite(num) ? num : null };
+      if (isFinite(num)) return { x: Date.parse(r.timestamp), y: num };
+      if (raw != null && raw !== '' && raw !== '---') {
+        return { x: Date.parse(r.timestamp), y: null, raw };
+      }
+      return { x: Date.parse(r.timestamp), y: null };
     }),
   }));
 }
@@ -105,7 +109,11 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
             const num = raw != null && raw !== '---' ? Number(raw) : NaN;
             const key = `${vin}|${col}`;
             const existing = prev.find((s) => s.key === key);
-            const point = { x: Date.parse(msg.timestamp), y: isFinite(num) ? num : null };
+            const point: ChartSeries['points'][number] = isFinite(num)
+              ? { x: Date.parse(msg.timestamp), y: num }
+              : raw != null && raw !== '' && raw !== '---'
+                ? { x: Date.parse(msg.timestamp), y: null, raw }
+                : { x: Date.parse(msg.timestamp), y: null };
             if (existing) {
               // The server re-pushes the current row on every poll (and on
               // connect, once for the row the historical fetch already has) —

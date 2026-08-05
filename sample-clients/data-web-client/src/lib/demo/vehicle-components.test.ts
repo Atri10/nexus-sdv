@@ -33,14 +33,14 @@ const CONNECTOR_QUALIFIERS: Record<string, true> = {
   index: true,
 };
 
-function series(vin: string, column: string, points: [number, number | null][]): ChartSeries {
+function series(vin: string, column: string, points: [number, number | null, string?][]): ChartSeries {
   return {
     vin,
     column,
     key: `${vin}|${column}`,
     label: column.replace('dynamic:', '').replace('static:', ''),
     color: '#000000',
-    points: points.map(([x, y]) => ({ x, y })),
+    points: points.map(([x, y, raw]) => (raw !== undefined ? { x, y, raw } : { x, y })),
   };
 }
 
@@ -118,6 +118,20 @@ describe('latestValuesFor', () => {
     expect(values.get('battery.temp')).toBe(24);
     expect(values.has('battery.soc')).toBe(false); // no series for this sensor
     expect(values.has('battery.current')).toBe(false);
+  });
+
+  it('returns raw string values when present (static readings)', () => {
+    const all = [
+      series('VIN1', 'static:make', [[1, null, 'Nexus SDV']]),
+      series('VIN1', 'static:index', [[1, null, '42']]),
+      series('VIN1', 'dynamic:battery.temp', [[1, 25]]),
+    ];
+    const cabin = latestValuesFor(all, 'cabin');
+    expect(cabin.get('make')).toBe('Nexus SDV');
+    expect(cabin.get('index')).toBe('42');
+    expect(cabin.get('battery.temp')).toBe(25);
+    const battery = latestValuesFor(all, 'battery');
+    expect(battery.get('battery.temp')).toBe(25);
   });
 
   it('returns an empty map for an unknown component', () => {
