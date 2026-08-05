@@ -1,10 +1,15 @@
+import { beforeEach, describe, it, expect, jest, mock } from 'bun:test';
+import { getAllowedVehicleIds } from '@/lib/acl';
+
 const mockQuery = jest.fn();
 
-jest.mock('pg', () => ({
+mock.module('pg', () => ({
   Pool: jest.fn(() => ({ query: mockQuery })),
 }));
 
-import { getAllowedVehicleIds } from '@/lib/acl';
+// The real function skips the DB when DB_NAME is unset; the test env has no
+// database, so point it at the mock.
+process.env.DB_NAME = 'test-db';
 
 describe('getAllowedVehicleIds', () => {
   beforeEach(() => {

@@ -1,9 +1,10 @@
+import { beforeEach, describe, it, expect, jest, mock } from 'bun:test';
 import { getNatsConnection, _resetNatsConnection } from '@/lib/nats';
 
 const mockConnect = jest.fn();
 const mockClose = jest.fn();
 
-jest.mock('nats', () => ({
+mock.module('nats', () => ({
   connect: (...args: unknown[]) => mockConnect(...args),
   StringCodec: jest.fn(() => ({ decode: (d: Uint8Array) => Buffer.from(d).toString() })),
 }));
@@ -15,7 +16,6 @@ function makeConn(closed = false) {
 beforeEach(() => {
   _resetNatsConnection();
   mockConnect.mockReset();
-  jest.resetModules();
   process.env.NATS_URL = 'nats://localhost:4222';
   process.env.NATS_USER = 'testuser';
   process.env.NATS_PASSWORD = 'testpass';
