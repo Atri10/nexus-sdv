@@ -231,6 +231,10 @@ func createNATSUserJWT(name string, roles []any, accountKeyPair nkeys.KeyPair, a
 			genericPermission := fmt.Sprintf("telemetry-generic.%s.>", vin)
 			perms.Pub.Allow.Add(genericPermission)
 			glog.Debugf("Allowing the publish of %s", genericPermission)
+			// nc.request() replies land on _INBOX.<...>; the simulator
+			// answers via msg.Respond(), so publishing there must be allowed.
+			perms.Pub.Allow.Add("_INBOX.>")
+			glog.Debugf("Allowing the publish of _INBOX.>")
 		case "telemetry-collector":
 			// TODO: check if the service has consent for the given VIN
 			permission := fmt.Sprintf("telemetry.%s.>", vin)

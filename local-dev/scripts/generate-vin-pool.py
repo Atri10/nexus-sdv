@@ -18,7 +18,7 @@ def client(vin: str, idx: int) -> str:
     return f"""    {{
       "clientId": "{vin}",
       "name": "Vehicle Client {vin}",
-      "description": "Per-VIN confidential client; azp={vin} so auth-callout grants telemetry.{vin}.> and commands.{vin}.>",
+      "description": "Per-VIN confidential client; azp={vin} so auth-callout grants telemetry.{vin}.>, telemetry-generic.{vin}.> and commands.{vin}.>",
       "rootUrl": "",
       "adminUrl": "",
       "baseUrl": "",
