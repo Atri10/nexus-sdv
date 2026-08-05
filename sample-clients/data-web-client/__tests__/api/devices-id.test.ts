@@ -1,11 +1,16 @@
+import { beforeEach, describe, it, expect, jest, mock } from 'bun:test';
 import { GET } from '@/app/api/devices/[id]/route';
 import { getServerSession } from 'next-auth';
 import { getDeviceTimeSeries } from '@/lib/device-detail';
 import { getAllowedVehicleIds } from '@/lib/acl';
 
-jest.mock('next-auth', () => ({ getServerSession: jest.fn() }));
-jest.mock('@/lib/device-detail');
-jest.mock('@/lib/acl');
+mock.module('next-auth', () => ({ getServerSession: jest.fn() }));
+mock.module('@/lib/device-detail', () => ({
+  getDeviceTimeSeries: jest.fn(),
+  DEFAULT_PAGE_SIZE: 25,
+  MAX_PAGE_SIZE: 200,
+}));
+mock.module('@/lib/acl', () => ({ getAllowedVehicleIds: jest.fn() }));
 
 function makeRequest(id: string, params: Record<string, string> = {}) {
   const url = new URL(`http://localhost/api/devices/${id}`);

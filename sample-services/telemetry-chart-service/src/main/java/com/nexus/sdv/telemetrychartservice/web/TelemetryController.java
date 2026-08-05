@@ -1,6 +1,7 @@
 package com.nexus.sdv.telemetrychartservice.web;
 
 import com.nexus.sdv.telemetrychartservice.service.TelemetryService;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -24,7 +25,7 @@ public class TelemetryController {
      */
     @GetMapping
     public List<String> listVehicles() {
-        return List.of("VIN123", "VIN456", "VIN789");
+        return telemetryService.listVehicles();
     }
 
     /**
@@ -42,16 +43,14 @@ public class TelemetryController {
         Instant startTime = start != null ? Instant.parse(start) : Instant.now().minusSeconds(3600);
         Instant endTime = end != null ? Instant.parse(end) : Instant.now();
 
+        int safeLimit = Math.max(1, Math.min(limit, 1000));
+
         List<String> columnList = columns != null && !columns.isEmpty()
                 ? List.of(columns.split(","))
                 : List.of();
 
         List<TelemetryService.TelemetryPoint> points = telemetryService.queryTelemetry(
-                vin, startTime, endTime, columnList);
-
-        if (points.size() > limit) {
-            points = points.subList(points.size() - limit, points.size());
-        }
+                vin, startTime, endTime, columnList, safeLimit);
 
         return points.stream()
                 .map(p -> new TelemetryResponse(p.timestamp().toString(), p.values()))
@@ -75,4 +74,9 @@ public class TelemetryController {
     }
 
     public record TelemetryResponse(String timestamp, Map<String, String> values) {}
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(java.time.format.DateTimeParseException.class)
+    public ResponseEntity<String> handleBadTimestamp(java.time.format.DateTimeParseException e) {
+        return ResponseEntity.badRequest().body("Invalid start/end timestamp (expected ISO-8601): " + e.getMessage());
+    }
 }

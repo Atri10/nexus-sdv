@@ -139,6 +139,7 @@ services:
       dockerfile: Dockerfile.local
       args:
         TELEMETRY_SERVICE_URL: http://telemetry-chart-service:8080
+        NEXT_PUBLIC_TELEMETRY_SERVICE_URL: http://localhost:8081
     container_name: nexus-data-web-client
     environment:
       - NEXTAUTH_SECRET=local-dev-secret-change-in-production

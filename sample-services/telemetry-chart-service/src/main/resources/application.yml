@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
 
 spring:
   application:
@@ -20,10 +20,10 @@ management:
         include: health,info,metrics
   endpoint:
     health:
-      show-details: always
+      show-details: when-authorized
 
 # Logging
 logging:
   level:
-    com.nexus.sdv.telemetrychartservice: DEBUG
+    com.nexus.sdv.telemetrychartservice: INFO
     com.google.cloud.bigtable: INFO

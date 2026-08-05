@@ -1,9 +1,10 @@
+import { describe, it, expect, mock } from 'bun:test';
 import { render, screen } from '@testing-library/react';
 import GpsTrackMap from '@/components/gps-track-map';
 import type { GpsPoint } from '@/lib/gps';
 
 // Mock @vis.gl/react-google-maps — needs real browser + Maps JS API to function
-jest.mock('@vis.gl/react-google-maps', () => ({
+mock.module('@vis.gl/react-google-maps', () => ({
   APIProvider: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="api-provider">{children}</div>
   ),

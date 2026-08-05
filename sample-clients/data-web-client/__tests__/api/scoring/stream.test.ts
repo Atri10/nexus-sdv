@@ -1,65 +1,83 @@
-import { GET } from '@/app/api/scoring/stream/route';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import protobuf from 'protobufjs';
 
-const mockGetServerSession = jest.fn();
-const mockGetNatsConnection = jest.fn();
+const SCORING_PROTO = `
+  syntax = "proto3";
+  package scoring;
+  message ScoringMessage {
+    string vehicle_id = 1;
+    string score = 2;
+    repeated string suggestions = 3;
+  }
+`;
 
-jest.mock('next-auth', () => ({ getServerSession: (...a: unknown[]) => mockGetServerSession(...a) }));
-jest.mock('@/lib/auth', () => ({ authOptions: {} }));
-jest.mock('@/lib/nats', () => ({ getNatsConnection: (...a: unknown[]) => mockGetNatsConnection(...a) }));
-jest.mock('nats', () => ({
-  StringCodec: () => ({ decode: (d: Uint8Array) => Buffer.from(d).toString() }),
+const root = protobuf.parse(SCORING_PROTO).root;
+const ScoringMessage = root.lookupType('scoring.ScoringMessage');
+
+const mockGetServerSession = mock(() => null);
+let subStub: {
+  [Symbol.asyncIterator]: () => AsyncGenerator<{ data: Uint8Array }>;
+  unsubscribe: () => void;
+};
+
+mock.module('next-auth', () => ({
+  getServerSession: (args: unknown) => mockGetServerSession(args),
 }));
+mock.module('@/lib/auth', () => ({ authOptions: {} }));
+mock.module('@/lib/nats', () => ({
+  getNatsScoringConnection: () =>
+    Promise.resolve({ subscribe: () => subStub }),
+}));
+
+const { GET } = await import('@/app/api/scoring/stream/route');
 
 function makeAbortableRequest(): Request {
   const controller = new AbortController();
-  const req = new Request('http://localhost/api/scoring/stream', { signal: controller.signal });
-  return req;
+  return new Request('http://localhost/api/scoring/stream', { signal: controller.signal });
 }
 
-async function* makeMessages(payloads: string[]) {
+async function* makeMessages(payloads: Uint8Array[]): AsyncGenerator<{ data: Uint8Array }> {
   for (const p of payloads) {
-    yield { data: Buffer.from(p) };
+    yield { data: p };
   }
+}
+
+function scoringPayload(vehicleId: string, score: string, suggestions: string[]): Uint8Array {
+  return ScoringMessage.encode({ vehicleId, score, suggestions }).finish() as unknown as Uint8Array;
 }
 
 describe('GET /api/scoring/stream', () => {
   beforeEach(() => {
     mockGetServerSession.mockReset();
-    mockGetNatsConnection.mockReset();
   });
 
   it('returns 401 when unauthenticated', async () => {
     mockGetServerSession.mockResolvedValueOnce(null);
-
     const res = await GET(makeAbortableRequest());
-
     expect(res.status).toBe(401);
   });
 
   it('returns SSE response with correct headers when authenticated', async () => {
     mockGetServerSession.mockResolvedValueOnce({ user: { name: 'test' } });
-    const sub = { [Symbol.asyncIterator]: () => makeMessages([]), unsubscribe: jest.fn() };
-    mockGetNatsConnection.mockResolvedValueOnce({ subscribe: () => sub });
-
+    subStub = {
+      [Symbol.asyncIterator]: () => makeMessages([]),
+      unsubscribe: () => {},
+    };
     const res = await GET(makeAbortableRequest());
-
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('text/event-stream');
     expect(res.headers.get('Cache-Control')).toBe('no-cache');
   });
 
-  it('streams NATS messages as SSE events', async () => {
+  it('streams decoded NATS messages as JSON SSE events', async () => {
     mockGetServerSession.mockResolvedValueOnce({ user: { name: 'test' } });
-    const sub = {
-      [Symbol.asyncIterator]: () => makeMessages(['{"score":42}', '{"score":99}']),
-      unsubscribe: jest.fn(),
+    subStub = {
+      [Symbol.asyncIterator]: () =>
+        makeMessages([scoringPayload('VIN123', '8.5', ['a', 'b'])]),
+      unsubscribe: () => {},
     };
-    mockGetNatsConnection.mockResolvedValueOnce({ subscribe: () => sub });
-
     const res = await GET(makeAbortableRequest());
     const text = await res.text();
-
-    expect(text).toContain('data: {"score":42}\n\n');
-    expect(text).toContain('data: {"score":99}\n\n');
+    expect(text).toContain('data: {"vehicle":"VIN123","score":"8.5","message":"a, b"}\n\n');
   });
 });

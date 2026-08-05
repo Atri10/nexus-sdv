@@ -1,11 +1,12 @@
+import { describe, it, expect, jest, mock } from 'bun:test';
 import { GET } from '@/app/api/devices/route';
 import { getServerSession } from 'next-auth';
 import { getDevices } from '@/lib/devices';
 import { getAllowedVehicleIds } from '@/lib/acl';
 
-jest.mock('next-auth', () => ({ getServerSession: jest.fn() }));
-jest.mock('@/lib/devices');
-jest.mock('@/lib/acl');
+mock.module('next-auth', () => ({ getServerSession: jest.fn() }));
+mock.module('@/lib/devices', () => ({ getDevices: jest.fn() }));
+mock.module('@/lib/acl', () => ({ getAllowedVehicleIds: jest.fn() }));
 
 describe('GET /api/devices', () => {
   it('returns 401 when not authenticated', async () => {

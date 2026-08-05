@@ -1,3 +1,4 @@
+import { beforeEach, describe, it, expect, jest, mock } from 'bun:test';
 import { render, screen, act } from '@testing-library/react';
 import Sidebar from '@/components/sidebar';
 
@@ -13,8 +14,8 @@ class MockEventSource {
   emitError() { this.onerror?.(); }
 }
 
-jest.mock('next/navigation', () => ({ usePathname: () => '/fleet' }));
-jest.mock('next-auth/react', () => ({
+mock.module('next/navigation', () => ({ usePathname: () => '/fleet' }));
+mock.module('next-auth/react', () => ({
   useSession: () => ({ data: { user: { email: 'test@example.com' } } }),
   signOut: jest.fn(),
 }));
@@ -23,6 +24,7 @@ beforeEach(() => {
   MockEventSource.instances = [];
   mockClose.mockReset();
   (global as unknown as { EventSource: unknown }).EventSource = MockEventSource;
+  window.sessionStorage.clear();
 });
 
 describe('Sidebar scoring events', () => {
