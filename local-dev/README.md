@@ -331,6 +331,10 @@ The simulator starts **idle** on stack startup (random VIN from the pool
 manual wrapper `make vehicle-client` for the host-side flow. See
 [ARCHITECTURE.md](./ARCHITECTURE.md) for the control flow.
 
+> **Pre-branch installs:** if your stack predates this branch (existing
+> `keycloak-data` volume / `.env.infra`), run `make clean && make go` once so
+> the realm VIN pool and the connector `commands.>` permission are applied.
+
 ---
 
 ## 9. Build model (Dockerfile.local & proto)

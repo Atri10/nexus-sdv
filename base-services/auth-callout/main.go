@@ -118,7 +118,7 @@ func main() {
 			keyID, ok := token.Header["kid"].(string)
 			if !ok {
 				errMessage := "expecting JWT header to have string kid"
-				glog.Errorf(errMessage)
+				glog.Error(errMessage)
 				return nil, errors.New(errMessage)
 			}
 
@@ -127,20 +127,20 @@ func main() {
 				var rawKey any
 				if err := key.Raw(&rawKey); err != nil {
 					errMessage := fmt.Sprintf("failed to create public key: %s", err)
-					glog.Errorf(errMessage)
+					glog.Error(errMessage)
 					return []byte(""), errors.New(errMessage)
 				}
 				rsaPublicKey, ok := rawKey.(*rsa.PublicKey)
 				if !ok {
 					errMessage := fmt.Sprintf("expected rsa key, got: %v", rawKey)
-					glog.Errorf(errMessage)
+					glog.Error(errMessage)
 					return nil, errors.New(errMessage)
 				}
 				glog.Info("Found public key")
 				return rsaPublicKey, nil
 			} else {
 				errMessage := fmt.Sprintf("unable to find key with kid: %q", keyID)
-				glog.Errorf(errMessage)
+				glog.Error(errMessage)
 				return nil, errors.New(errMessage)
 			}
 		})
@@ -223,9 +223,14 @@ func createNATSUserJWT(name string, roles []any, accountKeyPair nkeys.KeyPair, a
 			perms.Sub.Allow.Add(permission)
 			glog.Debugf("Allowing the subscription of %s", permission)
 		case "telemetry-client":
+			// TelemetryMessage publishes to telemetry-generic.<VIN>.battery,
+			// MetricsReport to telemetry.<VIN> — grant publish on both.
 			permission := fmt.Sprintf("telemetry.%s.>", vin)
 			perms.Pub.Allow.Add(permission)
 			glog.Debugf("Allowing the publish of %s", permission)
+			genericPermission := fmt.Sprintf("telemetry-generic.%s.>", vin)
+			perms.Pub.Allow.Add(genericPermission)
+			glog.Debugf("Allowing the publish of %s", genericPermission)
 		case "telemetry-collector":
 			// TODO: check if the service has consent for the given VIN
 			permission := fmt.Sprintf("telemetry.%s.>", vin)
