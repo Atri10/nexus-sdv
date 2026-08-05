@@ -987,6 +987,33 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 	var jwtExpiry time.Time
 	refreshBuffer := 60 * time.Second // Refresh JWT 60 seconds before expiry
 
+	// Control state for start/stop/status when a control subject is configured.
+	// Declared before the refresh helpers so ensureControlSub can re-attach the
+	// same handler to every fresh connection.
+	ctl := &controlState{vin: v.VIN, messageType: v.MessageType}
+
+	// controlSub tracks the live control subscription. NATS subscriptions are
+	// bound to a connection: refreshConnection() closes and re-dials, which
+	// silently kills the old subscription. ensureControlSub must therefore run
+	// after every successful refresh so start/stop/status keep working.
+	var controlSub *nats.Subscription
+	ensureControlSub := func() error {
+		if v.controlSubject == "" {
+			return nil
+		}
+		if controlSub != nil {
+			_ = controlSub.Unsubscribe() // stale: bound to the closed connection
+		}
+		sub, err := nc.Subscribe(v.controlSubject, func(msg *nats.Msg) {
+			ctl.handle(msg)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to subscribe to control subject: %w", err)
+		}
+		controlSub = sub
+		return nil
+	}
+
 	// Helper function to get fresh connection
 	refreshConnection := func() error {
 		if nc != nil {
@@ -1009,7 +1036,12 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		}
 		log.Println("  Telemetry NATS connection established")
 
-		return nil
+		// A fresh connection carries no subscriptions. Re-establish the
+		// control subscription here so it survives every refresh path: the
+		// initial connect, publishOnce's JWT refresh, the publish-error
+		// reconnect, and the idle-loop refresh. Subscribing outside the
+		// control-mode branch also keeps non-control mode a no-op.
+		return ensureControlSub()
 	}
 
 	// Initial connection
@@ -1021,9 +1053,6 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
-
-	// Control state for start/stop/status when a control subject is configured.
-	ctl := &controlState{vin: v.VIN, messageType: v.MessageType}
 
 	messageCount := 0
 
@@ -1089,20 +1118,20 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 	// Control loop: wait for start/stop over NATS when a control subject is
 	// given; otherwise behave exactly as before (start publishing immediately).
 	if v.controlSubject != "" {
-		sub, err := nc.Subscribe(v.controlSubject, func(msg *nats.Msg) {
-			ctl.handle(msg)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to subscribe to control subject: %w", err)
-		}
-		defer sub.Unsubscribe()
+		defer func() {
+			if controlSub != nil {
+				_ = controlSub.Unsubscribe()
+			}
+		}()
 		log.Printf("Awaiting start command on %s", v.controlSubject)
 		for range ticker.C {
 			if ctl.isRunning() {
 				publishOnce() // one tick while running
 			}
 			if time.Until(jwtExpiry) < refreshBuffer {
-				refreshConnection() // keep JWT fresh while idle too
+				if err := refreshConnection(); err != nil { // keep JWT fresh while idle too
+					log.Printf("Failed to refresh connection: %v", err)
+				}
 			}
 		}
 		return nil
