@@ -163,6 +163,29 @@ services:
     networks:
       - nexus-local
 
+  vehicle-simulator:
+    build:
+      context: ../
+      dockerfile: sample-clients/vehicle-client/Dockerfile.local
+    container_name: nexus-vehicle-simulator
+    environment:
+      - VIN_POOL=${VIN_POOL}
+      - INTERVAL=2
+      - REGISTRATION_URL=https://registration:8443
+      - KEYCLOAK_REALM=nexus-sdv
+      - NATS_URL=nats://nats:4222
+      - KEYCLOAK_URL=http://keycloak:8080
+      - PKI_STRATEGY=local
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      - registration
+      - keycloak
+      - nats
+      - nats-bigtable-connector
+    networks:
+      - nexus-local
+
 networks:
   nexus-local:
     external: true
