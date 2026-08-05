@@ -404,6 +404,7 @@ Keycloak: persisted in the keycloak-data volume so signing keys survive
           restarts. 'make clean' (down -v) removes it and forces a fresh realm
           import + new keys, which the same 'make go' re-snapshots for
           auth-callout.
+`make clean` also removes `local-dev/certs/`, so the next `make go` regenerates the full PKI.
 ```
 
 ### Auth / NATS Authorization Violation
