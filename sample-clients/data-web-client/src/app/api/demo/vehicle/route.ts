@@ -8,7 +8,7 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
   }
-  const { action, vin } = body;
+  const { action, vin } = body ?? {};
   if (
     typeof action !== 'string' ||
     !['start', 'stop', 'status'].includes(action) ||
