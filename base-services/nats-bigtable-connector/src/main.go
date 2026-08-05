@@ -158,6 +158,11 @@ func main() {
 		if vtd.GPS_LONGITUDE != nil {
 			addMetric("GPS_LONGITUDE", float64(*vtd.GPS_LONGITUDE))
 		}
+		if vtd.VehicleDynamics != nil {
+			addMetric("STEERING_ANGLE_DEG", vtd.VehicleDynamics.SteeringAngleDeg)
+			addMetric("ACCELERATOR_PEDAL_PCT", vtd.VehicleDynamics.AcceleratorPedalPct)
+			addMetric("BRAKE_PEDAL_PCT", vtd.VehicleDynamics.BrakePedalPct)
+		}
 
 		if err := tbl.Apply(ctx, rowKey, mut); err != nil {
 			logger.Error("Failed to write MetricsReport to Bigtable",
