@@ -83,16 +83,16 @@ if command -v go >/dev/null 2>&1 && command -v protoc >/dev/null 2>&1 \
             nexus-bigtable-emulator cbt -project test-project -instance test-instance \
             read telemetry 2>/dev/null | grep -c "VIN123#"
     }
-    before=$(count_rows || echo 0)
+    before=$(count_rows || true)
     log "  VIN123 rows before: $before"
     log "  starting vehicle-client (up to 35s for registration + first publish)..."
     bash scripts/run-vehicle-client.sh --vin "${VIN:-VIN123}" >/tmp/vehicle-client-smoke.log 2>&1 &
     smoke_pid=$!
     sleep 35
     kill "$smoke_pid" 2>/dev/null || true
-    pkill -f "vehicle-client/vehicle-client" 2>/dev/null || true
+    pkill -x vehicle-client 2>/dev/null || true
     wait "$smoke_pid" 2>/dev/null || true
-    after=$(count_rows || echo 0)
+    after=$(count_rows || true)
     log "  VIN123 rows after: $after"
     if [ "$after" -gt "$before" ]; then
         log "  OK: vehicle flow published new telemetry rows"
