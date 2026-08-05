@@ -17,13 +17,33 @@ NC='\033[0m'
 log() { echo -e "${GREEN}[generate-certs]${NC} $*"; }
 warn() { echo -e "${YELLOW}[generate-certs]${NC} $*"; }
 
-mkdir -p "$CERTS_DIR/ca" "$CERTS_DIR/registration" "$CERTS_DIR/nats" "$CERTS_DIR/keycloak" "$CERTS_DIR/clients"
+REQUIRED_CERTS=(
+    "$CERTS_DIR/ca/ca.crt.pem" "$CERTS_DIR/ca/ca.key.pem"
+    "$CERTS_DIR/nats/server.crt.pem" "$CERTS_DIR/nats/server.key.pem"
+    "$CERTS_DIR/registration/server.crt.pem" "$CERTS_DIR/registration/server.key.pem"
+    "$CERTS_DIR/registration/ca.crt.pem" "$CERTS_DIR/registration/ca.key.pem"
+    "$CERTS_DIR/registration/factory-ca.crt.pem" "$CERTS_DIR/registration/factory-ca.key.pem"
+    "$CERTS_DIR/keycloak/server.crt.pem" "$CERTS_DIR/keycloak/server.key.pem"
+)
 
-# Check if already generated
-if [[ -f "$CERTS_DIR/ca/ca.crt.pem" ]]; then
-    log "Certificates already exist, skipping generation"
+all_present=1
+for f in "${REQUIRED_CERTS[@]}"; do
+    [ -f "$f" ] || all_present=0
+done
+
+if [ "$all_present" -eq 1 ]; then
+    log "All certificates already exist, skipping generation"
     exit 0
 fi
+
+# Partial PKI from an interrupted run breaks later phases opaquely - wipe and
+# regenerate from scratch (a full set is ~10s in the cert-generator container).
+if [ -d "$CERTS_DIR" ] && [ -n "$(ls -A "$CERTS_DIR" 2>/dev/null)" ]; then
+    warn "Partial certificate tree detected - regenerating from scratch"
+    rm -rf "$CERTS_DIR"
+fi
+
+mkdir -p "$CERTS_DIR/ca" "$CERTS_DIR/registration" "$CERTS_DIR/nats" "$CERTS_DIR/keycloak"
 
 log "Generating Root CA..."
 openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
@@ -137,14 +157,6 @@ openssl x509 -req -in /tmp/kc.csr -CA "$CERTS_DIR/ca/ca.crt.pem" \
     -CAkey "$CERTS_DIR/ca/ca.key.pem" -CAcreateserial \
     -out "$CERTS_DIR/keycloak/server.crt.pem" -days 365 -sha256 \
     -extfile /tmp/kc.conf -extensions v3_req
-
-log "Generating Test Device Certificate (VIN:VIN123 DEVICE:DEV456)..."
-DEVICE_CN="VIN:VIN123 DEVICE:DEV456"
-openssl req -newkey rsa:2048 -nodes -keyout "$CERTS_DIR/clients/device-vin123-dev456.key.pem" \
-    -out /tmp/device.csr -subj "/CN=$DEVICE_CN"
-openssl x509 -req -in /tmp/device.csr -CA "$CERTS_DIR/registration/ca.crt.pem" \
-    -CAkey "$CERTS_DIR/registration/ca.key.pem" -CAcreateserial \
-    -out "$CERTS_DIR/clients/device-vin123-dev456.crt.pem" -days 365 -sha256
 
 log "Cleaning up temporary files..."
 rm -f /tmp/*.csr /tmp/*.conf /tmp/*.srl
