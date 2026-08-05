@@ -683,6 +683,17 @@ func (v *VehicleClient) Register() error {
 	v.keycloakURL = regResp.KeycloakURL
 	v.natsURL = regResp.NatsURL
 
+	// The registration server echoes host-reachable URLs (REG_CLIENT_*),
+	// which is right for host-run clients but wrong in-container. Env
+	// overrides win on the fresh path too (the local-dev simulator service
+	// sets these to the in-network hostnames).
+	if u := os.Getenv("KEYCLOAK_URL"); u != "" {
+		v.keycloakURL = u
+	}
+	if u := os.Getenv("NATS_URL"); u != "" {
+		v.natsURL = u
+	}
+
 	log.Printf("  Keycloak URL: %s", v.keycloakURL)
 	log.Printf("  NATS URL: %s", v.natsURL)
 	log.Printf("  Certificate valid until: %s", cert.NotAfter)
