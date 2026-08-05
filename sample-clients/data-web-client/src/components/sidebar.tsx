@@ -14,6 +14,8 @@ export default function Sidebar() {
   const fleetActive =
     pathname === '/fleet' || pathname.startsWith('/device/');
 
+  const demoActive = pathname === '/demo' || pathname.startsWith('/demo/');
+
   return (
     <aside className="w-56 flex flex-col bg-gray-900 text-white shrink-0">
       <div id="nexuslogo" className="px-2 py-1 flex items-center gap-3 border-b border-gray-700">
@@ -32,6 +34,17 @@ export default function Sidebar() {
           style={fleetActive ? {} : { color: '#ffffff' }}
         >
           Fleet
+        </Link>
+        <Link
+          href="/demo"
+          className={`flex items-center px-3 py-2 rounded text-sm ${
+            demoActive
+              ? 'bg-gray-700 text-white'
+              : 'hover:bg-gray-800 hover:text-white'
+          }`}
+          style={demoActive ? {} : { color: '#ffffff' }}
+        >
+          Demo
         </Link>
       </nav>
 

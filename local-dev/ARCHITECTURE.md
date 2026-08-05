@@ -4,158 +4,71 @@
 > (how to start, ingest, query, watch NATS). This doc explains **how the system
 > is wired** and the design decisions behind it.
 
-## System Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         NEXUS SDV LOCAL ENVIRONMENT                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          INFRASTRUCTURE LAYER                                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │   NATS       │  │  Keycloak    │  │  Bigtable    │  │  Mosquitto   │   │
-│  │  Broker      │  │  Auth/OAuth  │  │  Emulator    │  │  MQTT        │   │
-│  │ :4222       │  │ :8080, :8443 │  │  :8086       │  │  :1883       │   │
-│  │  (NKey +     │  │  (JWT,       │  │  (in-memory) │  │  (MQTT v5)   │   │
-│  │  callout)    │  │  persisted)  │  │              │  │              │   │
-│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-                         Docker Network: nexus-local
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         APPLICATION LAYER                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────┐              ┌──────────────────────────────────────┐  │
-│  │ Telemetry       │              │      CORE SERVICES                   │  │
-│  │ Sources         │              │                                      │  │
-│  │ (Vehicles)      │              │  ┌─────────────────────────────────┐ │  │
-│  └────────┬────────┘              │  │ Data Converter                  │ │  │
-│           │                       │  │ (MQTT → NATS)                  │ │  │
-│           │ MQTT                  │  │                                 │ │  │
-│           ▼                       │  │  subscribes MQTT telemetry/#    │ │  │
-│     ┌──────────────┐              │  │  publishes NATS telemetry-generic.>│ │  │
-│     │ Mosquitto    │◄─────────────┼──┤                                 │ │  │
-│     │   MQTT       │              │  └─────────────────────────────────┘ │  │
-│     │  :1883       │              │        │                               │  │
-│     └──────────────┘              │        ▼                               │  │
-│                                   │  ┌─────────────────────────────────┐ │  │
-│                                   │  │ NATS → Bigtable Connector       │ │  │
-│                                   │  │ (wombat: telemetry-generic.>    │ │  │
-│                                   │  │  → Bigtable emulator)           │ │  │
-│                                   │  └─────────────────────────────────┘ │  │
-│                                   │        │ (closes the ingestion loop) │  │
-│                                   │        ▼                               │  │
-│                                   │  ┌──────────────────────────────────┐ │  │
-│                                   │  │ Auth Callout                     │ │  │
-│                                   │  │ (validates Keycloak JWT → NATS   │ │  │
-│                                   │  │  permissions, via JWKS snapshot) │ │  │
-│                                   │  └──────────────────────────────────┘ │  │
-│                                   │                                      │  │
-│     ┌──────────────┐              │  ┌──────────────────────────────────┐ │  │
-│     │ Data API     │◄─────────────┼──┤ Data API (gRPC)                  │ │  │
-│     │ Consumer     │              │  │  reads Bigtable telemetry rows   │ │  │
-│     │ :9090        │              │  └──────────────────────────────────┘ │  │
-│     └──────────────┘              │                                      │  │
-│                                   │  ┌──────────────────────────────────┐ │  │
-│     ┌──────────────┐              │  │ Registration (HTTPS/mTLS)        │ │  │
-│     │ Vehicle      │◄─────────────┼──┤  cert validation + issuance      │ │  │
-│     │ Registration │              │  └──────────────────────────────────┘ │  │
-│     │ :8444        │              │                                      │  │
-│     └──────────────┘              │  ┌──────────────────────────────────┐ │  │
-│                                   │  │ SAMPLE SERVICES                  │ │  │
-│  ┌──────────────────────────────┐ │  │  • Data API Sampler              │ │  │
-│  │ make ingest ─► Bigtable      │ │  │  • Trip Analyzer                 │ │  │
-│  │ (manual BT write path)       │ │  └──────────────────────────────────┘ │  │
-│  └──────────────────────────────┘ │                                      │  │
-└───────────────────────────────────┴──────────────────────────────────────┘
-```
-
----
-
 ## Data Flow
 
-### Telemetry ingestion path (now closed locally)
+### Telemetry ingestion
 
 ```
-Vehicle / Sensor
-      │  MQTT publish  (telemetry/<VIN>/sensors/*)
-      ▼
-   Mosquitto (MQTT broker, :1883)
-       │  data-converter subscribes telemetry/#
-       ▼
-   Data Converter  ──►  parse / transform (builds TelemetryMessage protobuf)
-       │  NATS publish (telemetry-generic.>)
-       ▼
-   NATS (message broker, :4222)
-       │
-       ✓  nats-bigtable-connector (wombat) subscribes telemetry-generic.>
-          decodes protobuf → writes Bigtable row key <device_id>#<timestamp>
-          with column families dynamic/static
-       ▼
-   Bigtable emulator (:8086)  ← now populated from live NATS stream!
-
-   ── separately ──
-   make ingest  ──►  Bigtable emulator (:8086)   ← manual write path still available
+MQTT publish (telemetry/<VIN>/sensors/*)          vehicle-simulator (compose; idle until commanded)
+        │                                                      │  start → publishes to NATS
+        ▼                                                      ▼
+   Mosquitto (:1883)                                    NATS telemetry-generic.{VIN}.battery
+        │  data-converter subscribes telemetry/#                │  (TelemetryMessage) + telemetry.{VIN} (MetricsReport)
+        ▼                                                       │
+   Data Converter ──NATS telemetry-generic.>────────────────────┤
+        │                                                       │
+        ▼                                                       │
+   NATS (:4222) ◄───────────────────────────────────────────────┘
+        │  nats-bigtable-connector (Go) subscribes telemetry.> + telemetry-generic.>
+        ▼  decodes protobuf → row key <VIN>#<timestamp>; families dynamic/static
+   Bigtable emulator (:8086) ◄── dynamics are persisted (incl. steering/accelerator/brake)
+        │
+        ▼
+   Data API (:9090, gRPC) ──► chart service (:8081, REST + WS) ──► web frontend (:3000)
 ```
 
-> ✅ **The NATS→Bigtable gap is now closed locally.** The `nats-bigtable-connector`
-> (wombat/Redpanda Connect) service subscribes to `telemetry-generic.>`, decodes
-> `telemetry.TelemetryMessage` protobufs, and writes them to the Bigtable emulator.
-> `make ingest` remains available for manual seeding / debugging.
->
-> In the GCP deployment a separate managed connector (`iac/helm/nats-bigtable-connector/`)
-> fills this same role; the local version mirrors it using the same image and pipeline
-> logic.
+`make ingest` remains available as a manual write path that bypasses NATS, and
+the host wrapper `make vehicle-client` remains a manual publish path into
+`telemetry.{VIN}`.
+
+### Control flow (demo mode)
+
+The `vehicle-simulator` compose service comes up with the stack but stays
+**idle**: its entrypoint mints a factory cert for a random pool VIN
+(`VIN1001`–`VIN1010`), registers, obtains the per-VIN Keycloak JWT, and
+subscribes to `commands.<VIN>.demo` — publishing nothing until commanded.
+The web frontend's `/demo` page drives it through the web control route
+`POST /api/demo/vehicle` (`{action: start|stop|status, vin}`), which publishes
+a NATS request on `commands.<VIN>.demo` using the connector account (the
+generated `config/nats.conf` grants it `commands.>` publish). The simulator
+replies with its running state and published counter; `start` begins the
+publish ticker (TelemetryMessage on `telemetry-generic.<VIN>.battery`,
+MetricsReport on `telemetry.<VIN>`), `stop`
+pauses it while keeping the NATS connection. Every message lands in Bigtable
+via the connector, which persists `dynamic:*` and `static:*` readings — the
+connector now also writes `dynamic:STEERING_ANGLE_DEG`, `dynamic:ACCELERATOR_PEDAL_PCT`
+and `dynamic:BRAKE_PEDAL_PCT` — so the /demo schematic and chart render live
+values.
 
 ### Query path
 
 ```
-Client / Consumer
-      │  gRPC GetTelemetry
-      ▼
-   Data API (:9090)
-      │  scans Bigtable key range  <VIN>#<start> .. <VIN>#<end>
-      ▼
-   Bigtable emulator (:8086)
-      │  returns matching rows
-      ▼
-   gRPC response
+Client ──gRPC GetTelemetry──► Data API (:9090) ──► Bigtable key range <VIN>#<start>..<VIN>#<end>
 ```
 
 ### Authentication flow (vehicle client)
 
 ```
-Factory certificate
-      │  mTLS (client cert + key)
-      ▼
-Registration service (:8444)
-      │  validate factory CA chain → sign CSR
-      ▼
-Operational certificate  (+ Keycloak URL, NATS URL echoed back)
-      │  mTLS
-      ▼
-Keycloak (:8080)
-      │  validate → issue JWT (RS256), signed with the realm key
-      ▼
-JWT (bearer token)
-      │  used as the NATS connect token
-      ▼
-NATS  ──►  Auth Callout
-      │  looks up the JWT's `kid` in its JWKS snapshot,
-      │  verifies the signature, maps roles → NATS permissions
-      ▼
-NATS connection authorized  ──►  publish telemetry.<VIN>.*
+factory cert ──mTLS──► Registration (:8444): validate factory CA → sign CSR
+        ──► operational cert (+ Keycloak/NATS URLs echoed back)
+        ──► Keycloak (:8080): client-secret auth (per-VIN client, e.g. VIN123) → JWT (RS256)
+        ──► NATS: Auth Callout verifies JWT `kid` against its JWKS snapshot,
+             maps realm roles → per-VIN NATS permissions (telemetry.<VIN>.>, commands.<VIN>.>)
 ```
 
-> The JWKS Auth Callout trusts is a **one-time snapshot** taken at setup, not a
-> live fetch. If Keycloak's realm signing key changes, the snapshot goes stale
-> and every fresh JWT is rejected with `Authorization Violation`. Keycloak now
-> uses a persistent volume (see below) to keep its keys stable across restarts.
+The JWKS snapshot is taken once at setup and never refetched. Keycloak's
+persistent `keycloak-data` volume keeps the realm signing keys stable so the
+snapshot stays valid (see README §Known gaps & gotchas).
 
 ---
 
@@ -163,262 +76,107 @@ NATS connection authorized  ──►  publish telemetry.<VIN>.*
 
 ### 1. NATS (localhost:4222)
 
-```
-┌─ NATS Server ──────────────────────────────────────┐
-│                                                    │
-│ Accounts (config/nats.conf, generated at setup):   │
-│  • AUTH  - auth-callout-service                    │
-│  • APP   - app-user                                │
-│  • SYS   - system account                          │
-│                                                    │
-│ Example subjects in use:                           │
-│  • telemetry.<VIN>.battery   - default telemetry   │
-│  • vehicle_reports.<VIN>     - metrics_report      │
-│  • telemetry.>               - catch-all           │
-│                                                    │
-│ Authentication:                                    │
-│  • Auth callout: Keycloak JWT → NATS permissions   │
-│  • Bypass users (no callout): connector, app-user, │
-│    auth-callout-service                            │
-│  • Anonymous access is DENIED                      │
-│                                                    │
-│ Storage: in-memory (no persistence)                │
-└────────────────────────────────────────────────────┘
-```
+- Accounts (from `config/nats.conf`, generated at setup): `AUTH`
+  (auth-callout-service), `APP` (app-user), `SYS` (system).
+- Subjects in use:
+  - `telemetry-generic.<VIN>.battery` — TelemetryMessage (`--message-type telemetry`)
+  - `telemetry.<VIN>` — MetricsReport (`--message-type metrics_report`, default)
+  - `telemetry-generic.<VIN>.<sensor>` — data-converter output
+  - `commands.<VIN>.>`, `scoring.<VIN>` — commands / trip-analyzer scores
+- Authentication: Keycloak JWT via auth callout; bypass users (no callout):
+  `connector`, `app-user`, `auth-callout-service`. Anonymous access is **denied**.
+- Storage: in-memory (no persistence).
 
-### 2. Keycloak (localhost:8080, :8443)
+### 2. Keycloak (localhost:8080)
 
-```
-┌─ Keycloak Identity Provider ───────────────────────┐
-│                                                    │
-│ Mode:  start-dev --import-realm                    │
-│ Realm: nexus-sdv                                   │
-│ Admin: admin / admin                               │
-│                                                    │
-│ Client: vehicle-client (confidential, client       │
-│         secret; read from the realm import by the  │
-│         local-dev run-vehicle-client.sh wrapper)   │
-│                                                    │
-│ Token: JWT signed RS256                            │
-│ JWKS:  /realms/nexus-sdv/protocol/openid-connect/  │
-│        certs                                       │
-│                                                    │
-│ Persistence: named volume keycloak-data mounted    │
-│   at /opt/keycloak/data so the realm signing keys  │
-│   survive container restarts (otherwise start-dev  │
-│   regenerates them → stale auth-callout snapshot).  │
-└────────────────────────────────────────────────────┘
-```
+- Mode: `start-dev --import-realm`; realm `nexus-sdv`; admin admin/admin.
+- Clients: `vehicle-client` plus **per-VIN confidential clients** (`VIN123`,
+  secret `vin123-secret`) whose service accounts carry the `edge-device` /
+  `telemetry-client` realm roles. With `client_credentials`, the token's `azp`
+  equals the client id — i.e. the VIN — which is exactly what the auth-callout
+  grants NATS permissions on. No code changes needed for new VINs: add a client
+  (and its `service-account-<vin>` user) to the realm import.
+- JWKS: `/realms/nexus-sdv/protocol/openid-connect/certs` (snapshotted into
+  `KEYCLOAK_JWK_B64` at setup).
+- Persistence: `keycloak-data` volume at `/opt/keycloak/data` so signing keys
+  survive restarts (start-dev would otherwise regenerate them → stale snapshot).
 
 ### 3. Bigtable Emulator (localhost:8086)
 
-```
-┌─ Google Cloud Bigtable Emulator ──────────────────┐
-│                                                   │
-│ Project:  test-project                            │
-│ Instance: test-instance                           │
-│ Table:    telemetry                               │
-│                                                   │
-│ Row key:  <VIN>#<timestamp>                       │
-│   timestamp fmt: 2006-01-02T15:04:05.000000000Z07:00
-│   e.g. VIN123#2026-07-13T17:00:00.000000000Z      │
-│                                                   │
-│ Column families:                                  │
-│   • dynamic   (e.g. dynamic:speed)                │
-│   • static    (e.g. static:make)                  │
-│   values stored as raw bytes                      │
-│                                                   │
-│ Source of truth for the layout:                   │
-│   base-services/data-api/src/service/bigtable.go  │
-│   base-services/data-api/src/service/time.go      │
-│                                                   │
-│ Storage: IN-MEMORY. A container restart wipes the │
-│   table. make ingest/make query recreate the      │
-│   table + families automatically.                 │
-└────────────────────────────────────────────────────┘
-```
+- Project `test-project`, instance `test-instance`, table `telemetry`.
+- Row key `<VIN>#<timestamp>`, timestamp format
+  `2006-01-02T15:04:05.000000000Z07:00` — e.g.
+  `VIN123#2026-07-13T17:00:00.000000000Z`.
+- Column families `dynamic` (e.g. `dynamic:speed`) and `static` (e.g.
+  `static:make`); values stored as raw bytes.
+- Source of truth for the layout:
+  `base-services/data-api/src/service/bigtable.go` + `time.go`.
+- Storage: **in-memory** — a container restart wipes the table; `make ingest` /
+  `make query` recreate the table + families.
 
 ### 4. Mosquitto MQTT Broker (localhost:1883)
 
-```
-┌─ Eclipse Mosquitto MQTT Broker ───────────────────┐
-│                                                   │
-│ Protocol: MQTT v5.0 (backward compatible)         │
-│ Port: 1883 (plain, local dev) / 8883 (TLS)        │
-│                                                   │
-│ Topics:                                           │
-│  • telemetry/#              - device data         │
-│  • telemetry/<VIN>/sensors/* - sensor values      │
-│                                                   │
-│ data-converter subscribes telemetry/# and         │
-│ forwards to NATS. No retained-message dependence. │
-│                                                   │
-│ Config: /mosquitto/config/mosquitto.conf          │
-└────────────────────────────────────────────────────┘
-```
+- MQTT v5, port 1883 (bound to 127.0.0.1), anonymous allowed (local-only).
+- Topics: `telemetry/#`; data-converter subscribes `telemetry/#` and forwards
+  to NATS. No retained-message dependence.
+- Config: `/mosquitto/config/mosquitto.conf`.
 
 ---
 
 ## Service Deployment Model
 
 ```
-                    Single Docker Network
-                      (nexus-local)
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-   Infrastructure        Base Services      Sample Services
-   (infra compose)     (app compose)        (app compose)
-
-   • NATS             • Data API           • Data API Sampler
-   • Keycloak         • Auth Callout       • Trip Analyzer
-   • Bigtable         • Data Converter
-   • Mosquitto        • Registration
-
-   Volumes:            Certificates:        Config:
-   • keycloak-data     • CA root cert       • nats.conf (generated)
-     (signing keys)    • server certs       • mosquitto.conf
-   (Bigtable is        • client certs       • data-converter.yaml
-    in-memory)         • Keycloak JWKS snap
+Single Docker network (nexus-local)
+   Infrastructure (docker-compose.infra.yml)   Application (docker-compose.yml)
+   • NATS, Keycloak, Bigtable, Mosquitto       • Data API, Auth Callout, Data Converter,
+                                                 Registration, nats-bigtable-connector,
+                                                 chart service, web frontend,
+                                                 data-api-sampler, trip-analyzer,
+                                                 vehicle-simulator (idle until commanded)
+   Volumes: keycloak-data, mosquitto-data
+   PKI: generated certs in certs/ (gitignored), JWKS snapshot at setup
 ```
+
+Key decisions:
+
+- **One network, two compose files** — infra comes up first
+  (`docker-compose.infra.yml` creates `nexus-local` and labels it); the app
+  compose declares it `external: true`.
+- **Dockerfile.local pattern** — local-only build changes never touch the
+  GCP-deployed `Dockerfile` (see README §Build model).
+- **Everything env-driven** — services read env vars only; canonical names in
+  `configs/*.template`, injected into `.env.*` by `setup-automated.sh`.
+- **In-network vs host hostnames** — inside the network services reach each
+  other by service name (`nats`, `keycloak`, `bigtable-emulator`); from the
+  host use `localhost:<port>`. This is why `nats-box` runs with
+  `--server nats://nats:4222` while host tools use `nats://localhost:4222`.
 
 ---
 
-## Communication Patterns
+## Setup pipeline (setup-automated.sh)
 
-### Request-Response (synchronous)
-```
-Client ──► gRPC ──► Data API ──► Bigtable ──► rows ──► gRPC response
-```
-
-### Publish-Subscribe (asynchronous)
-```
-Device ──► MQTT ──► Mosquitto ──► Data Converter ──► NATS
-                                                      │
-                                                      ▼
-                                            subscribers (e.g. nats-box
-                                            with the connector user)
-```
-
-### Authentication
-```
-Vehicle ─cert─► Registration ─issues─► operational cert
-        ─mTLS─► Keycloak ─issues─► JWT
-        ─JWT──► NATS ─► Auth Callout ─verify JWKS─► NATS permissions
-```
+1. Certificates (cert-generator container; full-set gate, partial state wiped)
+2. NATS NKey + `config/nats.conf` generation
+3. `.env.*` from templates (fill-missing only)
+4. Infra up (NATS/Keycloak/Bigtable/Mosquitto) + health wait
+5. Bigtable schema bootstrap (`telemetry` table + families)
+6. Keycloak JWKS snapshot (base64 → `KEYCLOAK_JWK_B64`)
+7. Token injection + placeholder fail-fast
+8. App build (`--no-cache`) + up; crash check; per-service verification
 
 ---
 
-## Scaling Considerations
+## Troubleshooting architecture issues
 
-### Development (this environment)
-- All services in Docker Compose on one bridge network
-- Direct host port mapping
-- No NATS → Bigtable connector (write via `make ingest`)
-
-### Production (for reference)
-```
-Load Balancer ─► API Gateway ─► Service Mesh
-                                   │
-        ┌──────────────┬──────────┴───┬──────────────┐
-        ▼              ▼               ▼              ▼
-   Data API      Auth-Callout    Data Converter   NATS→Bigtable
-   (replicas)    (replicas)      (replicas)       connector
-        │              │               │              │
-        └──────────────┴───────────────┴──────────────┘
-                          ▼
-                  Managed services (Cloud Bigtable, Pub/Sub, …)
-```
-
-The production **NATS → Bigtable connector** is the component intentionally
-absent locally; it is what closes the ingestion loop in a real deployment.
-
----
-
-## Monitoring & Observability
-
-| Service | Health check | Metrics |
-|---------|--------------|---------|
-| NATS | `:8222/healthz` | `:8222/varz`, `/connz`, `/subsz` |
-| Keycloak | `:8080/health/ready` | — |
-| Bigtable emulator | TCP `:8086` | — |
-| Mosquitto | TCP `:1883` | — |
-| Data API | gRPC on `:9090` | — |
-| Registration | `:8444` (HTTPS) | — |
-
-```bash
-docker compose logs -f              # all services
-docker compose logs data-converter  # one service
-docker compose logs --tail=100       # last 100 lines
-```
-
----
-
-## Network Topology
-
-```
-      ┌─────────────────────────────┐
-      │   Docker Network            │
-      │   nexus-local (bridge)      │
-      │                             │
-      │  ┌──────────────────────┐   │
-      │  │ Service Container    │   │
-      │  │ hostname = service   │   │  ← in-network: use 'nats', 'keycloak',
-      │  │                      │   │    'bigtable-emulator' as hostnames
-      │  └──────────────────────┘   │
-      └──────────────┬──────────────┘
-                     │  port mapping
-              Host (localhost)          ← from the host: use localhost:<port>
-```
-
-> This is why `nats-box` (running **inside** the network) connects to
-> `nats://nats:4222`, while host tools use `nats://localhost:4222`.
-
----
-
-## Troubleshooting Architecture Issues
-
-### Network connectivity
-```
-Symptom: services can't reach each other / "network nexus-local not found"
-Fix:
-  1. It's created by docker-compose.infra.yml — run 'make go'.
-  2. Do NOT 'docker network create' it by hand: a manual network lacks the
-     com.docker.compose.* labels the app compose file's 'external: true'
-     expects, and 'docker compose up' then fails with an incorrect-label error.
-  3. Inspect: docker network inspect nexus-local
-```
-
-### Certificate issues
-```
-Symptom: TLS handshake failures
-Fix: make clean && make go   (regenerates the full PKI)
-```
-
-### Data persistence
-```
-Bigtable: IN-MEMORY — data is lost on container restart. Re-run 'make ingest'
-          (it recreates the table + column families).
-Keycloak: persisted in the keycloak-data volume so signing keys survive
-          restarts. 'make clean' (down -v) removes it and forces a fresh realm
-          import + new keys, which the same 'make go' re-snapshots for
-          auth-callout.
-`make clean` also removes `local-dev/certs/`, so the next `make go` regenerates the full PKI.
-```
-
-### Auth / NATS Authorization Violation
-```
-Tooling (nats sub/pub): you connected with no credentials. Anonymous is denied.
-  Use --user connector --password connector-pass.
-
-Vehicle client: Keycloak rotated its realm signing key and auth-callout's JWKS
-  snapshot is stale. Fixed by the keycloak-data volume; run 'make clean && make
-  go' once to activate, or re-snapshot with 'make setup-auto' and recreate the
-  auth-callout container. See README §"Known gaps & gotchas".
-```
-
----
-
-**Last Updated**: July 14, 2026
-**Architecture Version**: 1.1
+- **`network nexus-local not found`** — created by `docker-compose.infra.yml`:
+  run `make go`. Do NOT `docker network create` it by hand — a manual network
+  lacks the `com.docker.compose.*` labels the app compose's `external: true`
+  expects.
+- **TLS handshake failures** — `make clean && make go` (regenerates the full
+  PKI, including `certs/`).
+- **Data persistence** — Bigtable is in-memory (re-run `make ingest`); Keycloak
+  persists in `keycloak-data` (removed by `make clean`'s `down -v`, forcing a
+  fresh realm import + new signing keys, which the same `make go` re-snapshots).
+- **`Authorization Violation`** — tooling: use `--user connector
+  --password connector-pass`. Vehicle client: stale JWKS snapshot after key
+  rotation (see README §Known gaps & gotchas).

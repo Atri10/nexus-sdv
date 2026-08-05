@@ -1,0 +1,8 @@
+.git
+node_modules
+.env*
+**/certificates
+**/*.pem
+**/*.key
+.superpowers
+tmp

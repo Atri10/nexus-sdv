@@ -153,10 +153,35 @@ services:
       - NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
       - NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=
       - TELEMETRY_SERVICE_URL=http://telemetry-chart-service:8080
+      - NATS_URL=nats://nats:4222
+      - NATS_SCORING_USER=connector
+      - NATS_SCORING_PASSWORD=connector-pass
     ports:
       - "3000:3000"
     depends_on:
       - telemetry-chart-service
+    networks:
+      - nexus-local
+
+  vehicle-simulator:
+    build:
+      context: ../
+      dockerfile: sample-clients/vehicle-client/Dockerfile.local
+    container_name: nexus-vehicle-simulator
+    restart: on-failure  # cold-start race mitigation: keep the simulator up until commanded
+    environment:
+      - VIN_POOL=${VIN_POOL}
+      - INTERVAL=2
+      - REGISTRATION_URL=https://registration:8443
+      - KEYCLOAK_REALM=nexus-sdv
+      - NATS_URL=nats://nats:4222
+      - KEYCLOAK_URL=http://keycloak:8080
+      - PKI_STRATEGY=local
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      - registration
+      - nats-bigtable-connector
     networks:
       - nexus-local
 
