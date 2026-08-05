@@ -88,8 +88,11 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
   useEffect(() => {
     load();
     // Live WebSocket for PRIMARY vin only (avoids N sockets)
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.hostname}:8081/api/v1/vehicles/${encodeURIComponent(vin)}/telemetry/live`);
+    const configured = process.env.NEXT_PUBLIC_TELEMETRY_SERVICE_URL;
+    const base =
+      configured ??
+      `http${window.location.protocol === 'https:' ? 's' : ''}://${window.location.hostname}:8081`;
+    const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/api/v1/vehicles/${encodeURIComponent(vin)}/telemetry/live`);
     wsRef.current = ws;
     ws.onmessage = (ev) => {
       try {
