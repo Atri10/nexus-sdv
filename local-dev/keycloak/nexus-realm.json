@@ -68,6 +68,55 @@
       ]
     },
     {
+      "clientId": "VIN123",
+      "name": "Vehicle Client VIN123",
+      "description": "Per-VIN confidential client; azp=VIN123 so auth-callout grants telemetry.VIN123.> and commands.VIN123.>",
+      "rootUrl": "",
+      "adminUrl": "",
+      "baseUrl": "",
+      "surrogateAuthRequired": false,
+      "enabled": true,
+      "alwaysDisplayInConsole": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "vin123-secret",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "client.secret.creation.time": "0"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": true,
+      "nodeReRegistrationTimeout": -1,
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
       "clientId": "data-api-sampler",
       "name": "Data API Sampler",
       "secret": "sampler-secret",
@@ -103,6 +152,13 @@
           "temporary": false
         }
       ],
+      "realmRoles": ["edge-device", "telemetry-client"]
+    },
+    {
+      "username": "service-account-vin123",
+      "enabled": true,
+      "emailVerified": false,
+      "serviceAccountClientId": "VIN123",
       "realmRoles": ["edge-device", "telemetry-client"]
     }
   ],
