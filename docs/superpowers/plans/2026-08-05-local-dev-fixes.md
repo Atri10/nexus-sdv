@@ -449,9 +449,9 @@ Replace with:
 
 ```bash
 grep -n 'NEXT_PUBLIC_TELEMETRY_SERVICE_URL' sample-clients/data-web-client/src/hooks/use-telemetry-data.ts sample-clients/data-web-client/Dockerfile.local local-dev/docker-compose.yml
-bash -n sample-clients/data-web-client/Dockerfile.local 2>/dev/null || docker buildx build --check -f sample-clients/data-web-client/Dockerfile.local sample-clients/data-web-client
+grep -n 'ENV TELEMETRY_SERVICE_URL' sample-clients/data-web-client/Dockerfile.local
 ```
-Expected: 3 matches (hook, Dockerfile builder+runner = 2, compose) and no syntax errors.
+Expected: hook match; Dockerfile matches for the builder `NEXT_PUBLIC_...` line AND the runner `ENV TELEMETRY_SERVICE_URL` line; compose match; total 4 lines shown.
 
 - [ ] **Step 5: Commit**
 
