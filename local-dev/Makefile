@@ -1,4 +1,4 @@
-.PHONY: help go setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs frontend
+.PHONY: help go demo setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs frontend
 
 # ============================================================================
 # FASTEST WAY TO START (One command!)
@@ -6,11 +6,20 @@
 go:
 	@bash go.sh
 
+demo:
+	@bash go.sh
+	docker compose up -d vehicle-simulator
+	@echo "Opening demo dashboard..."
+	@open http://localhost:3000/demo 2>/dev/null || true
+
 help:
 	@echo "Nexus SDV Local Development - Commands"
 	@echo ""
 	@echo "  make go              - One-command setup + start (recommended)"
 	@echo "  make setup-auto      - Run the automated setup without starting services"
+	@echo ""
+	@echo "Demo:"
+	@echo "  make demo            - Stack + simulator + open the /demo dashboard"
 	@echo ""
 	@echo "Inspection:"
 	@echo "  make logs            - Tail all logs in real-time"

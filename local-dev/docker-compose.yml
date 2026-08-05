@@ -168,6 +168,7 @@ services:
       context: ../
       dockerfile: sample-clients/vehicle-client/Dockerfile.local
     container_name: nexus-vehicle-simulator
+    restart: on-failure  # cold-start race mitigation: keep the simulator up until commanded
     environment:
       - VIN_POOL=${VIN_POOL}
       - INTERVAL=2

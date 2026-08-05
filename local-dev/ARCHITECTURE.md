@@ -9,25 +9,45 @@
 ### Telemetry ingestion
 
 ```
-MQTT publish (telemetry/<VIN>/sensors/*)          vehicle-client (mTLS + Keycloak JWT)
-        │                                                      │
+MQTT publish (telemetry/<VIN>/sensors/*)          vehicle-simulator (compose; idle until commanded)
+        │                                                      │  start → publishes to NATS
         ▼                                                      ▼
    Mosquitto (:1883)                                    NATS telemetry.{VIN}
-        │  data-converter subscribes telemetry/#                │  (MetricsReport)
+        │  data-converter subscribes telemetry/#                │  (TelemetryMessage + MetricsReport)
         ▼                                                       │
    Data Converter ──NATS telemetry-generic.>────────────────────┤
         │                                                       │
         ▼                                                       │
    NATS (:4222) ◄───────────────────────────────────────────────┘
         │  nats-bigtable-connector (Go) subscribes telemetry.> + telemetry-generic.>
-        ▼  decodes protobuf → writes row key <VIN>#<timestamp>, families dynamic/static
-   Bigtable emulator (:8086)
+        ▼  decodes protobuf → row key <VIN>#<timestamp>; families dynamic/static
+   Bigtable emulator (:8086) ◄── dynamics are persisted (incl. steering/accelerator/brake)
         │
         ▼
    Data API (:9090, gRPC) ──► chart service (:8081, REST + WS) ──► web frontend (:3000)
 ```
 
-`make ingest` remains available as a manual write path that bypasses NATS.
+`make ingest` remains available as a manual write path that bypasses NATS, and
+the host wrapper `make vehicle-client` remains a manual publish path into
+`telemetry.{VIN}`.
+
+### Control flow (demo mode)
+
+The `vehicle-simulator` compose service comes up with the stack but stays
+**idle**: its entrypoint mints a factory cert for a random pool VIN
+(`VIN1001`–`VIN1010`), registers, obtains the per-VIN Keycloak JWT, and
+subscribes to `commands.<VIN>.demo` — publishing nothing until commanded.
+The web frontend's `/demo` page drives it through the web control route
+`POST /api/demo/vehicle` (`{action: start|stop|status, vin}`), which publishes
+a NATS request on `commands.<VIN>.demo` using the connector account (the
+generated `config/nats.conf` grants it `commands.>` publish). The simulator
+replies with its running state and published counter; `start` begins the
+publish ticker (`telemetry.<VIN>`, TelemetryMessage + MetricsReport), `stop`
+pauses it while keeping the NATS connection. Every message lands in Bigtable
+via the connector, which persists `dynamic:*` and `static:*` readings — the
+connector now also writes `dynamic:STEERING_ANGLE_DEG`, `dynamic:ACCELERATOR_PEDAL_PCT`
+and `dynamic:BRAKE_PEDAL_PCT` — so the /demo schematic and chart render live
+values.
 
 ### Query path
 
@@ -110,7 +130,8 @@ Single Docker network (nexus-local)
    • NATS, Keycloak, Bigtable, Mosquitto       • Data API, Auth Callout, Data Converter,
                                                  Registration, nats-bigtable-connector,
                                                  chart service, web frontend,
-                                                 data-api-sampler, trip-analyzer
+                                                 data-api-sampler, trip-analyzer,
+                                                 vehicle-simulator (idle until commanded)
    Volumes: keycloak-data, mosquitto-data
    PKI: generated certs in certs/ (gitignored), JWKS snapshot at setup
 ```
