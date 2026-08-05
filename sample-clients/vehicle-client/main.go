@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,6 +59,7 @@ type VehicleClient struct {
 	FactoryKeyFile        string
 	RegistrationServerURL string
 	MessageType           string // "telemetry", "metrics_report", or "both"
+	controlSubject        string // NATS subject for start/stop commands ("" = publish immediately)
 
 	// Generated during registration
 	operationalCert    *x509.Certificate
@@ -332,6 +334,70 @@ func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive
 	return out
 }
 
+// --- NATS control mode ------------------------------------------------------
+
+// controlState tracks start/stop/status commands received on the control
+// subject. In control mode the publish loop only emits telemetry while running
+// is true; control messages are plain JSON on the control subject and replies
+// go to the request's reply subject.
+type controlState struct {
+	mu          sync.Mutex
+	running     bool
+	published   int64
+	startedAt   time.Time
+	vin         string
+	messageType string
+}
+
+// handle processes one control request: {"action": "start"|"stop"|"status"}.
+// start/stop are idempotent; status reports the current state. Replies are
+// JSON {vin, running, published, messageType} on the request's reply subject,
+// or {"error": ...} for invalid JSON or an unknown action.
+func (c *controlState) handle(msg *nats.Msg) {
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		c.reply(msg, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	c.mu.Lock()
+	switch req.Action {
+	case "start":
+		if !c.running {
+			c.running = true
+			c.startedAt = time.Now()
+		}
+	case "stop":
+		c.running = false
+	case "status":
+	default:
+		c.mu.Unlock()
+		c.reply(msg, map[string]any{"error": "unknown action"})
+		return
+	}
+	state := map[string]any{
+		"vin":         c.vin,
+		"running":     c.running,
+		"published":   c.published,
+		"messageType": c.messageType,
+	}
+	c.mu.Unlock()
+	c.reply(msg, state)
+}
+
+// isRunning reports whether publishing is currently enabled.
+func (c *controlState) isRunning() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.running
+}
+
+func (c *controlState) reply(msg *nats.Msg, body map[string]any) {
+	data, _ := json.Marshal(body)
+	_ = msg.Respond(data)
+}
+
 func main() {
 	defaultRegistrationURL := os.Getenv("REGISTRATION_URL")
 
@@ -344,6 +410,7 @@ func main() {
 	natsURL := flag.String("nats-url", "", "NATS URL (used when reusing existing certificates)")
 	interval := flag.Int("interval", 5, "Interval in seconds between telemetry messages")
 	messageType := flag.String("message-type", "both", "Message type to send: 'telemetry' (TelemetryMessage), 'metrics_report' (MetricsReport), or 'both' (default: both per tick)")
+	controlSubject := flag.String("control-subject", "", "NATS subject to listen for start/stop commands (empty = publish immediately)")
 	flag.Parse()
 
 	if *messageType != "telemetry" && *messageType != "metrics_report" && *messageType != "both" {
@@ -361,9 +428,10 @@ func main() {
 	}
 
 	client := &VehicleClient{
-		VIN:         *vin,
-		pkiStrategy: *pkiStrategy,
-		MessageType: *messageType,
+		VIN:            *vin,
+		pkiStrategy:    *pkiStrategy,
+		MessageType:    *messageType,
+		controlSubject: *controlSubject,
 	}
 
 	log.Printf("================================================")
@@ -954,15 +1022,21 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
 
+	// Control state for start/stop/status when a control subject is configured.
+	ctl := &controlState{vin: v.VIN, messageType: v.MessageType}
+
 	messageCount := 0
 
-	for range ticker.C {
+	// publishOnce performs one full simulation tick: refresh the JWT when
+	// needed, advance battery + drive state, build the payload(s) for the
+	// configured message type, publish each, and track the published count.
+	publishOnce := func() {
 		// Check if JWT needs refresh
 		if time.Until(jwtExpiry) < refreshBuffer {
 			log.Println("JWT expiring soon, refreshing connection...")
 			if err := refreshConnection(); err != nil {
 				log.Printf("Failed to refresh connection: %v", err)
-				continue
+				return
 			}
 		}
 
@@ -999,6 +1073,9 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 			}
 
 			messageCount++
+			ctl.mu.Lock()
+			ctl.published++
+			ctl.mu.Unlock()
 			if m.kind == "telemetry" {
 				log.Printf("[%d] Published TelemetryMessage to %s: SoC=%.1f%%, Voltage=%.2fV, Current=%.2fA, Temp=%.1f°C",
 					messageCount, m.subject, battery.soc, battery.voltage, battery.current, battery.temp)
@@ -1007,6 +1084,31 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 					messageCount, m.subject, drive.enginePower, drive.engineRPM, drive.velocity, drive.fuelLevel)
 			}
 		}
+	}
+
+	// Control loop: wait for start/stop over NATS when a control subject is
+	// given; otherwise behave exactly as before (start publishing immediately).
+	if v.controlSubject != "" {
+		sub, err := nc.Subscribe(v.controlSubject, func(msg *nats.Msg) {
+			ctl.handle(msg)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to subscribe to control subject: %w", err)
+		}
+		defer sub.Unsubscribe()
+		log.Printf("Awaiting start command on %s", v.controlSubject)
+		for range ticker.C {
+			if ctl.isRunning() {
+				publishOnce() // one tick while running
+			}
+			if time.Until(jwtExpiry) < refreshBuffer {
+				refreshConnection() // keep JWT fresh while idle too
+			}
+		}
+		return nil
+	}
+	for range ticker.C {
+		publishOnce()
 	}
 
 	return nil
