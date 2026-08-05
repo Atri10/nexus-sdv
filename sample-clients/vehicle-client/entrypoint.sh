@@ -17,10 +17,7 @@ cp "$CERTS_DIR/keycloak/server.crt.pem"     "$WORK_DIR/certificates/KEYCLOAK_TLS
 # Pick VIN (binary randomizes when VIN is empty) and mint a factory cert.
 VIN="${VIN:-}"
 if [ -z "$VIN" ]; then
-    VIN=$(shuf -n 1 <<EOF
-$(echo "$VIN_POOL" | tr ',' ' ')
-EOF
-)
+    VIN=$(printf '%s\n' "$VIN_POOL" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d' | shuf -n 1)
 fi
 [ -n "$VIN" ] || VIN="VIN1001"
 
@@ -29,11 +26,18 @@ openssl req -newkey rsa:2048 -nodes \
     -keyout "$FACTORY_PREFIX-key.pem" \
     -out /tmp/factory.csr \
     -subj "/CN=VIN:$VIN DEVICE:simulator"
+cat > "$FACTORY_PREFIX.ext" <<'EOF'
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = clientAuth
+EOF
 openssl x509 -req -in /tmp/factory.csr \
     -CA "$CERTS_DIR/registration/factory-ca.crt.pem" \
     -CAkey "$CERTS_DIR/registration/factory-ca.key.pem" \
+    -CAserial "$FACTORY_PREFIX.srl" \
     -CAcreateserial \
-    -out "$FACTORY_PREFIX-chain.pem" -days 365 -sha256
+    -out "$FACTORY_PREFIX-chain.pem" -days 365 -sha256 \
+    -extfile "$FACTORY_PREFIX.ext"
 rm -f /tmp/factory.csr
 
 echo "Simulator: VIN=$VIN (control subject commands.$VIN.demo)"
