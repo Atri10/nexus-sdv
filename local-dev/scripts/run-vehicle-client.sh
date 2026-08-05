@@ -87,12 +87,14 @@ export PKI_STRATEGY="local"
 # --- Keycloak identity for local-dev ---
 # main.go defaults to the GCP realm ("sdv-telemetry") and client ("car", mTLS,
 # no secret). local-dev's imported realm (keycloak/nexus-realm.json) is
-# "nexus-sdv" with a confidential "vehicle-client" service-account client, so
-# override the three env vars main.go reads (envOr KEYCLOAK_REALM /
-# KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET). The secret is read straight
-# out of the realm import at runtime via jq - never hardcoded in this script.
+# "nexus-sdv" with per-VIN confidential service-account clients (defaulting to
+# "VIN123" below), so override the three env vars main.go reads (envOr
+# KEYCLOAK_REALM / KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET). The secret
+# is read straight out of the realm import at runtime via jq - never hardcoded
+# in this script. Per-VIN clients (e.g. VIN123) make azp equal the VIN, which
+# is what auth-callout grants NATS permissions on.
 export KEYCLOAK_REALM="${KEYCLOAK_REALM:-nexus-sdv}"
-export KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-vehicle-client}"
+export KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-VIN123}"
 if [ -z "${KEYCLOAK_CLIENT_SECRET:-}" ]; then
     command -v jq >/dev/null 2>&1 || error "'jq' not found on PATH - needed to read the Keycloak client secret from keycloak/nexus-realm.json (or export KEYCLOAK_CLIENT_SECRET yourself)."
     KEYCLOAK_CLIENT_SECRET="$(jq -r --arg id "$KEYCLOAK_CLIENT_ID" '.clients[] | select(.clientId==$id) | .secret // empty' "$SCRIPT_DIR/keycloak/nexus-realm.json")"
