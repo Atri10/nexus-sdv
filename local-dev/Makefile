@@ -8,7 +8,7 @@ go:
 
 demo:
 	@bash go.sh
-	docker compose up -d vehicle-simulator
+	docker compose --env-file .env.base-services --env-file .env.sample-services up -d vehicle-simulator
 	@echo "Opening demo dashboard..."
 	@open http://localhost:3000/demo 2>/dev/null || true
 
