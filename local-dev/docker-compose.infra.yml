@@ -13,11 +13,6 @@ services:
       - "4222:4222"    # Client connections
       - "7422:7422"    # Leaf nodes
       - "8222:8222"    # HTTP monitoring
-    environment:
-      - NATS_AUTH_CALLOUT_PASSWORD=${NATS_AUTH_CALLOUT_PASSWORD}
-      - NATS_BASIC_AUTH_PASSWORD=${NATS_BASIC_AUTH_PASSWORD}
-      - NATS_CONNECTOR_PASSWORD=${NATS_CONNECTOR_PASSWORD}
-      - NATS_AUTH_CALLOUT_NKEY_PUB=${NATS_AUTH_CALLOUT_NKEY_PUB}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
       interval: 10s
@@ -32,9 +27,9 @@ services:
     container_name: nexus-mosquitto
     volumes:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
     ports:
-      - "1883:1883"
-      - "8883:8883"
+      - "127.0.0.1:1883:1883"
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "1883"]
       interval: 10s
@@ -103,6 +98,7 @@ services:
 
 volumes:
   keycloak-data:
+  mosquitto-data:
 
 networks:
   nexus-local:
