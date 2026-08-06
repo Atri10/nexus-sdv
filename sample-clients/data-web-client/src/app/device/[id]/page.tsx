@@ -13,6 +13,7 @@ import { StateView } from '@/components/state-view';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
 import { buildTableRows } from '@/lib/telemetry-table';
+import { unitsForSeries } from '@/lib/telemetry-chart-utils';
 import type { DeviceDetailResponse } from '@/types/telemetry';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -179,7 +180,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
           <CardHeader><CardTitle>Telemetry</CardTitle></CardHeader>
           <CardContent>
             <StateView state={stateView} onRetry={refetch}>
-              <TelemetryChart vehicleId={id} series={chartSeries} type={type} axisMode={axisMode} hidden={hidden} theme={theme} resetZoomToken={resetZoomToken} />
+              <TelemetryChart vehicleId={id} series={chartSeries} type={type} axisMode={axisMode} hidden={hidden} theme={theme} resetZoomToken={resetZoomToken} units={unitsForSeries(chartSeries)} />
             </StateView>
           </CardContent>
         </Card>

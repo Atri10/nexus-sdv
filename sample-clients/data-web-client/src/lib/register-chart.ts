@@ -1,5 +1,6 @@
 import {
   Chart,
+  Decimation,
   TimeScale,
   LinearScale,
   PointElement,
@@ -12,6 +13,7 @@ import {
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import 'chartjs-adapter-date-fns';
+import { hudCrosshair } from '@/lib/crosshair';
 
 let registered = false;
 
@@ -27,7 +29,9 @@ export function registerChart(): void {
     Tooltip,
     Legend,
     Filler,
+    Decimation,
     zoomPlugin,
+    hudCrosshair,
   );
   registered = true;
 }
