@@ -89,6 +89,19 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
         const ok = reply && !reply.error;
         setStatus(ok ? { running: reply.running, published: reply.published } : null);
         setComponents(ok && reply.components ? reply.components : null);
+        // The simulator re-randomizes its VIN on container restarts — when
+        // the current VIN goes silent, re-discover so the panel recovers
+        // without a reload.
+        if (!ok) {
+          fetch('/api/demo/discover', { cache: 'no-store' })
+            .then((res) => (res.ok ? res.json() : Promise.resolve(null)))
+            .then((data: { vin?: string | null } | null) => {
+              if (ignore || !data?.vin) return;
+              setSimulatorVin(data.vin);
+              if (!userPicked.current) setVin(data.vin);
+            })
+            .catch(() => {});
+        }
       })
       .catch(() => {
         if (!ignore) {
