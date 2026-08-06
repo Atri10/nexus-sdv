@@ -3,11 +3,28 @@ import { StringCodec } from 'nats';
 
 export type DemoAction = 'start' | 'stop' | 'status';
 
+/** One publishable signal of a component (unit empty when plain). */
+export interface SignalInfo {
+  name: string;
+  label: string;
+  unit?: string;
+}
+
+/** One independently controllable telemetry component, discovered from the
+ * simulator's status reply. */
+export interface ComponentStatus {
+  id: string;
+  label: string;
+  enabled: boolean;
+  sensors: SignalInfo[];
+}
+
 export interface DemoControlReply {
   vin: string;
   running: boolean;
   published: number;
   messageType: string;
+  components?: ComponentStatus[];
   error?: string;
 }
 
@@ -20,14 +37,14 @@ export class DemoSimulatorOfflineError extends Error {
 
 const sc = StringCodec();
 
-export async function demoControl(action: DemoAction, vin: string): Promise<DemoControlReply> {
+export async function demoControl(action: DemoAction, vin: string, component?: string): Promise<DemoControlReply> {
   const nc = await getNatsScoringConnection();
   let reply;
   try {
     // nats.js rejects on timeout (NatsTimeoutError) — map to a clear error.
     reply = await nc.request(
       `commands.${vin}.demo`,
-      sc.encode(JSON.stringify({ action })),
+      sc.encode(JSON.stringify(component ? { action, component } : { action })),
       { timeout: 3000 }
     );
   } catch {
