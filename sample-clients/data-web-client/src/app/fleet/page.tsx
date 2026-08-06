@@ -143,7 +143,13 @@ export default function FleetPage() {
                 {null}
               </StateView>
             )}
-            {state === 'empty' && <StateView state="empty">{null}</StateView>}
+            {state === 'empty' && (
+              <div className="flex h-[400px] w-full items-center justify-center rounded-lg border border-dashed">
+                <p className="text-muted-foreground">
+                  No devices found — start the simulator or ingest data.
+                </p>
+              </div>
+            )}
             {state === 'ready' && (
               <FleetScene
                 vehicles={vehicles}
