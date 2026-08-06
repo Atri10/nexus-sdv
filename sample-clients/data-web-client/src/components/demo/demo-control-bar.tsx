@@ -17,6 +17,8 @@ export const VIN_POOL = Array.from({ length: 10 }, (_, i) => `VIN${1001 + i}`);
 interface DemoControlBarProps {
   vin: string;
   onVinChange: (vin: string) => void;
+  /** Running simulator's VIN (auto-discovered by the page), or null. */
+  simulatorVin: string | null;
   running: boolean;
   busy: boolean;
   onStart: () => void;
@@ -36,7 +38,7 @@ async function fetchVehicles(): Promise<string[]> {
  * Start/Stop for the NATS simulator and a live status badge. Errors surface as
  * sonner toasts (e.g. 503 when the simulator/chart service is down).
  */
-export function DemoControlBar({ vin, onVinChange, running, busy, onStart, onStop }: DemoControlBarProps) {
+export function DemoControlBar({ vin, onVinChange, simulatorVin, running, busy, onStart, onStop }: DemoControlBarProps) {
   const [vehicles, setVehicles] = useState<string[]>([]);
 
   useEffect(() => {
@@ -101,7 +103,15 @@ export function DemoControlBar({ vin, onVinChange, running, busy, onStart, onSto
         </Button>
       )}
 
-      <Badge variant={running ? 'default' : 'secondary'} className="ml-auto gap-1.5">
+      <Badge variant="secondary" className="ml-auto gap-1.5" title="Auto-discovered simulator">
+        <span
+          className={`h-2 w-2 rounded-full ${simulatorVin ? 'bg-emerald-400' : 'bg-gray-400'}`}
+          aria-hidden="true"
+        />
+        {simulatorVin ? `Simulator: ${simulatorVin}` : 'Simulator not found'}
+      </Badge>
+
+      <Badge variant={running ? 'default' : 'secondary'} className="gap-1.5">
         <span className="relative flex h-2 w-2" aria-hidden="true">
           {running && (
             <span className="live-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400" />

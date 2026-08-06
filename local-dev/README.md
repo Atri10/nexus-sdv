@@ -290,6 +290,9 @@ open http://localhost:3000/device/VIN123
   historical data loads from the same service (time ranges 1h/6h/24h/7d).
 - Series toggles, line/area/bar types, dual axis, zoom/pan, VIN comparison,
   and a KPI strip of latest values are on the device page.
+- The `/demo` page auto-discovers the running simulator (it probes the VIN
+  pool over NATS), so Start/Stop work on first press without matching VINs
+  by hand.
 - No authentication is required for the device pages.
 - The frontend talks to the chart service at `:8081` — REST via the
   `/api/telemetry/[vin]` proxy route, live updates via WebSocket
