@@ -151,11 +151,11 @@ func TestPayloadGatingByComponent(t *testing.T) {
 			if err := mr.ReportData.UnmarshalTo(&vtd); err != nil {
 				t.Fatalf("unpack VehicleTelemetryData: %v", err)
 			}
-			if vtd.ENGINE_RPM == 0 {
+			if vtd.ENGINE_RPM == nil || *vtd.ENGINE_RPM == 0 {
 				t.Errorf("powertrain report wrong: rpm=%v (must be set)", vtd.ENGINE_RPM)
 			}
-			if vtd.VELOCITY != 0 {
-				t.Errorf("powertrain report must not carry chassis fields, velocity=%v", vtd.VELOCITY)
+			if vtd.VELOCITY != nil {
+				t.Errorf("powertrain report must not carry chassis fields, velocity=%v", *vtd.VELOCITY)
 			}
 		}
 	}
@@ -178,6 +178,26 @@ func TestPayloadAllDisabled(t *testing.T) {
 	msgs := v.buildPayloads(time.Now(), batteryState{}, driveState{}, "both", 0, func(string) bool { return false })
 	if len(msgs) != 0 {
 		t.Errorf("expected no payloads when all components disabled, got %d", len(msgs))
+	}
+}
+
+func TestPayloadFreeRunPublishesAllComponents(t *testing.T) {
+	// Regression: non-control mode must publish every component even though
+	// a fresh controlState starts with all components disabled.
+	v := &VehicleClient{VIN: "VIN1001"}
+	msgs := v.buildPayloads(time.Now(), batteryState{}, driveState{}, "both", 0, func(string) bool { return true })
+	if len(msgs) != 4 {
+		t.Fatalf("free-run payloads = %d, want 4 (battery, cabin, powertrain, chassis)", len(msgs))
+	}
+	want := map[string]bool{
+		"telemetry-generic.VIN1001.battery": true,
+		"telemetry-generic.VIN1001.cabin":   true,
+		"telemetry.VIN1001":                 true,
+	}
+	for _, m := range msgs {
+		if !want[m.subject] {
+			t.Errorf("unexpected subject %q", m.subject)
+		}
 	}
 }
 
@@ -204,13 +224,13 @@ func TestChassisReportCarriesDynamics(t *testing.T) {
 	if err := report.ReportData.UnmarshalTo(&vtd); err != nil {
 		t.Fatalf("unpack VehicleTelemetryData: %v", err)
 	}
-	if vtd.VELOCITY != 12.3 {
+	if vtd.VELOCITY == nil || *vtd.VELOCITY != 12.3 {
 		t.Errorf("velocity = %v, want 12.3", vtd.VELOCITY)
 	}
 	if vtd.VehicleDynamics == nil || vtd.VehicleDynamics.SteeringAngleDeg != -2.5 {
 		t.Errorf("dynamics missing: %#v", vtd.VehicleDynamics)
 	}
-	if vtd.ENGINE_RPM != 0 {
-		t.Errorf("chassis report must not carry powertrain fields, rpm=%v", vtd.ENGINE_RPM)
+	if vtd.ENGINE_RPM != nil {
+		t.Errorf("chassis report must not carry powertrain fields, rpm=%v", *vtd.ENGINE_RPM)
 	}
 }

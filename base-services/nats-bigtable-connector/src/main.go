@@ -57,6 +57,58 @@ func main() {
 	tbl := btClient.Open(tableName)
 	logger.Info("Connected to Bigtable emulator")
 
+	// The Bigtable emulator is in-memory: any container restart wipes every
+	// table, and local-dev only recreates the schema during setup
+	// (setup-automated.sh phase_bigtable_schema, skipped when .env files
+	// already exist). Ensure the table exists at startup and re-check on a
+	// ticker so the connector heals itself after emulator restarts instead of
+	// failing every write with "table ... not found".
+	ensureTable := func() error {
+		admin, err := bigtable.NewAdminClient(ctx, project, instance)
+		if err != nil {
+			return fmt.Errorf("create admin client: %w", err)
+		}
+		defer admin.Close()
+
+		tables, err := admin.Tables(ctx)
+		if err != nil {
+			return fmt.Errorf("list tables: %w", err)
+		}
+		for _, t := range tables {
+			if t == tableName {
+				return nil
+			}
+		}
+		// Matches the schema setup-automated.sh and data-api's integration
+		// tests bootstrap: table "telemetry" with dynamic/static families.
+		if err := admin.CreateTable(ctx, tableName); err != nil {
+			return fmt.Errorf("create table %q: %w", tableName, err)
+		}
+		for _, family := range []string{"dynamic", "static"} {
+			if err := admin.CreateColumnFamily(ctx, tableName, family); err != nil {
+				return fmt.Errorf("create column family %q: %w", family, err)
+			}
+		}
+		logger.Info("Created Bigtable table with column families dynamic/static",
+			zap.String("table", tableName))
+		return nil
+	}
+
+	if err := ensureTable(); err != nil {
+		logger.Warn("Bigtable table not ensured yet — retrying periodically",
+			zap.String("table", tableName), zap.Error(err))
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := ensureTable(); err != nil {
+				logger.Warn("Failed to ensure Bigtable table (will retry)",
+					zap.String("table", tableName), zap.Error(err))
+			}
+		}
+	}()
+
 	// Subscribe to telemetry-generic subjects
 	sub, err := nc.Subscribe("telemetry-generic.>", func(msg *nats.Msg) {
 		var tm telemetry.TelemetryMessage
@@ -146,12 +198,28 @@ func main() {
 		addMetric := func(qualifier string, value float64) {
 			mut.Set("dynamic", qualifier, bigtable.Now(), []byte(fmt.Sprintf("%.2f", value)))
 		}
-		addMetric("ENGINE_POWER", float64(vtd.ENGINE_POWER))
-		addMetric("ENGINE_RPM", float64(vtd.ENGINE_RPM))
-		addMetric("FUEL_CAPACITY", float64(vtd.FUEL_CAPACITY))
-		addMetric("FUEL_LEVEL", float64(vtd.FUEL_LEVEL))
-		addMetric("TIRE_PRESSURE", float64(vtd.TIRE_PRESSURE))
-		addMetric("VELOCITY", float64(vtd.VELOCITY))
+		// VehicleTelemetryData uses proto3 optional for these fields: a nil
+		// pointer means the field was not part of this report (the simulator
+		// sends per-component reports), so nothing is written — a disabled
+		// component's columns must not be overwritten with zeros.
+		if vtd.ENGINE_POWER != nil {
+			addMetric("ENGINE_POWER", float64(*vtd.ENGINE_POWER))
+		}
+		if vtd.ENGINE_RPM != nil {
+			addMetric("ENGINE_RPM", float64(*vtd.ENGINE_RPM))
+		}
+		if vtd.FUEL_CAPACITY != nil {
+			addMetric("FUEL_CAPACITY", float64(*vtd.FUEL_CAPACITY))
+		}
+		if vtd.FUEL_LEVEL != nil {
+			addMetric("FUEL_LEVEL", float64(*vtd.FUEL_LEVEL))
+		}
+		if vtd.TIRE_PRESSURE != nil {
+			addMetric("TIRE_PRESSURE", float64(*vtd.TIRE_PRESSURE))
+		}
+		if vtd.VELOCITY != nil {
+			addMetric("VELOCITY", float64(*vtd.VELOCITY))
+		}
 		if vtd.GPS_LATITUDE != nil {
 			addMetric("GPS_LATITUDE", float64(*vtd.GPS_LATITUDE))
 		}
