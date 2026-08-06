@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { gpsTrail, latestGps } from '@/lib/gps-trail';
@@ -53,6 +53,7 @@ export function VehicleMap({ series, paused }: VehicleMapProps) {
 
   const trail = useMemo(() => gpsTrail(series), [series]);
   const latest = useMemo(() => latestGps(series), [series]);
+  const [sizeToken, setSizeToken] = useState(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -168,7 +169,17 @@ export function VehicleMap({ series, paused }: VehicleMapProps) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [trail, live]);
+  }, [trail, live, sizeToken]);
+
+  // Re-run the draw effect when the panel resizes (ResizeObserver is
+  // undefined in jsdom — guard so tests keep passing).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setSizeToken((t) => t + 1));
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <Card>
