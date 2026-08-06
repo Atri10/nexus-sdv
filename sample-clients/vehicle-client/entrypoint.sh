@@ -33,10 +33,13 @@ fi
 printf '%s\n' "$VIN" > "$WORK_DIR/certificates/vin"
 
 FACTORY_PREFIX="$WORK_DIR/certificates/factory-$VIN"
+# CN must match the client's CSR exactly ("VIN:xxx DEVICE:xxx" with DEVICE=VIN,
+# per sample-clients/generate-factory-cert.sh) — the registration server rejects
+# mismatches (400 Csr is not valid).
 openssl req -newkey rsa:2048 -nodes \
     -keyout "$FACTORY_PREFIX-key.pem" \
     -out /tmp/factory.csr \
-    -subj "/CN=VIN:$VIN DEVICE:simulator"
+    -subj "/O=Vehicle Manufacturer/CN=VIN:$VIN DEVICE:$VIN"
 cat > "$FACTORY_PREFIX.ext" <<'EOF'
 basicConstraints = CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment

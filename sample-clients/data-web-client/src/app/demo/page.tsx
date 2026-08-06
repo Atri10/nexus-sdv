@@ -1,5 +1,5 @@
 'use client';
-import { use, useCallback, useEffect, useState } from 'react';
+import { use, useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import AppLayout from '@/components/app-layout';
 import TimeRangeSelector from '@/components/time-range-selector';
@@ -42,6 +42,8 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<DemoStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [simulatorVin, setSimulatorVin] = useState<string | null>(null);
+  const userPicked = useRef(false);
 
   const theme = useChartTheme();
   const { series, loading, error, refetch } = useTelemetryData({ vin, range });
@@ -53,6 +55,26 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     const t = window.setTimeout(() => setVin((prev) => randomVin(prev)), 0);
     return () => window.clearTimeout(t);
   }, [urlVin]);
+
+  // Find the running simulator (its entrypoint randomizes the VIN) so the
+  // Start button targets it on first press. Discovery runs server-side (the
+  // nats client must not enter the browser bundle). Set state only in .then
+  // callbacks (lint: react-hooks/set-state-in-effect); never clobber a manual
+  // pick.
+  useEffect(() => {
+    let ignore = false;
+    fetch('/api/demo/discover', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : Promise.resolve(null)))
+      .then((data: { vin?: string | null } | null) => {
+        if (ignore || !data?.vin) return;
+        setSimulatorVin(data.vin);
+        if (!userPicked.current) setVin(data.vin);
+      })
+      .catch(() => {});
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   // Initial status check + refresh whenever the vehicle changes. Ignore stale
   // replies for a previous VIN: an out-of-order response must never overwrite
@@ -128,7 +150,11 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
 
         <DemoControlBar
           vin={vin}
-          onVinChange={setVin}
+          onVinChange={(v) => {
+            userPicked.current = true;
+            setVin(v);
+          }}
+          simulatorVin={simulatorVin}
           running={status?.running ?? false}
           busy={busy}
           onStart={() => runAction('start')}

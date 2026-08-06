@@ -50,7 +50,12 @@ func TestCreateNATSUserJWT(t *testing.T) {
 			userName: "vin-456",
 			roles:    []any{"telemetry-client"},
 			validatePerms: func(t *testing.T, claims *natsjwt.UserClaims) {
+				// Exact two-token subjects (MetricsReport / bare publishes) must
+				// be granted alongside the `.>` wildcards — a `.>` never matches
+				// a bare subject in NATS.
+				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-456")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-456.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-456")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-456.>")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "_INBOX.>")
 			},
@@ -69,7 +74,9 @@ func TestCreateNATSUserJWT(t *testing.T) {
 			roles:    []any{"edge-device", "telemetry-client"},
 			validatePerms: func(t *testing.T, claims *natsjwt.UserClaims) {
 				assert.Contains(t, claims.Permissions.Sub.Allow, "commands.vin-mixed.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-mixed")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-mixed.>")
+				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-mixed")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-mixed.>")
 				assert.Contains(t, claims.Permissions.Pub.Allow, "_INBOX.>")
 			},
