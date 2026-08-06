@@ -19,15 +19,15 @@ export default function Sidebar() {
   const navClass = (active: boolean) =>
     `relative flex items-center px-3 py-2 rounded text-sm transition-colors ${
       active
-        ? 'glow-cyan bg-cyan-400/10 text-cyan-300'
-        : 'text-foreground/85 hover:bg-muted/60 hover:text-cyan-200'
+        ? 'glow-cyan bg-cyan-400/10 dark:text-cyan-300 text-cyan-700'
+        : 'text-foreground/85 hover:bg-muted/60 dark:hover:text-cyan-200 hover:text-cyan-700'
     }`;
 
   return (
     <aside className="hud-panel w-56 flex flex-col shrink-0 border-y-0 border-l-0">
       <div id="nexuslogo" className="px-2 py-1 flex items-center gap-3 border-b border-border/70">
         <Image src={logo} alt="Nexus SDV logo" className="w-auto shrink-0" style={{ height: '3.5rem' }} />
-        <span className="font-display text-xl font-bold tracking-wide text-cyan-300 glow-text">
+        <span className="font-display text-xl font-bold tracking-wide dark:text-cyan-300 text-cyan-700 glow-text">
           NEXUS SDV
         </span>
       </div>

@@ -193,6 +193,7 @@ g:focus-visible {
 
 /* ==== Command Deck: HUD utilities + backdrop layers ==== */
 
+@layer components {
 /* HUD glass panel — translucent card with cyan-tinted edge and blur */
 .hud-panel {
   position: relative;
@@ -235,6 +236,7 @@ g:focus-visible {
   text-shadow:
     0 0 12px hsl(from var(--primary) h s l / 0.6),
     0 0 32px hsl(from var(--primary) h s l / 0.25);
+}
 }
 
 /* Slow scanline sweep across a HUD panel */
