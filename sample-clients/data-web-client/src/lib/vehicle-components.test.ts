@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
-import { DEMO_COMPONENTS, latestValuesFor, seriesForComponent } from '@/lib/demo/vehicle-components';
+import { COMPONENT_ZONES, DEMO_COMPONENTS, latestValuesFor, seriesForComponent } from '@/lib/vehicle-components';
 
 /**
  * Connector contract (base-services/nats-bigtable-connector): columns are
@@ -60,6 +60,28 @@ describe('DEMO_COMPONENTS metadata', () => {
   it('keeps cabin sensors split between dynamic and static qualifiers', () => {
     const cabin = DEMO_COMPONENTS.find((c) => c.id === 'cabin')!;
     expect(cabin.sensors.map((s) => s.qualifier)).toEqual(['battery.temp', 'make', 'index']);
+  });
+});
+
+describe('COMPONENT_ZONES', () => {
+  it('declares the four zones in the same order as DEMO_COMPONENTS', () => {
+    expect(COMPONENT_ZONES.map((z) => z.id)).toEqual(['battery', 'powertrain', 'chassis', 'cabin']);
+  });
+
+  it('references only known component ids (cross-check with DEMO_COMPONENTS)', () => {
+    const known: Record<string, true> = Object.fromEntries(DEMO_COMPONENTS.map((c) => [c.id, true]));
+    for (const zone of COMPONENT_ZONES) {
+      expect(known[zone.id], `zone ${zone.id} must resolve to a DEMO_COMPONENTS entry`).toBe(true);
+    }
+  });
+
+  it('keeps the brief zone geometry: center above the floor, positive size', () => {
+    expect(COMPONENT_ZONES).toEqual([
+      { id: 'battery', label: 'Battery', position: [0, 0.25, 1.0], size: [1.2, 0.35, 0.9], color: '#22D3EE' },
+      { id: 'powertrain', label: 'Powertrain', position: [0, 0.35, -0.9], size: [0.9, 0.4, 0.7], color: '#22C55E' },
+      { id: 'chassis', label: 'Chassis', position: [0, 0.1, 0], size: [1.5, 0.2, 2.6], color: '#8B5CF6' },
+      { id: 'cabin', label: 'Cabin', position: [0, 0.9, -0.2], size: [1.0, 0.55, 1.2], color: '#F59E0B' },
+    ]);
   });
 });
 
