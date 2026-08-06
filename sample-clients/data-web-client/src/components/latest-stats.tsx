@@ -162,13 +162,13 @@ function KpiCard({ stat, unit }: { stat: LatestValue; unit?: string }) {
   );
 }
 
-export function LatestStats(props: { series: ChartSeries[]; hidden: Set<string> }) {
+export function LatestStats(props: { series: ChartSeries[]; hidden: Set<string>; units?: Record<string, string> }) {
   const visible = props.series.filter((s) => !props.hidden.has(s.key));
   const stats = latestValues(visible);
   if (stats.length === 0) return null;
 
   const units = new Map(
-    visible.map((s) => [s.key, unitForQualifier(columnQualifier(s.column))]),
+    visible.map((s) => [s.key, props.units?.[s.key] ?? unitForQualifier(columnQualifier(s.column))]),
   );
 
   return (
