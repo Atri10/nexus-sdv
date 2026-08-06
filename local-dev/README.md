@@ -344,6 +344,9 @@ The `/demo` page is the interactive dashboard:
 - **Live chart grid** — one real-time chart per discovered signal, grouped by
   component; any chart expands into a full-size detail dialog. Charts freeze
   (history retained) while their component is disabled.
+- **Live GPS track** — a canvas map of the vehicle's GPS trail with a
+  pulsing position marker and live lat/lng coordinates; freezes (history
+  retained) while the chassis component is paused.
 - **Start / Stop buttons** — control the simulator per VIN: the page POSTs to
   the web control route (`/api/demo/vehicle`), which sends a NATS
   request/reply on `commands.<VIN>.demo`; the simulator publishes

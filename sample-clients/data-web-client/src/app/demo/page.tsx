@@ -10,6 +10,7 @@ import { qualifierOf, unitForSignal } from '@/lib/telemetry-discovery';
 import { DataPath } from '@/components/demo/data-path';
 import { ComponentPanel } from '@/components/demo/component-panel';
 import { ChartGrid } from '@/components/demo/chart-grid';
+import { VehicleMap } from '@/components/demo/vehicle-map';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
 import type { ComponentStatus } from '@/lib/demo-control';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
@@ -286,6 +287,13 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             </section>
           </FadeIn>
         )}
+
+        <FadeIn>
+          <VehicleMap
+            series={series}
+            paused={!(components?.find((c) => c.id === 'chassis')?.enabled ?? true)}
+          />
+        </FadeIn>
 
         {componentSeries.length > 0 && (
           <FadeIn>
