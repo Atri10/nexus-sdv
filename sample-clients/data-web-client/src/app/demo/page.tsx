@@ -6,7 +6,7 @@ import TimeRangeSelector from '@/components/time-range-selector';
 import { LatestStats } from '@/components/latest-stats';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
-import { qualifierOf, unitForSignal } from '@/lib/telemetry-discovery';
+import { qualifierOf, stableComponents, unitForSignal } from '@/lib/telemetry-discovery';
 import { DataPath } from '@/components/demo/data-path';
 import { ComponentPanel } from '@/components/demo/component-panel';
 import { ChartGrid } from '@/components/demo/chart-grid';
@@ -89,7 +89,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
         if (ignore) return;
         const ok = reply && !reply.error;
         setStatus(ok ? { running: reply.running, published: reply.published } : null);
-        setComponents(ok && reply.components ? reply.components : null);
+        setComponents(ok && reply.components ? stableComponents(reply.components) : null);
         // The simulator re-randomizes its VIN on container restarts — when
         // the current VIN goes silent, re-discover so the panel recovers
         // without a reload.
@@ -154,7 +154,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           return;
         }
         setStatus({ running: reply.running, published: reply.published });
-        setComponents(reply.components ?? null);
+        setComponents(reply.components ? stableComponents(reply.components) : null);
       } catch (e) {
         const { toast } = await import('sonner');
         toast.error(e instanceof Error ? e.message : 'Failed to reach demo control');
@@ -187,7 +187,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           return;
         }
         setStatus({ running: reply.running, published: reply.published });
-        if (reply.components) setComponents(reply.components);
+        if (reply.components) setComponents(stableComponents(reply.components));
       } catch (e) {
         const { toast } = await import('sonner');
         toast.error(e instanceof Error ? e.message : 'Failed to toggle component');

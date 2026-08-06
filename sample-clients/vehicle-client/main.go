@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -526,11 +527,19 @@ func (c *controlState) anyEnabledLocked() bool {
 	return false
 }
 
+// componentOrder is the canonical dashboard order for the component
+// registry. c.components is a map (random iteration order) — the status
+// reply must be deterministic or the dashboard's groups reorder on every
+// poll.
+var componentOrder = []string{"battery", "cabin", "powertrain", "chassis"}
+
 // stateLocked serializes the full control state incl. the component registry
 // (id/label/enabled/sensors) so clients can discover telemetry dynamically.
+// Components are emitted in componentOrder (any registry entries not in the
+// list are appended sorted), keeping the reply stable across polls.
 func (c *controlState) stateLocked() map[string]any {
 	comps := make([]map[string]any, 0, len(c.components))
-	for _, comp := range c.components {
+	emit := func(comp *componentState) {
 		sensors := make([]map[string]any, 0, len(comp.sensors))
 		for _, s := range comp.sensors {
 			sensors = append(sensors, map[string]any{"name": s.Name, "label": s.Label, "unit": s.Unit})
@@ -541,6 +550,27 @@ func (c *controlState) stateLocked() map[string]any {
 			"enabled": comp.enabled,
 			"sensors": sensors,
 		})
+	}
+	for _, id := range componentOrder {
+		if comp, ok := c.components[id]; ok {
+			emit(comp)
+		}
+	}
+	var rest []string
+	ordered := map[string]bool{}
+	for _, id := range componentOrder {
+		ordered[id] = true
+	}
+	for id := range c.components {
+		if !ordered[id] {
+			rest = append(rest, id)
+		}
+	}
+	sort.Strings(rest)
+	for _, id := range rest {
+		if comp, ok := c.components[id]; ok {
+			emit(comp)
+		}
 	}
 	return map[string]any{
 		"vin":         c.vin,
