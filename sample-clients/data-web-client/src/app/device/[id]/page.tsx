@@ -18,6 +18,7 @@ import type { DeviceDetailResponse } from '@/types/telemetry';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { FadeIn } from '@/components/motion/fade-in';
 import DeviceScene from '@/components/scene/device-scene';
 import { COMPONENT_ZONES, seriesForComponent } from '@/lib/vehicle-components';
 
@@ -26,7 +27,7 @@ import { COMPONENT_ZONES, seriesForComponent } from '@/lib/vehicle-components';
 const SCENE_PRIMARY = '#38bdf8';
 
 const CHIP_BASE =
-  'flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  'flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const CHIP_ACTIVE =
   'border-cyan-400/60 bg-cyan-400/10 text-cyan-700 shadow-[0_0_10px_rgba(34,211,238,0.25)] dark:text-cyan-300';
 const CHIP_IDLE = 'border-border/70 bg-card/50 text-muted-foreground hover:bg-muted hover:text-foreground';
@@ -136,54 +137,62 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
           compareVins={compareVins}
         />
 
-        {series.length > 0 && <LatestStats series={series} hidden={hidden} />}
+        {series.length > 0 && (
+          <FadeIn>
+            <LatestStats series={series} hidden={hidden} />
+          </FadeIn>
+        )}
 
         {/* 3D scene: click a zone (or chip) to filter the chart by component. */}
-        <section className="hud-panel overflow-hidden rounded-lg">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-            <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-              VEHICLE SCENE
-            </h2>
-            <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
-              DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO FILTER
-            </span>
-          </div>
-          <div className="relative h-[380px]">
-            <DeviceScene componentId={componentId} onSelect={setComponentId} color={SCENE_PRIMARY} animate />
-          </div>
-          {/* Keyboard/accessible component selector — mirrors zone clicks. */}
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3">
-            <button
-              type="button"
-              aria-pressed={componentId === 'all'}
-              onClick={() => setComponentId('all')}
-              className={`${CHIP_BASE} ${componentId === 'all' ? CHIP_ACTIVE : CHIP_IDLE}`}
-            >
-              All
-            </button>
-            {COMPONENT_ZONES.map((zone) => (
+        <FadeIn>
+          <section className="hud-panel overflow-hidden rounded-lg">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+              <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
+                VEHICLE SCENE
+              </h2>
+              <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
+                DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO FILTER
+              </span>
+            </div>
+            <div className="relative h-[380px]">
+              <DeviceScene componentId={componentId} onSelect={setComponentId} color={SCENE_PRIMARY} animate />
+            </div>
+            {/* Keyboard/accessible component selector — mirrors zone clicks. */}
+            <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3">
               <button
-                key={zone.id}
                 type="button"
-                aria-pressed={componentId === zone.id}
-                onClick={() => setComponentId(zone.id)}
-                className={`${CHIP_BASE} ${componentId === zone.id ? CHIP_ACTIVE : CHIP_IDLE}`}
+                aria-pressed={componentId === 'all'}
+                onClick={() => setComponentId('all')}
+                className={`${CHIP_BASE} ${componentId === 'all' ? CHIP_ACTIVE : CHIP_IDLE}`}
               >
-                <span className="h-3 w-3 shrink-0 rounded" style={{ backgroundColor: zone.color }} />
-                {zone.label}
+                All
               </button>
-            ))}
-          </div>
-        </section>
+              {COMPONENT_ZONES.map((zone) => (
+                <button
+                  key={zone.id}
+                  type="button"
+                  aria-pressed={componentId === zone.id}
+                  onClick={() => setComponentId(zone.id)}
+                  className={`${CHIP_BASE} ${componentId === zone.id ? CHIP_ACTIVE : CHIP_IDLE}`}
+                >
+                  <span className="h-3 w-3 shrink-0 rounded" style={{ backgroundColor: zone.color }} />
+                  {zone.label}
+                </button>
+              ))}
+            </div>
+          </section>
+        </FadeIn>
 
-        <Card>
-          <CardHeader><CardTitle>Telemetry</CardTitle></CardHeader>
-          <CardContent>
-            <StateView state={stateView} onRetry={refetch}>
-              <TelemetryChart vehicleId={id} series={chartSeries} type={type} axisMode={axisMode} hidden={hidden} theme={theme} resetZoomToken={resetZoomToken} units={unitsForSeries(chartSeries)} />
-            </StateView>
-          </CardContent>
-        </Card>
+        <FadeIn>
+          <Card>
+            <CardHeader><CardTitle>Telemetry</CardTitle></CardHeader>
+            <CardContent>
+              <StateView state={stateView} onRetry={refetch}>
+                <TelemetryChart vehicleId={id} series={chartSeries} type={type} axisMode={axisMode} hidden={hidden} theme={theme} resetZoomToken={resetZoomToken} units={unitsForSeries(chartSeries)} />
+              </StateView>
+            </CardContent>
+          </Card>
+        </FadeIn>
 
         <Tabs defaultValue="table">
           <TabsList>
