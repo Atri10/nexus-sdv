@@ -265,15 +265,19 @@ func buildCabinTelemetry(vin string, now time.Time) (*pb.TelemetryMessage, error
 	}, nil
 }
 
+// f32 returns a pointer to v — helper for proto3 optional float fields.
+func f32(v float32) *float32 { return &v }
+
 // buildPowertrainReport constructs a MetricsReport with only the powertrain
 // fields (engine power/rpm, fuel). Publishing it separately from the chassis
-// report lets the dashboard stop one component without starving the other.
+// report lets the dashboard stop one component without starving the other;
+// fields of disabled components are absent (nil), never zero.
 func buildPowertrainReport(vin string, drive driveState, now time.Time, count int) (*pbMetrics.MetricsReport, error) {
 	vehicleData := &pbVehicle.VehicleTelemetryData{
-		ENGINE_POWER:  float32(drive.enginePower),
-		ENGINE_RPM:    float32(drive.engineRPM),
-		FUEL_CAPACITY: 50.0, // Static value
-		FUEL_LEVEL:    float32(drive.fuelLevel),
+		ENGINE_POWER:  f32(float32(drive.enginePower)),
+		ENGINE_RPM:    f32(float32(drive.engineRPM)),
+		FUEL_CAPACITY: f32(50.0), // Static value
+		FUEL_LEVEL:    f32(float32(drive.fuelLevel)),
 	}
 	return wrapMetricsReport(vin, now, count, vehicleData)
 }
@@ -287,8 +291,8 @@ func buildChassisReport(vin string, drive driveState, now time.Time) (*pbMetrics
 	tirePressure := 2.2 + (mathrand.Float64()-0.5)*0.1
 
 	vehicleData := &pbVehicle.VehicleTelemetryData{
-		VELOCITY:      float32(drive.velocity),
-		TIRE_PRESSURE: float32(tirePressure),
+		VELOCITY:      f32(float32(drive.velocity)),
+		TIRE_PRESSURE: f32(float32(tirePressure)),
 		IGNITION_STATE: &ignitionState,
 		GPS_LATITUDE:   &gpsLat,
 		GPS_LONGITUDE:  &gpsLon,
@@ -1258,8 +1262,14 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		now := time.Now()
 
 		// Build the payload(s) for this tick based on the configured message
-		// type and publish each one.
-		for _, m := range v.buildPayloads(now, battery, drive, v.MessageType, messageCount, ctl.isComponentEnabled) {
+		// type and publish each one. Control mode gates per component; free-run
+		// mode (no control subject) publishes every component — legacy
+		// behavior.
+		enabled := ctl.isComponentEnabled
+		if v.controlSubject == "" {
+			enabled = func(string) bool { return true }
+		}
+		for _, m := range v.buildPayloads(now, battery, drive, v.MessageType, messageCount, enabled) {
 			// Publish to NATS
 			if err := nc.Publish(m.subject, m.payload); err != nil {
 				log.Printf("Failed to publish: %v", err)
