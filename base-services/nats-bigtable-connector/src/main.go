@@ -232,6 +232,9 @@ func main() {
 		if vtd.VELOCITY != nil {
 			addMetric("VELOCITY", float64(*vtd.VELOCITY))
 		}
+		if vtd.HEADING_DEG != nil {
+			addMetric("HEADING_DEG", float64(*vtd.HEADING_DEG))
+		}
 		if vtd.GPS_LATITUDE != nil {
 			addMetric("GPS_LATITUDE", float64(*vtd.GPS_LATITUDE))
 		}

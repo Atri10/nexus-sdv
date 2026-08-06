@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 
@@ -232,5 +233,74 @@ func TestChassisReportCarriesDynamics(t *testing.T) {
 	}
 	if vtd.ENGINE_RPM != nil {
 		t.Errorf("chassis report must not carry powertrain fields, rpm=%v", *vtd.ENGINE_RPM)
+	}
+}
+
+// TestTripPositionAt validates route interpolation, loop wrap and heading.
+func TestTripPositionAt(t *testing.T) {
+	// Synthetic square loop: 100 m sides starting at (10, 20).
+	route := []tripPoint{{10, 20}, {10.001, 20}, {10.001, 20.001}, {10, 20.001}, {10, 20}}
+	tr := &trip{pts: route}
+	tr.cumDist = make([]float64, len(route))
+	for i := 1; i < len(route); i++ {
+		tr.cumDist[i] = tr.cumDist[i-1] + distanceM(route[i-1], route[i])
+	}
+	tr.total = tr.cumDist[len(route)-1]
+
+	lat, lng, h := tr.positionAt(0)
+	if lat != 10 || lng != 20 {
+		t.Errorf("positionAt(0) = (%v, %v), want (10, 20)", lat, lng)
+	}
+	if h != 0 {
+		t.Errorf("heading at start = %v, want 0 (due north)", h)
+	}
+
+	// Halfway along the first segment (~55.6 m north): heading 0, lat 10.0005.
+	lat, lng, h = tr.positionAt(tr.cumDist[1] / 2)
+	if math.Abs(lat-10.0005) > 1e-9 || math.Abs(lng-20) > 1e-9 {
+		t.Errorf("positionAt(half) = (%v, %v), want (10.0005, 20)", lat, lng)
+	}
+	if h != 0 {
+		t.Errorf("heading at half = %v, want 0", h)
+	}
+
+	// Heading on the east-bound segment is 90°.
+	_, _, h = tr.positionAt(tr.cumDist[1] + 50)
+	if math.Abs(h-90) > 1e-6 {
+		t.Errorf("heading on east segment = %v, want 90", h)
+	}
+
+	// Wrapping: positionAt(total + x) == positionAt(x).
+	la1, lo1, _ := tr.positionAt(tr.total + 120)
+	la2, lo2, _ := tr.positionAt(120)
+	if la1 != la2 || lo1 != lo2 {
+		t.Errorf("wrap mismatch: (%v,%v) vs (%v,%v)", la1, lo1, la2, lo2)
+	}
+}
+
+// TestTripAdvancement: the drive cycle advances tripDist by velocity*dt and
+// the position follows the embedded route monotonically.
+func TestTripAdvancement(t *testing.T) {
+	drive := newDriveState()
+	startLat, startLng := drive.lat, drive.lng
+	startDist := drive.tripDist
+
+	drive.velocity = 10 // m/s
+	driveCycleStep(&drive, 2)
+
+	if drive.tripDist <= startDist {
+		t.Errorf("tripDist did not advance: %v -> %v", startDist, drive.tripDist)
+	}
+	if drive.lat == startLat && drive.lng == startLng {
+		t.Error("position did not move along the route")
+	}
+	// Distance travelled ≈ 20 m: lat/lng should have moved ~20 m from start.
+	moved := distanceM(tripPoint{startLat, startLng}, tripPoint{drive.lat, drive.lng})
+	if moved < 10 || moved > 30 {
+		t.Errorf("moved %v m in 2s at 10 m/s, want ~20 m", moved)
+	}
+	// Heading should be a valid compass value on the real route.
+	if drive.headingDeg < 0 || drive.headingDeg >= 360 {
+		t.Errorf("heading out of range: %v", drive.headingDeg)
 	}
 }

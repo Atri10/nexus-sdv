@@ -79,12 +79,12 @@ type driveState struct {
 	steeringAngle  float64
 	acceleratorPct float64
 	brakePct       float64
-	phase          int    // 0 accelerate, 1 cruise, 2 brake, 3 idle
+	phase          int     // 0 accelerate, 1 cruise, 2 brake, 3 idle
 	phaseLeft      float64 // seconds remaining in current phase
-	baseLat        float64
-	baseLng        float64
+	tripDist       float64 // metres travelled along the trip route
 	lat            float64
 	lng            float64
+	headingDeg     float64 // degrees clockwise from north (road direction)
 }
 
 type batteryState struct {
@@ -130,14 +130,15 @@ func randomVinFromPool(pool []string) string {
 }
 
 func newDriveState() driveState {
+	lat, lng, heading := simTrip.positionAt(0)
 	return driveState{
 		fuelLevel:     20 + mathrand.Float64()*60,
 		phase:         0,
 		phaseLeft:     5 + mathrand.Float64()*10,
-		baseLat:       12.9716 + (mathrand.Float64()-0.5)*0.02,
-		baseLng:       77.5946 + (mathrand.Float64()-0.5)*0.02,
-		lat:           12.9716,
-		lng:           77.5946,
+		tripDist:      0,
+		lat:           lat,
+		lng:           lng,
+		headingDeg:    heading,
 		steeringAngle: (mathrand.Float64() - 0.5) * 4,
 	}
 }
@@ -191,18 +192,10 @@ func driveCycleStep(s *driveState, dt float64) {
 	}
 	s.steeringAngle = clamp(s.steeringAngle+(mathrand.Float64()-0.5)*0.8, -45, 45)
 
-	// GPS random walk around the base position.
-	s.lat, s.lng = gpsWalk(s.baseLat, s.baseLng)
-}
-
-// gpsWalk returns a position within ~0.001 deg of base (roughly 100m). The
-// step is small so that chained walks (each call receives the previous
-// position) stay bounded over long test runs; the ±0.012 clamp is the hard
-// cap on the distance from the passed base.
-func gpsWalk(baseLat, baseLng float64) (float64, float64) {
-	lat := clamp(baseLat+(mathrand.Float64()-0.5)*0.002, baseLat-0.012, baseLat+0.012)
-	lng := clamp(baseLng+(mathrand.Float64()-0.5)*0.002, baseLng-0.012, baseLng+0.012)
-	return lat, lng
+	// Advance along the real trip route: distance = velocity * dt, position
+	// interpolated on the embedded street loop, heading following the road.
+	s.tripDist += s.velocity * dt
+	s.lat, s.lng, s.headingDeg = simTrip.positionAt(s.tripDist)
 }
 
 // buildBatteryTelemetry constructs the TelemetryMessage with the battery
@@ -296,6 +289,7 @@ func buildChassisReport(vin string, drive driveState, now time.Time) (*pbMetrics
 		IGNITION_STATE: &ignitionState,
 		GPS_LATITUDE:   &gpsLat,
 		GPS_LONGITUDE:  &gpsLon,
+		HEADING_DEG:    f32(float32(drive.headingDeg)),
 		VehicleDynamics: &pbVehicle.CarlaVehicleDynamics{
 			SteeringAngleDeg:    drive.steeringAngle,
 			AcceleratorPedalPct: drive.acceleratorPct,
@@ -446,6 +440,7 @@ func newControlState(vin, messageType string) *controlState {
 					{Name: "TIRE_PRESSURE", Label: "Tire pressure", Unit: "bar"},
 					{Name: "GPS_LATITUDE", Label: "Latitude"},
 					{Name: "GPS_LONGITUDE", Label: "Longitude"},
+					{Name: "HEADING_DEG", Label: "Heading", Unit: "°"},
 					{Name: "STEERING_ANGLE_DEG", Label: "Steering", Unit: "°"},
 					{Name: "ACCELERATOR_PEDAL_PCT", Label: "Accelerator", Unit: "%"},
 					{Name: "BRAKE_PEDAL_PCT", Label: "Brake", Unit: "%"},

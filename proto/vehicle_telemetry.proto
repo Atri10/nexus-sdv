@@ -43,6 +43,9 @@ message VehicleTelemetryData {
   // Vehicle speed in m/s.
   optional float VELOCITY = 9;
 
+  // Heading in degrees clockwise from north (direction of travel).
+  optional float HEADING_DEG = 15;
+
   // Vehicle locked state — optional: false means unlocked, not field absent.
   optional bool LOCKED = 10;
 
