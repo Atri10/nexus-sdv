@@ -65,7 +65,11 @@ function FerrariBody({ color }: { color: string }) {
       if (!mesh.isMesh || !mesh.material) return;
       const mat = mesh.material as MeshStandardMaterial;
       if (mat.name === 'Body_Color') {
-        mat.color.set(color);
+        // Clone before recoloring: the GLTF cache shares the source
+        // material across every VehicleModel instance.
+        const paint = mat.clone();
+        paint.color.set(color);
+        (o as Mesh).material = paint;
       }
     });
     return clone;
