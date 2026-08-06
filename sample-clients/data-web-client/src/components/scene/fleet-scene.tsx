@@ -61,6 +61,9 @@ interface PlacedVehicle {
 const LIVE_EMISSIVE = '#22C55E';
 const IDLE_EMISSIVE = '#0e7490';
 
+/** Shared immutable default — avoids allocating a fresh Set on every render. */
+const EMPTY_LIVE_VINS = new Set<string>();
+
 /** One vehicle: body color from the vinColorFamily palette, hover cursor, click-to-select. */
 function FleetVehicleNode({
   vehicle,
@@ -94,8 +97,14 @@ function FleetVehicleNode({
     >
       <VehicleModel color={color} emissive={live ? LIVE_EMISSIVE : IDLE_EMISSIVE} pulse={live} />
       {showLabel && (
-        <Html position={[0, 2.4, 0]} center distanceFactor={8} style={{ pointerEvents: 'none' }}>
-          <span className="whitespace-nowrap rounded border border-cyan-400/20 bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-cyan-100">
+        <Html position={[0, 2.4, 0]} center distanceFactor={8} style={{ pointerEvents: 'auto' }}>
+          <span
+            className="whitespace-nowrap cursor-pointer rounded border border-cyan-400/20 bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-cyan-100"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(vehicle.vin);
+            }}
+          >
             {vehicle.vin}
           </span>
         </Html>
@@ -113,7 +122,7 @@ function FleetVehicleNode({
  */
 export function FleetScene({
   vehicles,
-  liveVins = new Set(),
+  liveVins = EMPTY_LIVE_VINS,
   onSelect,
   onDeselect,
   fallback,
