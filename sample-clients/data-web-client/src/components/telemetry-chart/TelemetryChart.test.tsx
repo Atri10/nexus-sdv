@@ -8,6 +8,8 @@ const theme: ChartThemeColors = {
   ticks: '#6b7280',
   legend: '#374151',
   title: '#111827',
+  fontFamily: 'JetBrains Mono, monospace',
+  crosshair: '#22D3EE',
 };
 
 function makeSeries(overrides: Partial<ChartSeries> = {}): ChartSeries {

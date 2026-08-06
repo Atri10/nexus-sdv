@@ -63,6 +63,19 @@ export const DEMO_COMPONENTS: DemoComponent[] = [
 ];
 
 /**
+ * Unit declared for a sensor qualifier in the shared component metadata,
+ * or undefined when the sensor carries no unit (GPS coordinates, make, ...).
+ * Qualifiers are matched without the family prefix (see seriesForComponent).
+ */
+export function unitForQualifier(qualifier: string): string | undefined {
+  for (const component of DEMO_COMPONENTS) {
+    const sensor = component.sensors.find((s) => s.qualifier === qualifier);
+    if (sensor?.unit) return sensor.unit;
+  }
+  return undefined;
+}
+
+/**
  * 3D zone geometry for the device scene — one translucent box per component,
  * aligned to the procedural VehicleModel (unit scale) in scene coordinates.
  * `position` is the box center, `size` is [width, height, depth].

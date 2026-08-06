@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
 import { DEMO_COMPONENTS, seriesForComponent } from '@/lib/vehicle-components';
+import { unitsForSeries } from '@/lib/telemetry-chart-utils';
 import { DataPath } from '@/components/demo/data-path';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
@@ -241,6 +242,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                 hidden={hidden}
                 theme={theme}
                 resetZoomToken={0}
+                units={unitsForSeries(componentSeries)}
               />
             </StateView>
           </CardContent>

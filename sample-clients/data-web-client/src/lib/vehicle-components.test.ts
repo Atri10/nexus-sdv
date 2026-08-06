@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
-import { COMPONENT_ZONES, DEMO_COMPONENTS, latestValuesFor, seriesForComponent } from '@/lib/vehicle-components';
+import { COMPONENT_ZONES, DEMO_COMPONENTS, latestValuesFor, seriesForComponent, unitForQualifier } from '@/lib/vehicle-components';
 
 /**
  * Connector contract (base-services/nats-bigtable-connector): columns are
@@ -121,6 +121,28 @@ describe('seriesForComponent', () => {
   it('returns [] for an unknown component or unmatched qualifiers', () => {
     expect(seriesForComponent([], 'battery')).toEqual([]);
     expect(seriesForComponent([series('VIN1', 'dynamic:battery.voltage', [[1, 1]])], 'nope')).toEqual([]);
+  });
+});
+
+describe('unitForQualifier', () => {
+  it('returns the unit declared for a sensor qualifier', () => {
+    expect(unitForQualifier('battery.voltage')).toBe('V');
+    expect(unitForQualifier('battery.current')).toBe('A');
+    expect(unitForQualifier('ENGINE_POWER')).toBe('kW');
+    expect(unitForQualifier('VELOCITY')).toBe('km/h');
+    expect(unitForQualifier('battery.temp')).toBe('°C');
+  });
+
+  it('returns undefined for sensors without a declared unit', () => {
+    expect(unitForQualifier('GPS_LATITUDE')).toBeUndefined();
+    expect(unitForQualifier('GPS_LONGITUDE')).toBeUndefined();
+    expect(unitForQualifier('make')).toBeUndefined();
+    expect(unitForQualifier('index')).toBeUndefined();
+  });
+
+  it('returns undefined for unknown qualifiers', () => {
+    expect(unitForQualifier('nope')).toBeUndefined();
+    expect(unitForQualifier('')).toBeUndefined();
   });
 });
 

@@ -1,3 +1,5 @@
+import { unitForQualifier } from '@/lib/vehicle-components';
+
 export interface ChartSeries {
   vin: string;
   column: string;
@@ -39,4 +41,25 @@ export function groupAxes(series: ChartSeries[]): { left: string[]; right: strin
     else left.push(s.key);
   });
   return { left, right };
+}
+
+/** Column qualifier without the family prefix ('dynamic:battery.voltage' → 'battery.voltage'). */
+export function columnQualifier(column: string): string {
+  const colon = column.indexOf(':');
+  return colon > -1 ? column.slice(colon + 1) : column;
+}
+
+/**
+ * Unit lookup for chart series: maps each series key to the unit declared in
+ * the shared component metadata (DEMO_COMPONENTS), keyed by column qualifier.
+ * Only series with a declared unit appear — GPS/static series are omitted.
+ * Consumers use the map for axis titles and tooltip suffixes.
+ */
+export function unitsForSeries(series: ChartSeries[]): Record<string, string> {
+  const units: Record<string, string> = {};
+  for (const s of series) {
+    const unit = unitForQualifier(columnQualifier(s.column));
+    if (unit) units[s.key] = unit;
+  }
+  return units;
 }

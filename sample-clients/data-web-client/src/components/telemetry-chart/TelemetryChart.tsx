@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Chart as ChartJS, ChartData, ChartOptions, ScriptableContext } from 'chart.js';
+import { Chart as ChartJS, ChartData, ChartOptions, ScriptableContext, type Scale } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 import { registerChart } from '@/lib/register-chart';
 import { type ChartThemeColors } from '@/hooks/use-chart-theme';
@@ -17,6 +17,27 @@ interface TelemetryChartProps {
   hidden: Set<string>;
   theme: ChartThemeColors;
   resetZoomToken: number;
+  /** Series key → unit, resolved from component metadata by the caller. */
+  units?: Record<string, string>;
+}
+
+/**
+ * Unit-aware time tick labels: within a single day HH:mm, across days
+ * MMM d HH:mm. Formatters are module-cached (Intl constructors are costly).
+ */
+const withinDayFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+const crossDayFormat = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+function timeTickLabel(this: Scale, tickValue: string | number): string {
+  const ts = Number(tickValue);
+  if (!isFinite(ts)) return '';
+  const crossesDay = new Date(this.min ?? ts).toDateString() !== new Date(this.max ?? ts).toDateString();
+  return (crossesDay ? crossDayFormat : withinDayFormat).format(new Date(ts));
 }
 
 /** Vertical fade for area fills: series color at ~30% opacity fading to 0. */
@@ -38,6 +59,7 @@ export default function TelemetryChart({
   hidden,
   theme,
   resetZoomToken,
+  units = {},
 }: TelemetryChartProps) {
   const chartRef = useRef<ChartJS<'line'>>(null);
   const { right } =
@@ -49,6 +71,17 @@ export default function TelemetryChart({
   useEffect(() => {
     if (resetZoomToken > 0) chartRef.current?.resetZoom();
   }, [resetZoomToken]);
+
+  // Left axis title: the shared unit when every visible left series has the
+  // same one, otherwise 'Value' (mixed-unit charts).
+  const visible = series.filter((s) => !hidden.has(s.key));
+  const leftUnits = visible
+    .filter((s) => !right.includes(s.key))
+    .map((s) => units[s.key])
+    .filter((u): u is string => Boolean(u));
+  const leftTitle = leftUnits.length > 0 && new Set(leftUnits).size === 1 ? leftUnits[0] : 'Value';
+  const rightUnit = right.length > 0 ? units[right[0]] : undefined;
+  const rightTitle = rightUnit ? `${rightLabel} (${rightUnit})` : rightLabel;
 
   const datasets = series
     .filter((s) => !hidden.has(s.key))
@@ -72,6 +105,8 @@ export default function TelemetryChart({
         pointHoverRadius: 5,
         tension: 0.25,
         fill: type === 'area',
+        // Tooltip suffix; undefined for series without a unit.
+        unit: units[s.key],
       };
       if (type === 'bar') {
         base.type = 'bar';
@@ -91,41 +126,66 @@ export default function TelemetryChart({
     responsive: true,
     maintainAspectRatio: false,
     animation: { duration: 200 },
+    // Data is already {x, y} with numeric values; decimation requires
+    // parsing to be off (chart.js requirement).
+    parsing: false,
     interaction: { mode: 'index', intersect: false },
     scales: {
       x: {
         type: 'time',
-        time: { tooltipFormat: 'HH:mm:ss' },
+        time: {
+          tooltipFormat: 'HH:mm:ss',
+          // Tick label defaults (overridden per-tick by the Intl callback);
+          // kept so non-tick consumers (e.g. axis bounds) render consistently.
+          displayFormats: {
+            millisecond: 'HH:mm:ss.SSS',
+            second: 'HH:mm:ss',
+            minute: 'HH:mm',
+            hour: 'HH:mm',
+          },
+        },
         grid: { color: theme.grid },
-        ticks: { color: theme.ticks, maxTicksLimit: 12 },
-        title: { display: true, text: 'Time', color: theme.ticks },
+        ticks: {
+          color: theme.ticks,
+          maxTicksLimit: 12,
+          font: { family: theme.fontFamily },
+          callback: timeTickLabel,
+        },
+        title: { display: true, text: 'Time', color: theme.ticks, font: { family: theme.fontFamily } },
       },
       y: {
         type: 'linear',
         display: true,
         position: 'left',
         grid: { color: theme.grid },
-        ticks: { color: theme.ticks, callback: (v) => formatValue(Number(v)) },
-        title: { display: true, text: 'Value', color: theme.ticks },
+        ticks: { color: theme.ticks, font: { family: theme.fontFamily }, callback: (v) => formatValue(Number(v)) },
+        title: { display: true, text: leftTitle, color: theme.ticks, font: { family: theme.fontFamily } },
       },
       y1: {
         type: 'linear',
         display: right.length > 0,
         position: 'right',
         grid: { drawOnChartArea: false },
-        ticks: { color: theme.ticks, callback: (v) => formatValue(Number(v)) },
-        title: { display: true, text: rightLabel, color: theme.ticks },
+        ticks: { color: theme.ticks, font: { family: theme.fontFamily }, callback: (v) => formatValue(Number(v)) },
+        title: { display: true, text: rightTitle, color: theme.ticks, font: { family: theme.fontFamily } },
       },
     },
     plugins: {
       // Series toggling lives in ChartControls' color chips — the default
       // legend would duplicate it.
       legend: { display: false },
-      title: { display: true, text: `Telemetry: ${vehicleId}`, color: theme.title },
+      title: {
+        display: true,
+        text: `Telemetry: ${vehicleId}`,
+        color: theme.title,
+        font: { family: theme.fontFamily },
+      },
       tooltip: {
         backgroundColor: 'rgba(15, 23, 42, 0.92)',
         titleColor: '#e2e8f0',
         bodyColor: '#e2e8f0',
+        titleFont: { family: theme.fontFamily },
+        bodyFont: { family: theme.fontFamily },
         borderColor: 'rgba(148, 163, 184, 0.25)',
         borderWidth: 1,
         cornerRadius: 8,
@@ -133,10 +193,19 @@ export default function TelemetryChart({
         boxPadding: 4,
         usePointStyle: true,
         callbacks: {
-          label: (item) =>
-            `${String((item.dataset as { label?: string }).label ?? '')}: ${formatValue(item.parsed.y ?? NaN)}`,
+          label: (item) => {
+            const { label, unit } = item.dataset as { label?: string; unit?: string };
+            return `${label ?? ''}: ${formatValue(item.parsed.y ?? NaN)}${unit ? ` ${unit}` : ''}`;
+          },
         },
       },
+      hudCrosshair: { color: theme.crosshair },
+      // Dense line/area series decimate with chart.js's built-in lttb so
+      // 1000+ point pans stay smooth. Bar datasets are skipped by the
+      // plugin itself (supportsDecimation); decimation applies at render —
+      // acceptable alongside zoom (zooming below the threshold restores the
+      // raw points naturally).
+      decimation: { enabled: true, algorithm: 'lttb', threshold: 400, samples: 100 },
       zoom: {
         zoom: { wheel: { enabled: true }, drag: { enabled: true }, mode: 'x' },
         pan: { enabled: true, mode: 'xy' },
