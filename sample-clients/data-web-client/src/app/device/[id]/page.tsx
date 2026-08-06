@@ -130,7 +130,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
 
         <ChartControls
           type={type} onTypeChange={setType}
-          series={series} hidden={hidden} onToggle={toggle}
+          series={chartSeries} hidden={hidden} onToggle={toggle}
           axisMode={axisMode} onAxisModeChange={setAxisMode}
           onResetZoom={() => setResetZoomToken((t) => t + 1)}
           onAddCompare={(v) => setCompareVins((c) => c.includes(v) ? c : [...c, v])}
