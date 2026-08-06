@@ -85,7 +85,7 @@ export default function Sidebar() {
         <button
           type="button"
           onClick={() => signOut({ callbackUrl: '/auth/signin' })}
-          className="text-muted-foreground hover:text-cyan-300 transition-colors"
+          className="text-muted-foreground hover:text-cyan-700 dark:hover:text-cyan-300 transition-colors"
         >
           Sign out
         </button>
