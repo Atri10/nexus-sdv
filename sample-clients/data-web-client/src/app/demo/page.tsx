@@ -1,33 +1,20 @@
 'use client';
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
 import { useReducedMotion } from 'framer-motion';
 import AppLayout from '@/components/app-layout';
 import TimeRangeSelector from '@/components/time-range-selector';
-import { LatestStats } from '@/components/latest-stats';
-import { StateView } from '@/components/state-view';
-import { Skeleton } from '@/components/ui/skeleton';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
 import { qualifierOf } from '@/lib/telemetry-discovery';
-import { unitsForSeries } from '@/lib/telemetry-chart-utils';
 import { DataPath } from '@/components/demo/data-path';
 import { ComponentPanel } from '@/components/demo/component-panel';
+import { ChartGrid } from '@/components/demo/chart-grid';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
 import type { ComponentStatus } from '@/lib/demo-control';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
 import DemoScene from '@/components/scene/demo-scene';
 import { FadeIn } from '@/components/motion/fade-in';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { TimeRange } from '@/types/telemetry';
-
-// chart.js's zoom plugin pulls in hammerjs, which touches `document` at module
-// scope — not SSR-safe. Load the chart client-only (this page is statically
-// prerendered, unlike the dynamic /device routes).
-const TelemetryChart = dynamic(() => import('@/components/telemetry-chart'), {
-  ssr: false,
-  loading: () => <Skeleton className="h-[400px] w-full rounded-lg" />,
-});
 
 /** Random pool VIN, never the same as the current one. */
 function randomVin(exclude?: string): string {
@@ -53,7 +40,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   const userPicked = useRef(false);
 
   const theme = useChartTheme();
-  const { series, loading, error, refetch } = useTelemetryData({ vin, range });
+  const { series } = useTelemetryData({ vin, range });
 
   // No ?vin= given: randomize the default vehicle client-side (after the
   // deterministic first paint so SSR and hydration agree).
@@ -213,8 +200,6 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
       return next;
     });
 
-  const stateView = error ? 'error' : loading ? 'loading' : componentSeries.length === 0 ? 'empty' : 'ready';
-
   return (
     <AppLayout>
       <div className="space-y-4">
@@ -287,47 +272,14 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           </FadeIn>
         )}
 
-        {componentSeries.length > 0 && (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              {componentSeries.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  onClick={() => toggle(s.key)}
-                  className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                    hidden.has(s.key) ? 'opacity-40 line-through' : ''
-                  }`}
-                >
-                  <span className="h-3 w-3 shrink-0 rounded" style={{ backgroundColor: s.color }} />
-                  {s.label}
-                </button>
-              ))}
-            </div>
-            <LatestStats series={componentSeries} hidden={hidden} />
-          </>
-        )}
-
         <FadeIn>
-          <Card>
-            <CardHeader>
-              <CardTitle>{component?.label ?? componentId} telemetry</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <StateView state={stateView} onRetry={refetch}>
-                <TelemetryChart
-                  vehicleId={vin}
-                  series={componentSeries}
-                  type="line"
-                  axisMode="single"
-                  hidden={hidden}
-                  theme={theme}
-                  resetZoomToken={0}
-                  units={unitsForSeries(componentSeries)}
-                />
-              </StateView>
-            </CardContent>
-          </Card>
+          <ChartGrid
+            series={series}
+            components={components}
+            hidden={hidden}
+            theme={theme}
+            onToggleSeries={toggle}
+          />
         </FadeIn>
       </div>
     </AppLayout>
