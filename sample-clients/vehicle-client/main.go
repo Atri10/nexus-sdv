@@ -235,7 +235,8 @@ func buildBatteryTelemetry(vin string, b batteryState, now time.Time) (*pb.Telem
 	}, nil
 }
 
-// buildCabinTelemetry constructs the static cabin readings (make/index).
+// buildCabinTelemetry constructs the static cabin/identity readings
+// (make/model/year/firmware).
 func buildCabinTelemetry(vin string, now time.Time) (*pb.TelemetryMessage, error) {
 	return &pb.TelemetryMessage{
 		MessageId:     uuid.New().String(),
@@ -250,9 +251,21 @@ func buildCabinTelemetry(vin string, now time.Time) (*pb.TelemetryMessage, error
 			},
 			{
 				Timestamp: timestamppb.New(now),
-				Value:     fmt.Sprintf("%d", 2026),
+				Value:     "SDV-1",
 				DataType:  pb.DataType_STATIC,
-				Sensor:    "index",
+				Sensor:    "model",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     "2026",
+				DataType:  pb.DataType_STATIC,
+				Sensor:    "year",
+			},
+			{
+				Timestamp: timestamppb.New(now),
+				Value:     "1.2.0",
+				DataType:  pb.DataType_STATIC,
+				Sensor:    "firmware",
 			},
 		},
 	}, nil
@@ -421,7 +434,9 @@ func newControlState(vin, messageType string) *controlState {
 				id: "cabin", label: "Cabin",
 				sensors: []sensorInfo{
 					{Name: "make", Label: "Make"},
-					{Name: "index", Label: "Model index"},
+					{Name: "model", Label: "Model"},
+					{Name: "year", Label: "Year"},
+					{Name: "firmware", Label: "Firmware"},
 				},
 			},
 			"powertrain": {

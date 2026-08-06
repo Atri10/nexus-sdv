@@ -38,14 +38,15 @@ function latestRaw(series: ChartSeries): string | null {
   return null;
 }
 
-/** Last raw values (oldest → newest) for non-numeric signal history. */
-function rawHistory(series: ChartSeries, count: number): string[] {
-  const out: string[] = [];
-  for (let i = series.points.length - 1; i >= 0 && out.length < count; i--) {
-    const p = series.points[i];
-    if (p.raw != null) out.unshift(String(p.raw));
+/** True when every numeric point has the same value (constant signal). */
+function isConstant(series: ChartSeries): boolean {
+  let first: number | null = null;
+  for (const p of series.points) {
+    if (p.y == null) continue;
+    if (first === null) first = p.y;
+    else if (Math.abs(p.y - first) > 1e-9) return false;
   }
-  return out;
+  return first !== null;
 }
 
 /**
@@ -59,9 +60,10 @@ function rawHistory(series: ChartSeries, count: number): string[] {
  */
 export const SignalChart = memo(function SignalChart({ series, unit, paused, theme, onExpand }: SignalChartProps) {
   const numeric = series.points.some((p) => p.y != null);
+  const constant = isConstant(series);
+  const showChart = numeric && !constant;
   const latest = latestPoint(series);
   const raw = latestRaw(series);
-  const history = rawHistory(series, 8);
   const yRange = useMemo(() => stableAxisRange(series.points), [series]);
   return (
     <div
@@ -109,7 +111,7 @@ export const SignalChart = memo(function SignalChart({ series, unit, paused, the
         </div>
       </div>
       <div className="relative mt-2 h-48">
-        {numeric ? (
+        {showChart ? (
           <TelemetryChart
             vehicleId={series.vin}
             series={[series]}
@@ -122,22 +124,14 @@ export const SignalChart = memo(function SignalChart({ series, unit, paused, the
             zoomEnabled={false}
             animated={false}
             yRange={yRange ?? undefined}
+            height="100%"
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2">
+          <div className="flex h-full flex-col items-center justify-center gap-1.5">
             <span className="font-mono text-3xl font-bold tabular-nums">{raw ?? '—'}</span>
-            {history.length > 0 && (
-              <div className="flex max-w-full flex-wrap justify-center gap-1 px-2">
-                {history.map((v, i) => (
-                  <span
-                    key={i}
-                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                  >
-                    {v}
-                  </span>
-                ))}
-              </div>
-            )}
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {constant ? 'Constant' : 'Static value'}
+            </span>
           </div>
         )}
       </div>

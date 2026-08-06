@@ -25,6 +25,8 @@ interface TelemetryChartProps {
   yRange?: { min?: number; max?: number };
   /** Chart.js update animation (200ms). Grid cards disable it to avoid visible jumps. */
   animated?: boolean;
+  /** Wrapper height (CSS). Grid cards pass 100% to fill their fixed card area. */
+  height?: string;
 }
 
 /**
@@ -69,6 +71,7 @@ export default function TelemetryChart({
   zoomEnabled = true,
   yRange,
   animated = true,
+  height = '400px',
 }: TelemetryChartProps) {
   const chartRef = useRef<ChartJS<'line'>>(null);
   const { right } =
@@ -228,7 +231,7 @@ export default function TelemetryChart({
   };
 
   return (
-    <div className="relative h-[400px] w-full">
+    <div className="relative w-full" style={{ height }}>
       <Line ref={chartRef} data={data} options={options} />
     </div>
   );

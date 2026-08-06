@@ -207,11 +207,17 @@ func TestBuildCabinTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msg.SensorData) != 2 {
-		t.Fatalf("cabin sensors = %d, want 2", len(msg.SensorData))
+	if len(msg.SensorData) != 4 {
+		t.Fatalf("cabin sensors = %d, want 4", len(msg.SensorData))
 	}
-	if msg.SensorData[0].Sensor != "make" || msg.SensorData[1].Sensor != "index" {
-		t.Errorf("cabin sensors wrong: %v %v", msg.SensorData[0].Sensor, msg.SensorData[1].Sensor)
+	want := []string{"make", "model", "year", "firmware"}
+	for i, name := range want {
+		if msg.SensorData[i].Sensor != name {
+			t.Errorf("cabin sensor %d = %q, want %q", i, msg.SensorData[i].Sensor, name)
+		}
+	}
+	if msg.SensorData[1].Value != "SDV-1" || msg.SensorData[3].Value != "1.2.0" {
+		t.Errorf("cabin values wrong: %v %v", msg.SensorData[1].Value, msg.SensorData[3].Value)
 	}
 }
 
