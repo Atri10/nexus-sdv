@@ -2,7 +2,7 @@
 import { Card, CardContent } from '@/components/ui/card';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
 import { formatValue } from '@/lib/telemetry-chart-utils';
-import { DEMO_COMPONENTS, latestValuesFor } from '@/lib/demo/vehicle-components';
+import { DEMO_COMPONENTS, latestValuesFor } from '@/lib/vehicle-components';
 
 interface VehicleSchematicProps {
   componentId: string;
