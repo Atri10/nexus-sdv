@@ -224,13 +224,19 @@ func createNATSUserJWT(name string, roles []any, accountKeyPair nkeys.KeyPair, a
 			glog.Debugf("Allowing the subscription of %s", permission)
 		case "telemetry-client":
 			// TelemetryMessage publishes to telemetry-generic.<VIN>.battery,
-			// MetricsReport to telemetry.<VIN> — grant publish on both.
-			permission := fmt.Sprintf("telemetry.%s.>", vin)
-			perms.Pub.Allow.Add(permission)
-			glog.Debugf("Allowing the publish of %s", permission)
-			genericPermission := fmt.Sprintf("telemetry-generic.%s.>", vin)
-			perms.Pub.Allow.Add(genericPermission)
-			glog.Debugf("Allowing the publish of %s", genericPermission)
+			// MetricsReport to the bare two-token subject telemetry.<VIN>.
+			// NATS `.>` wildcards require at least one MORE token, so a bare
+			// publish never matches — grant both the exact subject and the
+			// wildcard for each family.
+			for _, subj := range []string{
+				fmt.Sprintf("telemetry.%s", vin),
+				fmt.Sprintf("telemetry.%s.>", vin),
+				fmt.Sprintf("telemetry-generic.%s", vin),
+				fmt.Sprintf("telemetry-generic.%s.>", vin),
+			} {
+				perms.Pub.Allow.Add(subj)
+				glog.Debugf("Allowing the publish of %s", subj)
+			}
 			// nc.request() replies land on _INBOX.<...>; the simulator
 			// answers via msg.Respond(), so publishing there must be allowed.
 			perms.Pub.Allow.Add("_INBOX.>")
