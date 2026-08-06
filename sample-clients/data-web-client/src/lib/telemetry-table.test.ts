@@ -81,6 +81,8 @@ describe('latestValues', () => {
 
     expect(stats[0].value).toBeNull();
     expect(stats[0].timestamp).toBeNull();
+    expect(stats[0].previous).toBeNull();
+    expect(stats[0].history).toEqual([]);
   });
 
   it('preserves key, label and color for rendering', () => {
@@ -90,5 +92,59 @@ describe('latestValues', () => {
     expect(stats[0].key).toBe('VIN123|dynamic:speed');
     expect(stats[0].label).toBe('speed');
     expect(stats[0].color).toBe('#3B82F6');
+  });
+
+  it('tracks previous as the second-to-last numeric value across nulls', () => {
+    const speed = series('VIN123', 'dynamic:speed', [[1000, 10], [2000, null], [3000, 42]]);
+    const stats = latestValues([speed]);
+
+    expect(stats[0].value).toBe(42);
+    expect(stats[0].previous).toBe(10);
+  });
+
+  it('chains previous through more than two numeric points', () => {
+    const speed = series('VIN123', 'dynamic:speed', [[1000, 10], [2000, 20], [3000, 30]]);
+    const stats = latestValues([speed]);
+
+    expect(stats[0].value).toBe(30);
+    expect(stats[0].previous).toBe(20);
+  });
+
+  it('leaves previous null when only one numeric point exists', () => {
+    const speed = series('VIN123', 'dynamic:speed', [[1000, 10], [2000, null]]);
+    const stats = latestValues([speed]);
+
+    expect(stats[0].value).toBe(10);
+    expect(stats[0].previous).toBeNull();
+  });
+
+  it('collects history from numeric points only, in order', () => {
+    const speed = series('VIN123', 'dynamic:speed', [[1000, 10], [2000, null], [3000, 42], [4000, 55]]);
+    const stats = latestValues([speed]);
+
+    expect(stats[0].history).toEqual([
+      { x: 1000, y: 10 },
+      { x: 3000, y: 42 },
+      { x: 4000, y: 55 },
+    ]);
+  });
+
+  it('caps history at the last 20 points', () => {
+    const points = Array.from({ length: 25 }, (_, i) => [i * 1000, i + 1] as [number, number]);
+    const stats = latestValues([series('VIN123', 'dynamic:speed', points)]);
+
+    expect(stats[0].history).toHaveLength(20);
+    expect(stats[0].history[0]).toEqual({ x: 5000, y: 6 });
+    expect(stats[0].history[19]).toEqual({ x: 24000, y: 25 });
+    expect(stats[0].value).toBe(25);
+    expect(stats[0].previous).toBe(24);
+  });
+
+  it('returns empty history for an empty series', () => {
+    const stats = latestValues([series('VIN123', 'dynamic:speed', [])]);
+
+    expect(stats[0].value).toBeNull();
+    expect(stats[0].previous).toBeNull();
+    expect(stats[0].history).toEqual([]);
   });
 });
