@@ -155,6 +155,10 @@ export function VehicleMap({ series, paused }: VehicleMapProps) {
       return;
     }
 
+    // Paint the static scene synchronously — rAF is throttled in hidden or
+    // headless tabs, so the trail must not wait for the first animation frame.
+    draw(0, 0);
+
     let raf = 0;
     let start = performance.now();
     const tick = (now: number) => {
