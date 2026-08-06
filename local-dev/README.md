@@ -298,6 +298,19 @@ open http://localhost:3000/device/VIN123
   `/api/telemetry/[vin]` proxy route, live updates via WebSocket
   `/api/v1/vehicles/{vin}/telemetry/live`.
 
+**Command Deck UI.** The dashboard uses an immersive HUD theme — Orbitron /
+JetBrains Mono typography, cyan-on-slate palette, glass panels and starfield
+backdrops. Fleet, vehicle and demo pages each feature a lazy-loaded three.js
+scene (react-three-fiber): the fleet map places every vehicle at its GPS
+position (click to dive to the device page), the vehicle scene renders the
+four component zones as clickable holographic boxes that filter the chart,
+and the demo scene shows the NATS → Bigtable pipeline with flowing particles.
+Scenes live in per-page chunks (never the app shell), detect WebGL support
+and fall back to the SVG schematic / table content when it is unavailable,
+and honor `prefers-reduced-motion` (starfield drift, pulse rings, particle
+flow and KPI count-ups switch off; entrances become opacity-only). Interactive
+elements expose keyboard-accessible controls with visible focus rings.
+
 ---
 
 ## 8. Demo mode
