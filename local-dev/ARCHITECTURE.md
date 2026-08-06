@@ -50,7 +50,8 @@ connector now also writes `dynamic:STEERING_ANGLE_DEG`, `dynamic:ACCELERATOR_PED
 and `dynamic:BRAKE_PEDAL_PCT` — so the /demo schematic and chart render live
 values. The web frontend renders the Command Deck HUD theme with lazy-loaded
 three.js scenes (fleet map, vehicle zones, demo pipeline) that fall back to
-static SVG content without WebGL and honor `prefers-reduced-motion`.
+static SVG content (demo), a notice plus the table (fleet), or the underlying
+charts/tables (device) without WebGL, and honor `prefers-reduced-motion`.
 
 ### Query path
 
