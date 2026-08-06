@@ -10,6 +10,7 @@ import { GridFloor } from '@/components/scene/grid-floor';
 import { Starfield } from '@/components/scene/starfield';
 import { VehicleModel } from '@/components/scene/vehicle-model';
 import { COMPONENT_ZONES, type ComponentZone } from '@/lib/vehicle-components';
+import type { ComponentStatus } from '@/lib/demo-control';
 
 export interface DemoSceneProps {
   /** Active component id; its zone pulses and its pipeline hop highlights. */
@@ -22,6 +23,8 @@ export interface DemoSceneProps {
   animate: boolean;
   /** Vehicle identifier, surfaced in the scene's accessible label. */
   vin: string;
+  /** Discovered components; zones dim when their component is disabled. */
+  components?: ComponentStatus[] | null;
   /** Rendered in place of the canvas when WebGL is unavailable. */
   fallback?: React.ReactNode;
   className?: string;
@@ -53,10 +56,13 @@ const ACTIVE_EDGE_OPACITY = 0.95;
 function ZoneBox({
   zone,
   active,
+  dimmed,
   onSelect,
 }: {
   zone: ComponentZone;
   active: boolean;
+  /** Component disabled — zone dims to reflect the paused state. */
+  dimmed: boolean;
   onSelect: (id: string) => void;
 }) {
   const { animate } = useSceneMotion();
@@ -67,6 +73,7 @@ function ZoneBox({
   // Shared geometry so the fill box and its edge wireframe never diverge.
   const geometry = useMemo(() => new BoxGeometry(...zone.size), [zone]);
   const edges = useMemo(() => new EdgesGeometry(geometry), [geometry]);
+  const dim = dimmed ? 0.35 : 1;
 
   useFrame(({ clock }) => {
     const g = group.current;
@@ -98,7 +105,7 @@ function ZoneBox({
         <meshBasicMaterial
           color={zone.color}
           transparent
-          opacity={active ? ACTIVE_FILL_OPACITY : IDLE_FILL_OPACITY}
+          opacity={(active ? ACTIVE_FILL_OPACITY : IDLE_FILL_OPACITY) * dim}
           side={DoubleSide}
           depthTest={false}
           depthWrite={false}
@@ -108,7 +115,7 @@ function ZoneBox({
         <lineBasicMaterial
           color={zone.color}
           transparent
-          opacity={active ? ACTIVE_EDGE_OPACITY : IDLE_EDGE_OPACITY}
+          opacity={(active ? ACTIVE_EDGE_OPACITY : IDLE_EDGE_OPACITY) * dim}
           toneMapped={false}
           depthTest={false}
           depthWrite={false}
@@ -131,6 +138,7 @@ export function DemoScene({
   flowing,
   animate,
   vin,
+  components,
   fallback,
   className,
 }: DemoSceneProps) {
@@ -157,7 +165,13 @@ export function DemoScene({
       <group position={VEHICLE_POSITION} scale={VEHICLE_SCALE}>
         <VehicleModel color="#38bdf8" emissive="#38bdf8" pulse={flowing} />
         {COMPONENT_ZONES.map((zone) => (
-          <ZoneBox key={zone.id} zone={zone} active={zone.id === componentId} onSelect={onSelect} />
+          <ZoneBox
+            key={zone.id}
+            zone={zone}
+            active={zone.id === componentId}
+            dimmed={components ? !(components.find((c) => c.id === zone.id)?.enabled ?? true) : false}
+            onSelect={onSelect}
+          />
         ))}
       </group>
       <DemoPipeline componentId={componentId} flowing={flowing} animate={animate} />

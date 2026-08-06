@@ -3,9 +3,10 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import AppLayout from '@/components/app-layout';
 import TimeRangeSelector from '@/components/time-range-selector';
+import { LatestStats } from '@/components/latest-stats';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
-import { qualifierOf } from '@/lib/telemetry-discovery';
+import { qualifierOf, unitForSignal } from '@/lib/telemetry-discovery';
 import { DataPath } from '@/components/demo/data-path';
 import { ComponentPanel } from '@/components/demo/component-panel';
 import { ChartGrid } from '@/components/demo/chart-grid';
@@ -238,7 +239,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             the scene's fallback prop. */}
         {reducedMotion ? (
           <FadeIn>
-            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
+            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} />
             <DataPath flowing={flowing} />
           </FadeIn>
         ) : (
@@ -259,9 +260,10 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                   flowing={flowing}
                   animate={!reducedMotion}
                   vin={vin}
+                  components={components}
                   fallback={
                     <div className="grid gap-4 xl:grid-cols-2">
-                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
+                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} />
                       <DataPath flowing={flowing} />
                     </div>
                   }
@@ -269,6 +271,20 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                 />
               </div>
             </section>
+          </FadeIn>
+        )}
+
+        {componentSeries.length > 0 && (
+          <FadeIn>
+            <LatestStats
+              series={componentSeries}
+              hidden={hidden}
+              units={Object.fromEntries(
+                componentSeries
+                  .map((s) => [s.key, unitForSignal(components, qualifierOf(s.column))])
+                  .filter((entry): entry is [string, string] => entry[1] !== undefined)
+              )}
+            />
           </FadeIn>
         )}
 
