@@ -47,12 +47,12 @@ export function ChartControls(props: {
         <Switch checked={props.axisMode === 'dual'} onCheckedChange={(c) => props.onAxisModeChange(c ? 'dual' : 'single')} />
       </div>
 
-      <Button variant="outline" size="sm" className="transition-transform duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={props.onResetZoom}>Reset zoom</Button>
+      <Button variant="outline" size="sm" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={props.onResetZoom}>Reset zoom</Button>
 
       <form onSubmit={(e) => { e.preventDefault(); if (vin.trim()) { props.onAddCompare(vin.trim()); setVin(''); } }}
         className="flex items-center gap-2">
         <Input value={vin} onChange={(e) => setVin(e.target.value)} placeholder="Compare VIN…" className="w-[140px]" />
-        <Button type="submit" size="sm" variant="secondary" className="transition-transform duration-200 hover:scale-[1.02] active:scale-[0.98]">Add</Button>
+        <Button type="submit" size="sm" variant="secondary" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]">Add</Button>
       </form>
     </Card>
   );
