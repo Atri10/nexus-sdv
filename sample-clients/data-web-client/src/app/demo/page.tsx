@@ -12,6 +12,7 @@ import { useChartTheme } from '@/hooks/use-chart-theme';
 import { qualifierOf } from '@/lib/telemetry-discovery';
 import { unitsForSeries } from '@/lib/telemetry-chart-utils';
 import { DataPath } from '@/components/demo/data-path';
+import { ComponentPanel } from '@/components/demo/component-panel';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
 import type { ComponentStatus } from '@/lib/demo-control';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
@@ -164,6 +165,36 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   );
 
   const component = components?.find((c) => c.id === componentId) ?? null;
+
+  // Enable/disable one component: the simulator starts/stops publishing that
+  // component's signals immediately, and the reply's component registry
+  // becomes the new source of truth.
+  const toggleComponent = useCallback(
+    async (componentId: string, enable: boolean) => {
+      setBusy(true);
+      try {
+        const res = await fetch('/api/demo/vehicle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: enable ? 'start' : 'stop', component: componentId, vin }),
+        });
+        const reply = (await res.json().catch(() => null)) as (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null;
+        if (!res.ok || !reply || reply.error) {
+          const { toast } = await import('sonner');
+          toast.error(reply?.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        setStatus({ running: reply.running, published: reply.published });
+        if (reply.components) setComponents(reply.components);
+      } catch (e) {
+        const { toast } = await import('sonner');
+        toast.error(e instanceof Error ? e.message : 'Failed to toggle component');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [vin]
+  );
   const componentSeries = useMemo(
     () =>
       component ? series.filter((s) => component.sensors.some((sig) => qualifierOf(s.column) === sig.name)) : [],
@@ -204,6 +235,15 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             busy={busy}
             onStart={() => runAction('start')}
             onStop={() => runAction('stop')}
+          />
+        </FadeIn>
+
+        <FadeIn>
+          <ComponentPanel
+            components={components}
+            simulatorVin={simulatorVin}
+            busy={busy}
+            onToggle={toggleComponent}
           />
         </FadeIn>
 
