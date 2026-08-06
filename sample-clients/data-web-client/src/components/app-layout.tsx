@@ -18,7 +18,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <Sidebar />
       <main className="relative flex-1 overflow-auto">
         <header className="hud-panel flex items-center justify-between gap-4 px-4 py-2">
-          <h1 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-400 glow-text">
+          <h1 className="font-display text-sm font-bold tracking-[0.3em] dark:text-cyan-400 text-cyan-700 glow-text">
             NEXUS&nbsp;SDV
           </h1>
           <div className="flex items-center gap-2">
