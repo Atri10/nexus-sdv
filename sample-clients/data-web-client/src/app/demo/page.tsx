@@ -15,6 +15,7 @@ import { DataPath } from '@/components/demo/data-path';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
 import DemoScene from '@/components/scene/demo-scene';
+import { FadeIn } from '@/components/motion/fade-in';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { TimeRange } from '@/types/telemetry';
 
@@ -156,55 +157,59 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           <TimeRangeSelector value={range} onChange={setRange} />
         </div>
 
-        <DemoControlBar
-          vin={vin}
-          onVinChange={(v) => {
-            userPicked.current = true;
-            setVin(v);
-          }}
-          simulatorVin={simulatorVin}
-          running={status?.running ?? false}
-          busy={busy}
-          onStart={() => runAction('start')}
-          onStop={() => runAction('stop')}
-        />
+        <FadeIn>
+          <DemoControlBar
+            vin={vin}
+            onVinChange={(v) => {
+              userPicked.current = true;
+              setVin(v);
+            }}
+            simulatorVin={simulatorVin}
+            running={status?.running ?? false}
+            busy={busy}
+            onStart={() => runAction('start')}
+            onStop={() => runAction('stop')}
+          />
+        </FadeIn>
 
         {/* 3D holographic pipeline: vehicle zones (click to select) + the
             NATS→Bigtable data flow. Reduced-motion users get the SVG
             schematic + data path instead; WebGL-less browsers get them via
             the scene's fallback prop. */}
         {reducedMotion ? (
-          <>
+          <FadeIn>
             <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
             <DataPath flowing={flowing} />
-          </>
+          </FadeIn>
         ) : (
-          <section className="hud-panel overflow-hidden rounded-lg">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-              <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-                HOLOGRAPHIC PIPELINE
-              </h2>
-              <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
-                DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO SELECT
-              </span>
-            </div>
-            <div className="relative h-[440px] overflow-y-auto">
-              <DemoScene
-                componentId={componentId}
-                onSelect={setComponentId}
-                flowing={flowing}
-                animate={!reducedMotion}
-                vin={vin}
-                fallback={
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
-                    <DataPath flowing={flowing} />
-                  </div>
-                }
-                className="h-full w-full"
-              />
-            </div>
-          </section>
+          <FadeIn>
+            <section className="hud-panel overflow-hidden rounded-lg">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+                <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
+                  HOLOGRAPHIC PIPELINE
+                </h2>
+                <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
+                  DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO SELECT
+                </span>
+              </div>
+              <div className="relative h-[440px] overflow-y-auto">
+                <DemoScene
+                  componentId={componentId}
+                  onSelect={setComponentId}
+                  flowing={flowing}
+                  animate={!reducedMotion}
+                  vin={vin}
+                  fallback={
+                    <div className="grid gap-4 xl:grid-cols-2">
+                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
+                      <DataPath flowing={flowing} />
+                    </div>
+                  }
+                  className="h-full w-full"
+                />
+              </div>
+            </section>
+          </FadeIn>
         )}
 
         {componentSeries.length > 0 && (
@@ -215,7 +220,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                   key={s.key}
                   type="button"
                   onClick={() => toggle(s.key)}
-                  className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     hidden.has(s.key) ? 'opacity-40 line-through' : ''
                   }`}
                 >
@@ -228,25 +233,27 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           </>
         )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{component.label} telemetry</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <StateView state={stateView} onRetry={refetch}>
-              <TelemetryChart
-                vehicleId={vin}
-                series={componentSeries}
-                type="line"
-                axisMode="single"
-                hidden={hidden}
-                theme={theme}
-                resetZoomToken={0}
-                units={unitsForSeries(componentSeries)}
-              />
-            </StateView>
-          </CardContent>
-        </Card>
+        <FadeIn>
+          <Card>
+            <CardHeader>
+              <CardTitle>{component.label} telemetry</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <StateView state={stateView} onRetry={refetch}>
+                <TelemetryChart
+                  vehicleId={vin}
+                  series={componentSeries}
+                  type="line"
+                  axisMode="single"
+                  hidden={hidden}
+                  theme={theme}
+                  resetZoomToken={0}
+                  units={unitsForSeries(componentSeries)}
+                />
+              </StateView>
+            </CardContent>
+          </Card>
+        </FadeIn>
       </div>
     </AppLayout>
   );

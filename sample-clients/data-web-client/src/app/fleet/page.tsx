@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StateView } from '@/components/state-view';
+import { FadeIn } from '@/components/motion/fade-in';
+import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import FleetScene from '@/components/scene/fleet-scene';
 import type { FleetVehicle } from '@/components/scene/fleet-scene';
 import type { DevicesResponse, DeviceRow } from '@/types/telemetry';
@@ -119,72 +121,82 @@ export default function FleetPage() {
   return (
     <AppLayout>
       <div className="flex flex-col gap-4">
-        <section className="hud-panel overflow-hidden rounded-lg">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-            <h2 className="font-display text-lg font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-              FLEET
-            </h2>
-            <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tracking-wider">
-              <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
-                VEHICLES <span className="text-foreground">{devices.length}</span>
-              </span>
-              <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
-                LIVE <span className="text-emerald-500">{liveVins.size}</span>
-              </span>
-              <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
-                SEL <span className="text-cyan-600 dark:text-cyan-400">{selectedVin ?? '—'}</span>
-              </span>
-            </div>
-          </div>
-          <div className="relative h-[420px]">
-            {state === 'loading' && <StateView state="loading">{null}</StateView>}
-            {state === 'error' && (
-              <StateView state="error" onRetry={load}>
-                {null}
-              </StateView>
-            )}
-            {state === 'empty' && (
-              <div className="flex h-[400px] w-full items-center justify-center rounded-lg border border-dashed">
-                <p className="text-muted-foreground">
-                  No devices found — start the simulator or ingest data.
-                </p>
+        <FadeIn>
+          <section className="hud-panel overflow-hidden rounded-lg">
+            <FadeIn delay={0.08}>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+                <h2 className="font-display text-lg font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
+                  FLEET
+                </h2>
+                <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tracking-wider">
+                  <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
+                    VEHICLES <span className="text-foreground">{devices.length}</span>
+                  </span>
+                  <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
+                    LIVE <span className="text-emerald-500">{liveVins.size}</span>
+                  </span>
+                  <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
+                    SEL <span className="text-cyan-600 dark:text-cyan-400">{selectedVin ?? '—'}</span>
+                  </span>
+                </div>
               </div>
-            )}
-            {state === 'ready' && (
-              <FleetScene
-                vehicles={vehicles}
-                liveVins={liveVins}
-                onSelect={handleSelect}
-                onDeselect={() => setSelectedVin(null)}
-                fallback={SCENE_FALLBACK}
-                className="h-full w-full"
-              />
-            )}
-          </div>
-        </section>
-
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Fleet</CardTitle>
-              {state === 'ready' && <Badge variant="default">{devices.length} devices</Badge>}
+            </FadeIn>
+            <div className="relative h-[420px]">
+              {state === 'loading' && <StateView state="loading">{null}</StateView>}
+              {state === 'error' && (
+                <StateView state="error" onRetry={load}>
+                  {null}
+                </StateView>
+              )}
+              {state === 'empty' && (
+                <div className="flex h-[400px] w-full items-center justify-center rounded-lg border border-dashed">
+                  <p className="text-muted-foreground">
+                    No devices found — start the simulator or ingest data.
+                  </p>
+                </div>
+              )}
+              {state === 'ready' && (
+                <FleetScene
+                  vehicles={vehicles}
+                  liveVins={liveVins}
+                  onSelect={handleSelect}
+                  onDeselect={() => setSelectedVin(null)}
+                  fallback={SCENE_FALLBACK}
+                  className="h-full w-full"
+                />
+              )}
             </div>
-          </CardHeader>
-          <CardContent>
-            {state === 'loading' && <Skeleton className="h-[300px] w-full rounded-lg" />}
-            {state === 'error' && <p className="text-destructive">Error: {error}</p>}
-            {state === 'empty' && (
-              <p className="py-8 text-center text-muted-foreground">No devices found.</p>
-            )}
-            {state === 'ready' && (
-              <DataTable
-                columnKeys={tableColumnKeys}
-                data={tableData}
-                onRowClick={(row) => router.push(`/device/${row.deviceId}`)}
-              />
-            )}
-          </CardContent>
-        </Card>
+          </section>
+        </FadeIn>
+
+        <Stagger>
+          <Card>
+            <StaggerItem>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Fleet</CardTitle>
+                  {state === 'ready' && <Badge variant="default">{devices.length} devices</Badge>}
+                </div>
+              </CardHeader>
+            </StaggerItem>
+            <StaggerItem>
+              <CardContent>
+                {state === 'loading' && <Skeleton className="h-[300px] w-full rounded-lg" />}
+                {state === 'error' && <p className="text-destructive">Error: {error}</p>}
+                {state === 'empty' && (
+                  <p className="py-8 text-center text-muted-foreground">No devices found.</p>
+                )}
+                {state === 'ready' && (
+                  <DataTable
+                    columnKeys={tableColumnKeys}
+                    data={tableData}
+                    onRowClick={(row) => router.push(`/device/${row.deviceId}`)}
+                  />
+                )}
+              </CardContent>
+            </StaggerItem>
+          </Card>
+        </Stagger>
       </div>
     </AppLayout>
   );
