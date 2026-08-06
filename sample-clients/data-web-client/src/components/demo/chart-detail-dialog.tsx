@@ -42,7 +42,7 @@ export function ChartDetailDialog({ open, onOpenChange, series, unit, theme }: C
             )}
           </DialogTitle>
         </DialogHeader>
-        <div className="h-80">
+        <div className="h-[400px]">
           {series && (
             <TelemetryChart
               vehicleId={series.vin}
@@ -53,6 +53,7 @@ export function ChartDetailDialog({ open, onOpenChange, series, unit, theme }: C
               theme={theme}
               resetZoomToken={0}
               units={unit ? { [series.key]: unit } : {}}
+              height="100%"
             />
           )}
         </div>
