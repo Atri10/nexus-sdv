@@ -156,6 +156,7 @@ services:
       - NATS_URL=nats://nats:4222
       - NATS_SCORING_USER=connector
       - NATS_SCORING_PASSWORD=connector-pass
+      - VIN_POOL=${VIN_POOL}
     ports:
       - "3000:3000"
     depends_on:
