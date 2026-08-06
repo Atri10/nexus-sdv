@@ -17,6 +17,18 @@ import (
 	telemetry "nats-bigtable-connector/api/gen/telemetry"
 )
 
+// metricFormat returns the storage precision for a dynamic column. GPS
+// coordinates need ~0.1 m resolution (the simulator walks positions by up
+// to 0.001°) — everything else is fine at 2 decimals.
+func metricFormat(qualifier string) string {
+	switch qualifier {
+	case "GPS_LATITUDE", "GPS_LONGITUDE":
+		return "%.6f"
+	default:
+		return "%.2f"
+	}
+}
+
 func main() {
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
@@ -196,7 +208,7 @@ func main() {
 		// Write each scalar field as a dynamic sensor column.
 		mut := bigtable.NewMutation()
 		addMetric := func(qualifier string, value float64) {
-			mut.Set("dynamic", qualifier, bigtable.Now(), []byte(fmt.Sprintf("%.2f", value)))
+			mut.Set("dynamic", qualifier, bigtable.Now(), []byte(fmt.Sprintf(metricFormat(qualifier), value)))
 		}
 		// VehicleTelemetryData uses proto3 optional for these fields: a nil
 		// pointer means the field was not part of this report (the simulator
