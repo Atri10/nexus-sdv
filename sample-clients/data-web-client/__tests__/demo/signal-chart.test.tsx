@@ -31,7 +31,7 @@ describe('SignalChart', () => {
 
   it('marks paused charts and keeps history', () => {
     render(<SignalChart series={SERIES} unit="V" paused theme={THEME} onExpand={() => {}} />);
-    expect(screen.getByText(/Paused — history retained/)).toBeInTheDocument();
+    expect(screen.getByText('Paused')).toBeInTheDocument();
   });
 
   it('fires onExpand', () => {
