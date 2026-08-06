@@ -206,7 +206,8 @@ func gpsWalk(baseLat, baseLng float64) (float64, float64) {
 }
 
 // buildBatteryTelemetry constructs the TelemetryMessage with the battery
-// readings plus the static make/index readings (Cabin/static demo story).
+// readings (battery component only — cabin static readings are a separate
+// message, see buildCabinTelemetry).
 func buildBatteryTelemetry(vin string, b batteryState, now time.Time) (*pb.TelemetryMessage, error) {
 	return &pb.TelemetryMessage{
 		MessageId:     uuid.New().String(),
@@ -237,6 +238,17 @@ func buildBatteryTelemetry(vin string, b batteryState, now time.Time) (*pb.Telem
 				DataType:  pb.DataType_DYNAMIC,
 				Sensor:    "battery.temp",
 			},
+		},
+	}, nil
+}
+
+// buildCabinTelemetry constructs the static cabin readings (make/index).
+func buildCabinTelemetry(vin string, now time.Time) (*pb.TelemetryMessage, error) {
+	return &pb.TelemetryMessage{
+		MessageId:     uuid.New().String(),
+		SchemaVersion: 1,
+		DeviceId:      vin,
+		SensorData: []*pb.SensorReading{
 			{
 				Timestamp: timestamppb.New(now),
 				Value:     "Nexus SDV",
@@ -253,22 +265,30 @@ func buildBatteryTelemetry(vin string, b batteryState, now time.Time) (*pb.Telem
 	}, nil
 }
 
-// buildMetricsReport constructs the MetricsReport wrapping VehicleTelemetryData
-// with the drive cycle values, walked GPS position, tire pressure walk and
-// vehicle dynamics.
-func buildMetricsReport(vin string, drive driveState, now time.Time, count int) (*pbMetrics.MetricsReport, error) {
+// buildPowertrainReport constructs a MetricsReport with only the powertrain
+// fields (engine power/rpm, fuel). Publishing it separately from the chassis
+// report lets the dashboard stop one component without starving the other.
+func buildPowertrainReport(vin string, drive driveState, now time.Time, count int) (*pbMetrics.MetricsReport, error) {
+	vehicleData := &pbVehicle.VehicleTelemetryData{
+		ENGINE_POWER:  float32(drive.enginePower),
+		ENGINE_RPM:    float32(drive.engineRPM),
+		FUEL_CAPACITY: 50.0, // Static value
+		FUEL_LEVEL:    float32(drive.fuelLevel),
+	}
+	return wrapMetricsReport(vin, now, count, vehicleData)
+}
+
+// buildChassisReport constructs a MetricsReport with only the chassis/dynamics
+// fields (velocity, tire pressure, GPS, steering/pedals, ignition).
+func buildChassisReport(vin string, drive driveState, now time.Time) (*pbMetrics.MetricsReport, error) {
 	ignitionState := drive.engineRPM > 0
 	gpsLat := float32(drive.lat)
 	gpsLon := float32(drive.lng)
 	tirePressure := 2.2 + (mathrand.Float64()-0.5)*0.1
 
 	vehicleData := &pbVehicle.VehicleTelemetryData{
-		ENGINE_POWER:  float32(drive.enginePower),
-		ENGINE_RPM:    float32(drive.engineRPM),
-		FUEL_CAPACITY: 50.0, // Static value
-		FUEL_LEVEL:    float32(drive.fuelLevel),
-		TIRE_PRESSURE: float32(tirePressure),
 		VELOCITY:      float32(drive.velocity),
+		TIRE_PRESSURE: float32(tirePressure),
 		IGNITION_STATE: &ignitionState,
 		GPS_LATITUDE:   &gpsLat,
 		GPS_LONGITUDE:  &gpsLon,
@@ -277,11 +297,12 @@ func buildMetricsReport(vin string, drive driveState, now time.Time, count int) 
 			AcceleratorPedalPct: drive.acceleratorPct,
 			BrakePedalPct:       drive.brakePct,
 		},
-		GearStatus: &pbVehicle.CarlaVehicleGearStatus{
-			Gear: pbVehicle.CarlaVehicleGearStatus_NEUTRAL,
-		},
 	}
+	return wrapMetricsReport(vin, now, 0, vehicleData)
+}
 
+// wrapMetricsReport wraps VehicleTelemetryData in the MetricsReport envelope.
+func wrapMetricsReport(vin string, now time.Time, count int, vehicleData *pbVehicle.VehicleTelemetryData) (*pbMetrics.MetricsReport, error) {
 	anyPayload, err := anypb.New(vehicleData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Any payload: %w", err)
@@ -300,46 +321,76 @@ func buildMetricsReport(vin string, drive driveState, now time.Time, count int) 
 }
 
 // buildPayloads constructs the NATS publish messages for one simulation tick
-// for the requested message type. "telemetry" emits the battery
-// TelemetryMessage, "metrics_report" the MetricsReport, and "both" emits the
-// TelemetryMessage followed by the MetricsReport.
-func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive driveState, messageType string, count int) []publishMsg {
+// for the requested message type and the currently enabled components.
+// "telemetry" emits battery/cabin TelemetryMessages, "metrics_report" the
+// powertrain/chassis MetricsReports, and "both" emits all enabled ones.
+func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive driveState, messageType string, count int, enabled func(string) bool) []publishMsg {
 	var out []publishMsg
+	emit := func(kind, subject string, payload []byte) {
+		if payload != nil {
+			out = append(out, publishMsg{kind: kind, subject: subject, payload: payload})
+		}
+	}
 	if messageType == "telemetry" || messageType == "both" {
-		msg, err := buildBatteryTelemetry(v.VIN, battery, now)
-		if err != nil {
-			log.Printf("Failed to build TelemetryMessage: %v", err)
-			return nil
+		if enabled("battery") {
+			if msg, err := buildBatteryTelemetry(v.VIN, battery, now); err == nil {
+				if payload, err := proto.Marshal(msg); err == nil {
+					emit("telemetry", v.buildTelemetrySubject("battery"), payload)
+				}
+			}
 		}
-		payload, err := proto.Marshal(msg)
-		if err != nil {
-			log.Printf("Failed to marshal TelemetryMessage: %v", err)
-			return nil
+		if enabled("cabin") {
+			if msg, err := buildCabinTelemetry(v.VIN, now); err == nil {
+				if payload, err := proto.Marshal(msg); err == nil {
+					emit("telemetry", v.buildTelemetrySubject("cabin"), payload)
+				}
+			}
 		}
-		out = append(out, publishMsg{kind: "telemetry", subject: v.buildTelemetrySubject("battery"), payload: payload})
 	}
 	if messageType == "metrics_report" || messageType == "both" {
-		report, err := buildMetricsReport(v.VIN, drive, now, count)
-		if err != nil {
-			log.Printf("Failed to build MetricsReport: %v", err)
-			return nil
+		if enabled("powertrain") {
+			if report, err := buildPowertrainReport(v.VIN, drive, now, count); err == nil {
+				if payload, err := proto.Marshal(report); err == nil {
+					emit("metrics_report", v.buildMetricsReportSubject(), payload)
+				}
+			}
 		}
-		payload, err := proto.Marshal(report)
-		if err != nil {
-			log.Printf("Failed to marshal MetricsReport: %v", err)
-			return nil
+		if enabled("chassis") {
+			if report, err := buildChassisReport(v.VIN, drive, now); err == nil {
+				if payload, err := proto.Marshal(report); err == nil {
+					emit("metrics_report", v.buildMetricsReportSubject(), payload)
+				}
+			}
 		}
-		out = append(out, publishMsg{kind: "metrics_report", subject: v.buildMetricsReportSubject(), payload: payload})
 	}
 	return out
 }
 
 // --- NATS control mode ------------------------------------------------------
 
+// sensorInfo is one publishable signal of a component. Name matches the
+// Bigtable column qualifier / MetricsReport field; Label and Unit are the
+// dashboard's display metadata (empty unit = plain value).
+type sensorInfo struct {
+	Name  string `json:"name"`
+	Label string `json:"label"`
+	Unit  string `json:"unit,omitempty"`
+}
+
+// componentState is one independently controllable telemetry component.
+// The dashboard discovers components from this list (status reply) — no
+// frontend knowledge of sensors is required.
+type componentState struct {
+	id      string
+	label   string
+	enabled bool
+	sensors []sensorInfo
+}
+
 // controlState tracks start/stop/status commands received on the control
-// subject. In control mode the publish loop only emits telemetry while running
-// is true; control messages are plain JSON on the control subject and replies
-// go to the request's reply subject.
+// subject. In control mode the publish loop only emits telemetry for enabled
+// components; control messages are plain JSON on the control subject and
+// replies go to the request's reply subject.
 type controlState struct {
 	mu          sync.Mutex
 	running     bool
@@ -347,15 +398,72 @@ type controlState struct {
 	startedAt   time.Time
 	vin         string
 	messageType string
+	components  map[string]*componentState
+	replyFn     func(msg *nats.Msg, body map[string]any)
 }
 
-// handle processes one control request: {"action": "start"|"stop"|"status"}.
-// start/stop are idempotent; status reports the current state. Replies are
-// JSON {vin, running, published, messageType} on the request's reply subject,
-// or {"error": ...} for invalid JSON or an unknown action.
+// newControlState builds the component registry. This is the single source
+// of truth for what the simulator can stream; keep in sync with the payload
+// builders in buildPayloads.
+func newControlState(vin, messageType string) *controlState {
+	return &controlState{
+		vin:         vin,
+		messageType: messageType,
+		components: map[string]*componentState{
+			"battery": {
+				id: "battery", label: "Battery",
+				sensors: []sensorInfo{
+					{Name: "battery.voltage", Label: "Voltage", Unit: "V"},
+					{Name: "battery.current", Label: "Current", Unit: "A"},
+					{Name: "battery.soc", Label: "SoC", Unit: "%"},
+					{Name: "battery.temp", Label: "Temp", Unit: "°C"},
+				},
+			},
+			"cabin": {
+				id: "cabin", label: "Cabin",
+				sensors: []sensorInfo{
+					{Name: "make", Label: "Make"},
+					{Name: "index", Label: "Model index"},
+				},
+			},
+			"powertrain": {
+				id: "powertrain", label: "Powertrain",
+				sensors: []sensorInfo{
+					{Name: "ENGINE_POWER", Label: "Power", Unit: "W"},
+					{Name: "ENGINE_RPM", Label: "RPM", Unit: "rpm"},
+					{Name: "FUEL_CAPACITY", Label: "Fuel capacity", Unit: "L"},
+					{Name: "FUEL_LEVEL", Label: "Fuel", Unit: "%"},
+				},
+			},
+			"chassis": {
+				id: "chassis", label: "Chassis",
+				sensors: []sensorInfo{
+					{Name: "VELOCITY", Label: "Velocity", Unit: "m/s"},
+					{Name: "TIRE_PRESSURE", Label: "Tire pressure", Unit: "bar"},
+					{Name: "GPS_LATITUDE", Label: "Latitude"},
+					{Name: "GPS_LONGITUDE", Label: "Longitude"},
+					{Name: "STEERING_ANGLE_DEG", Label: "Steering", Unit: "°"},
+					{Name: "ACCELERATOR_PEDAL_PCT", Label: "Accelerator", Unit: "%"},
+					{Name: "BRAKE_PEDAL_PCT", Label: "Brake", Unit: "%"},
+				},
+			},
+		},
+		replyFn: func(msg *nats.Msg, body map[string]any) {
+			data, _ := json.Marshal(body)
+			_ = msg.Respond(data)
+		},
+	}
+}
+
+// handle processes one control request:
+// {"action":"start"|"stop"|"status","component":"<id>"}. The component
+// field is optional — without it start/stop apply to every component
+// (legacy behavior). Replies are JSON {vin, running, published, messageType,
+// components} on the request's reply subject, or {"error": ...}.
 func (c *controlState) handle(msg *nats.Msg) {
 	var req struct {
-		Action string `json:"action"`
+		Action    string `json:"action"`
+		Component string `json:"component"`
 	}
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		c.reply(msg, map[string]any{"error": "invalid JSON"})
@@ -363,30 +471,81 @@ func (c *controlState) handle(msg *nats.Msg) {
 	}
 	c.mu.Lock()
 	switch req.Action {
-	case "start":
-		if !c.running {
-			c.running = true
-			c.startedAt = time.Now()
+	case "start", "stop":
+		if req.Component == "" {
+			for _, comp := range c.components {
+				comp.enabled = req.Action == "start"
+			}
+			if req.Action == "start" {
+				c.startedAt = time.Now()
+			}
+		} else {
+			comp, ok := c.components[req.Component]
+			if !ok {
+				c.mu.Unlock()
+				c.reply(msg, map[string]any{"error": "unknown component " + req.Component})
+				return
+			}
+			comp.enabled = req.Action == "start"
+			if comp.enabled && !c.running {
+				c.startedAt = time.Now()
+			}
 		}
-	case "stop":
-		c.running = false
+		c.running = c.anyEnabledLocked()
 	case "status":
 	default:
 		c.mu.Unlock()
 		c.reply(msg, map[string]any{"error": "unknown action"})
 		return
 	}
-	state := map[string]any{
-		"vin":         c.vin,
-		"running":     c.running,
-		"published":   c.published,
-		"messageType": c.messageType,
-	}
+	state := c.stateLocked()
 	c.mu.Unlock()
 	c.reply(msg, state)
 }
 
-// isRunning reports whether publishing is currently enabled.
+func (c *controlState) anyEnabledLocked() bool {
+	for _, comp := range c.components {
+		if comp.enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// stateLocked serializes the full control state incl. the component registry
+// (id/label/enabled/sensors) so clients can discover telemetry dynamically.
+func (c *controlState) stateLocked() map[string]any {
+	comps := make([]map[string]any, 0, len(c.components))
+	for _, comp := range c.components {
+		sensors := make([]map[string]any, 0, len(comp.sensors))
+		for _, s := range comp.sensors {
+			sensors = append(sensors, map[string]any{"name": s.Name, "label": s.Label, "unit": s.Unit})
+		}
+		comps = append(comps, map[string]any{
+			"id":      comp.id,
+			"label":   comp.label,
+			"enabled": comp.enabled,
+			"sensors": sensors,
+		})
+	}
+	return map[string]any{
+		"vin":         c.vin,
+		"running":     c.running,
+		"published":   c.published,
+		"messageType": c.messageType,
+		"components":  comps,
+	}
+}
+
+// isComponentEnabled reports whether a component is currently publishing.
+func (c *controlState) isComponentEnabled(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	comp, ok := c.components[id]
+	return ok && comp.enabled
+}
+
+// isRunning reports whether publishing is currently enabled (any component).
 func (c *controlState) isRunning() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -394,8 +553,7 @@ func (c *controlState) isRunning() bool {
 }
 
 func (c *controlState) reply(msg *nats.Msg, body map[string]any) {
-	data, _ := json.Marshal(body)
-	_ = msg.Respond(data)
+	c.replyFn(msg, body)
 }
 
 func main() {
@@ -1001,7 +1159,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 	// Control state for start/stop/status when a control subject is configured.
 	// Declared before the refresh helpers so ensureControlSub can re-attach the
 	// same handler to every fresh connection.
-	ctl := &controlState{vin: v.VIN, messageType: v.MessageType}
+	ctl := newControlState(v.VIN, v.MessageType)
 
 	// controlSub tracks the live control subscription. NATS subscriptions are
 	// bound to a connection: refreshConnection() closes and re-dials, which
@@ -1101,7 +1259,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 
 		// Build the payload(s) for this tick based on the configured message
 		// type and publish each one.
-		for _, m := range v.buildPayloads(now, battery, drive, v.MessageType, messageCount) {
+		for _, m := range v.buildPayloads(now, battery, drive, v.MessageType, messageCount, ctl.isComponentEnabled) {
 			// Publish to NATS
 			if err := nc.Publish(m.subject, m.payload); err != nil {
 				log.Printf("Failed to publish: %v", err)
