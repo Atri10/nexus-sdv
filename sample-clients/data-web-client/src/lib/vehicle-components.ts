@@ -8,10 +8,11 @@ export interface DemoComponent {
 }
 
 /**
- * Interactive components shown on the /demo schematic. Sensor qualifiers are
- * the connector's Bigtable column qualifiers WITHOUT the family prefix
- * (series columns look like `dynamic:battery.voltage`); matching is done by
- * suffix so battery.* sensors survive the family prefix.
+ * Shared component metadata: the interactive /demo schematic and the 3D
+ * device scene both derive their component lists from this single source.
+ * Sensor qualifiers are the connector's Bigtable column qualifiers WITHOUT
+ * the family prefix (series columns look like `dynamic:battery.voltage`);
+ * matching is done by suffix so battery.* sensors survive the family prefix.
  */
 export const DEMO_COMPONENTS: DemoComponent[] = [
   {
@@ -61,15 +62,49 @@ export const DEMO_COMPONENTS: DemoComponent[] = [
   },
 ];
 
+/**
+ * Unit declared for a sensor qualifier in the shared component metadata,
+ * or undefined when the sensor carries no unit (GPS coordinates, make, ...).
+ * Qualifiers are matched without the family prefix (see seriesForComponent).
+ */
+export function unitForQualifier(qualifier: string): string | undefined {
+  for (const component of DEMO_COMPONENTS) {
+    const sensor = component.sensors.find((s) => s.qualifier === qualifier);
+    if (sensor?.unit) return sensor.unit;
+  }
+  return undefined;
+}
+
+/**
+ * 3D zone geometry for the device scene — one translucent box per component,
+ * aligned to the procedural VehicleModel (unit scale) in scene coordinates.
+ * `position` is the box center, `size` is [width, height, depth].
+ */
+export interface ComponentZone {
+  id: string;
+  label: string;
+  position: [number, number, number];
+  size: [number, number, number];
+  color: string; // cyan-ish emissive
+}
+
+export const COMPONENT_ZONES: ComponentZone[] = [
+  { id: 'battery', label: 'Battery', position: [0, 0.25, 1.0], size: [1.2, 0.35, 0.9], color: '#22D3EE' },
+  { id: 'powertrain', label: 'Powertrain', position: [0, 0.35, -0.9], size: [0.9, 0.4, 0.7], color: '#22C55E' },
+  { id: 'chassis', label: 'Chassis', position: [0, 0.1, 0], size: [1.5, 0.2, 2.6], color: '#8B5CF6' },
+  { id: 'cabin', label: 'Cabin', position: [0, 0.9, -0.2], size: [1.0, 0.55, 1.2], color: '#F59E0B' },
+];
+
 /** Series whose column qualifier (after "family:") matches the component's sensor list. */
 export function seriesForComponent(series: ChartSeries[], componentId: string): ChartSeries[] {
   const comp = DEMO_COMPONENTS.find((c) => c.id === componentId);
   if (!comp) return [];
-  const qualifiers = new Set(comp.sensors.map((s) => s.qualifier));
+  // Static sensor table from DEMO_COMPONENTS → Record membership check.
+  const qualifiers = Object.fromEntries(comp.sensors.map((s) => [s.qualifier, true])) as Record<string, true>;
   return series.filter((s) => {
     const colon = s.column.indexOf(':');
     const q = colon > -1 ? s.column.slice(colon + 1) : s.column;
-    return qualifiers.has(q);
+    return qualifiers[q] === true;
   });
 }
 

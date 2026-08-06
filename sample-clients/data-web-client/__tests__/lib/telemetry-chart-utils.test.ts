@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { groupAxes, formatValue } from '@/lib/telemetry-chart-utils';
+import { groupAxes, formatValue, columnQualifier, unitsForSeries } from '@/lib/telemetry-chart-utils';
 
 describe('groupAxes', () => {
   it('puts ~0-100 series on right axis when another series is >5x larger', () => {
@@ -26,5 +26,42 @@ describe('groupAxes', () => {
 describe('formatValue', () => {
   it('rounds to 2 decimals', () => {
     expect(formatValue(49.456)).toBe('49.46');
+  });
+});
+
+describe('columnQualifier', () => {
+  it('strips the family prefix', () => {
+    expect(columnQualifier('dynamic:battery.voltage')).toBe('battery.voltage');
+    expect(columnQualifier('static:make')).toBe('make');
+    expect(columnQualifier('ENGINE_POWER')).toBe('ENGINE_POWER');
+  });
+});
+
+describe('unitsForSeries', () => {
+  function s(column: string, key: string) {
+    return { vin: 'A', column, key, label: key, color: '#000', points: [] };
+  }
+
+  it('maps series keys to units from the component metadata', () => {
+    const units = unitsForSeries([
+      s('dynamic:battery.voltage', 'A|battery.voltage'),
+      s('dynamic:VELOCITY', 'A|VELOCITY'),
+      s('dynamic:ENGINE_RPM', 'A|ENGINE_RPM'),
+    ]);
+    expect(units['A|battery.voltage']).toBe('V');
+    expect(units['A|VELOCITY']).toBe('km/h');
+    expect(units['A|ENGINE_RPM']).toBe('rpm');
+  });
+
+  it('omits series without a declared unit', () => {
+    const units = unitsForSeries([
+      s('dynamic:GPS_LATITUDE', 'A|GPS_LATITUDE'),
+      s('static:make', 'A|make'),
+    ]);
+    expect(units).toEqual({});
+  });
+
+  it('is empty for an empty series list', () => {
+    expect(unitsForSeries([])).toEqual({});
   });
 });

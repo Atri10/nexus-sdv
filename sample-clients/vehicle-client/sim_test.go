@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -51,12 +52,25 @@ func TestDriveCycleBounds(t *testing.T) {
 	}
 }
 
-func TestGpsWalkBounds(t *testing.T) {
-	lat, lng := 12.9716, 77.5946
-	for i := 0; i < 1000; i++ {
-		lat, lng = gpsWalk(lat, lng)
-		if lat < 12.9 || lat > 13.05 || lng < 77.5 || lng > 77.7 {
-			t.Fatalf("gps out of bounds: %v, %v", lat, lng)
+func TestTripRouteBounds(t *testing.T) {
+	// The GPS position follows the embedded street loop — it must stay
+	// inside the route's bounding box for the whole simulation.
+	minLat, maxLat, minLng, maxLng := 90.0, -90.0, 180.0, -180.0
+	for _, p := range tripRoute {
+		minLat = math.Min(minLat, p.lat)
+		maxLat = math.Max(maxLat, p.lat)
+		minLng = math.Min(minLng, p.lng)
+		maxLng = math.Max(maxLng, p.lng)
+	}
+	s := newDriveState()
+	for i := 0; i < 2000; i++ {
+		driveCycleStep(&s, 2.0)
+		if s.lat < minLat-0.001 || s.lat > maxLat+0.001 || s.lng < minLng-0.001 || s.lng > maxLng+0.001 {
+			t.Fatalf("position off the trip route: %v, %v (route bbox %.5f..%.5f, %.5f..%.5f)",
+				s.lat, s.lng, minLat, maxLat, minLng, maxLng)
+		}
+		if s.headingDeg < 0 || s.headingDeg >= 360 {
+			t.Fatalf("heading out of range: %v", s.headingDeg)
 		}
 	}
 }

@@ -18,6 +18,10 @@ export interface LatestValue {
   color: string;
   value: number | null;
   timestamp: number | null;
+  /** Second-to-last numeric value (null when fewer than two numeric points). */
+  previous: number | null;
+  /** Last ≤20 numeric points, oldest first — feeds the KPI sparkline. */
+  history: { x: number; y: number }[];
 }
 
 /**
@@ -57,17 +61,26 @@ export function buildTableRows(series: ChartSeries[]): TelemetryTableRow[] {
 /**
  * Latest numeric value per series (last point with a non-null y), for KPI
  * displays. A series with no numeric points reports value/timestamp null.
+ * During the single pass, `previous` keeps the second-to-last numeric value
+ * and `history` keeps the last ≤20 numeric points (oldest first) for the
+ * sparkline — null points are skipped in both, matching the sparkline's need
+ * for continuous numeric data.
  */
 export function latestValues(series: ChartSeries[]): LatestValue[] {
   return series.map((s) => {
     let value: number | null = null;
+    let previous: number | null = null;
     let timestamp: number | null = null;
+    const history: { x: number; y: number }[] = [];
     for (const p of s.points) {
       if (p.y != null) {
+        previous = value;
         value = p.y;
         timestamp = p.x;
+        if (history.length === 20) history.shift();
+        history.push({ x: p.x, y: p.y });
       }
     }
-    return { key: s.key, label: s.label, color: s.color, value, timestamp };
+    return { key: s.key, label: s.label, color: s.color, value, timestamp, previous, history };
   });
 }

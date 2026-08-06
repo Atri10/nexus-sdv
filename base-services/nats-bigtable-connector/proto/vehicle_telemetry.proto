@@ -11,20 +11,22 @@ option go_package = "github.com/valtech-sdv/vehicle-client/telemetry";
 // tmp/reports_10_20/config_files/metrics_configs/vehicle_telemetry.textproto
 //
 // Scalar fields use proto3 optional where zero/false is a meaningful value
-// that must be distinguished from "field not present in this report".
-// All other scalars are bare — zero unambiguously means off/empty.
+// that must be distinguished from "field not present in this report"
+// (including per-component reports, where a disabled component's fields must
+// be absent, not zero). All other scalars are bare — zero unambiguously
+// means off/empty.
 message VehicleTelemetryData {
   // Engine output power in watts.
-  float ENGINE_POWER = 1;
+  optional float ENGINE_POWER = 1;
 
   // Engine revolutions per minute.
-  float ENGINE_RPM = 2;
+  optional float ENGINE_RPM = 2;
 
   // Total fuel tank capacity (constant per vehicle).
-  float FUEL_CAPACITY = 3;
+  optional float FUEL_CAPACITY = 3;
 
   // Current fuel level.
-  float FUEL_LEVEL = 4;
+  optional float FUEL_LEVEL = 4;
 
   // GPS latitude — optional: 0.0 is a real coordinate (equator).
   optional float GPS_LATITUDE = 5;
@@ -36,10 +38,13 @@ message VehicleTelemetryData {
   optional bool IGNITION_STATE = 7;
 
   // Tyre pressure in bar.
-  float TIRE_PRESSURE = 8;
+  optional float TIRE_PRESSURE = 8;
 
   // Vehicle speed in m/s.
-  float VELOCITY = 9;
+  optional float VELOCITY = 9;
+
+  // Heading in degrees clockwise from north (direction of travel).
+  optional float HEADING_DEG = 15;
 
   // Vehicle locked state — optional: false means unlocked, not field absent.
   optional bool LOCKED = 10;
