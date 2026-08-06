@@ -23,6 +23,14 @@ const PHASE_CLASS: Record<ComponentPhase, string> = {
   offline: 'bg-slate-100 text-slate-500 dark:bg-slate-900 dark:text-slate-400',
 };
 
+/** Per-component accent colors, matching the 3D scene's COMPONENT_ZONES. */
+const ACCENT: Record<string, string> = {
+  battery: '#22D3EE',
+  powertrain: '#22C55E',
+  chassis: '#8B5CF6',
+  cabin: '#F59E0B',
+};
+
 export interface ComponentPanelProps {
   components: ComponentStatus[] | null;
   /** Discovered simulator VIN, or null when the simulator is unreachable. */
@@ -64,12 +72,22 @@ export function ComponentPanel({ components, simulatorVin, busy, onToggle }: Com
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{component.label}</span>
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: ACCENT[component.id] ?? 'var(--muted-foreground)' }}
+                    aria-hidden="true"
+                  />
+                  <span className="text-sm font-semibold">{component.label}</span>
                   <Badge variant="secondary" className={`gap-1 px-1.5 py-0 text-[10px] ${PHASE_CLASS[phase]}`}>
+                    <span
+                      className="h-1.5 w-1.5 rounded-full"
+                      style={{ backgroundColor: phase === 'active' ? '#10b981' : phase === 'paused' ? '#f59e0b' : '#94a3b8' }}
+                      aria-hidden="true"
+                    />
                     {PHASE_LABEL[phase]}
                   </Badge>
                 </div>
-                <div className="mt-1 flex flex-wrap gap-1">
+                <div className="mt-1.5 flex flex-wrap gap-1">
                   {component.sensors.map((s) => (
                     <span
                       key={s.name}

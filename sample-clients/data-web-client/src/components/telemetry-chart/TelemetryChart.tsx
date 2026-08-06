@@ -19,6 +19,12 @@ interface TelemetryChartProps {
   resetZoomToken: number;
   /** Series key → unit, resolved from component metadata by the caller. */
   units?: Record<string, string>;
+  /** Enable wheel/drag zoom + pan. Grid cards disable it; the detail dialog keeps it. */
+  zoomEnabled?: boolean;
+  /** Suggested y-axis window (stable per-signal range); omit for auto-scale. */
+  yRange?: { min?: number; max?: number };
+  /** Chart.js update animation (200ms). Grid cards disable it to avoid visible jumps. */
+  animated?: boolean;
 }
 
 /**
@@ -60,6 +66,9 @@ export default function TelemetryChart({
   theme,
   resetZoomToken,
   units = {},
+  zoomEnabled = true,
+  yRange,
+  animated = true,
 }: TelemetryChartProps) {
   const chartRef = useRef<ChartJS<'line'>>(null);
   const { right } =
@@ -125,7 +134,7 @@ export default function TelemetryChart({
   const options: ChartOptions<'line'> = {
     responsive: true,
     maintainAspectRatio: false,
-    animation: { duration: 200 },
+    animation: animated ? { duration: 200 } : false,
     // Data is already {x, y} with numeric values; decimation requires
     // parsing to be off (chart.js requirement).
     parsing: false,
@@ -160,6 +169,8 @@ export default function TelemetryChart({
         grid: { color: theme.grid },
         ticks: { color: theme.ticks, font: { family: theme.fontFamily }, callback: (v) => formatValue(Number(v)) },
         title: { display: true, text: leftTitle, color: theme.ticks, font: { family: theme.fontFamily } },
+        suggestedMin: yRange?.min,
+        suggestedMax: yRange?.max,
       },
       y1: {
         type: 'linear',
@@ -206,11 +217,13 @@ export default function TelemetryChart({
       // acceptable alongside zoom (zooming below the threshold restores the
       // raw points naturally).
       decimation: { enabled: true, algorithm: 'lttb', threshold: 400, samples: 100 },
-      zoom: {
-        zoom: { wheel: { enabled: true }, drag: { enabled: true }, mode: 'x' },
-        pan: { enabled: true, mode: 'xy' },
-        limits: { y: { min: 'original', max: 'original' } },
-      },
+      zoom: zoomEnabled
+        ? {
+            zoom: { wheel: { enabled: true }, drag: { enabled: true }, mode: 'x' },
+            pan: { enabled: true, mode: 'xy' },
+            limits: { y: { min: 'original', max: 'original' } },
+          }
+        : { zoom: { wheel: { enabled: false }, drag: { enabled: false }, mode: 'x' }, pan: { enabled: false, mode: 'xy' } },
     },
   };
 
