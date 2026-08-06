@@ -45,3 +45,13 @@ export function componentsForSeries(
   }
   return groups;
 }
+
+/**
+ * Deterministic component order: sorted by id. The backend's status reply
+ * drives the dashboard's group order — this guarantees the layout never
+ * reorders between polls, whatever the wire order is.
+ */
+export function stableComponents(components: ComponentStatus[] | null): ComponentStatus[] | null {
+  if (!components) return null;
+  return [...components].sort((a, b) => a.id.localeCompare(b.id));
+}

@@ -5,6 +5,7 @@ import {
   signalsForComponent,
   unitForSignal,
   componentsForSeries,
+  stableComponents,
 } from '@/lib/telemetry-discovery';
 import type { ComponentStatus } from '@/lib/demo-control';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
@@ -56,5 +57,14 @@ describe('telemetry discovery', () => {
     expect(groups.get('battery')?.map((s) => s.key)).toEqual(['VIN1|dynamic:battery.voltage']);
     expect(groups.get('cabin')?.map((s) => s.key)).toEqual(['VIN1|static:make']);
     expect(groups.get('unassigned')?.map((s) => s.key)).toEqual(['VIN1|dynamic:ENGINE_RPM']);
+  });
+
+  it('stableComponents sorts deterministically regardless of wire order', () => {
+    const shuffled = [...COMPONENTS].reverse(); // cabin, battery
+    const sorted = stableComponents(shuffled);
+    expect(sorted?.map((c) => c.id)).toEqual(['battery', 'cabin']);
+    expect(stableComponents(null)).toBeNull();
+    // input array is not mutated
+    expect(shuffled.map((c) => c.id)).toEqual(['cabin', 'battery']);
   });
 });

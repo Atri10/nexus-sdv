@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,6 +121,33 @@ func TestControlInvalidJSON(t *testing.T) {
 	send(ctl, `not json`)
 	if replyBody(t, replies)["error"] == nil {
 		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestControlStatusOrderIsStable(t *testing.T) {
+	// Regression: components come from a Go map (random iteration); the
+	// status reply must keep a deterministic order or the dashboard's grid
+	// groups reorder on every poll.
+	ctl, replies := newTestControl("chassis", "cabin", "powertrain", "battery")
+	var first []string
+	for i := 0; i < 25; i++ {
+		send(ctl, `{"action":"status"}`)
+		r := replyBody(t, replies)
+		var ids []string
+		for _, c := range r["components"].([]any) {
+			ids = append(ids, c.(map[string]any)["id"].(string))
+		}
+		if i == 0 {
+			first = ids
+			continue
+		}
+		if strings.Join(ids, ",") != strings.Join(first, ",") {
+			t.Fatalf("status order changed: %v then %v", first, ids)
+		}
+	}
+	want := []string{"battery", "cabin", "powertrain", "chassis"}
+	if strings.Join(first, ",") != strings.Join(want, ",") {
+		t.Errorf("status order = %v, want %v", first, want)
 	}
 }
 
