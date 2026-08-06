@@ -1,5 +1,5 @@
 'use client';
-import { use, useCallback, useEffect, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useReducedMotion } from 'framer-motion';
 import AppLayout from '@/components/app-layout';
@@ -9,10 +9,11 @@ import { StateView } from '@/components/state-view';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
-import { DEMO_COMPONENTS, seriesForComponent } from '@/lib/vehicle-components';
+import { qualifierOf } from '@/lib/telemetry-discovery';
 import { unitsForSeries } from '@/lib/telemetry-chart-utils';
 import { DataPath } from '@/components/demo/data-path';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
+import type { ComponentStatus } from '@/lib/demo-control';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
 import DemoScene from '@/components/scene/demo-scene';
 import { FadeIn } from '@/components/motion/fade-in';
@@ -47,6 +48,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   const [status, setStatus] = useState<DemoStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [simulatorVin, setSimulatorVin] = useState<string | null>(null);
+  const [components, setComponents] = useState<ComponentStatus[] | null>(null);
   const userPicked = useRef(false);
 
   const theme = useChartTheme();
@@ -80,11 +82,12 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     };
   }, []);
 
-  // Initial status check + refresh whenever the vehicle changes. Ignore stale
-  // replies for a previous VIN: an out-of-order response must never overwrite
-  // the current vehicle's status. SetState only inside .then callbacks (lint:
-  // react-hooks/set-state-in-effect).
-  useEffect(() => {
+  // Initial status check + refresh whenever the vehicle changes, plus a light
+  // poll so component toggles made elsewhere (or a simulator restart) are
+  // reflected without reloading. Components come from the status reply — the
+  // dashboard's discovery endpoint. SetState only inside .then callbacks
+  // (lint: react-hooks/set-state-in-effect).
+  const refreshStatus = useCallback(() => {
     let ignore = false;
     fetch('/api/demo/vehicle', {
       method: 'POST',
@@ -92,35 +95,63 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
       body: JSON.stringify({ action: 'status', vin }),
     })
       .then((res) => res.json().catch(() => null))
-      .then((reply: (DemoStatus & { error?: string }) | null) => {
+      .then((reply: (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null) => {
         if (ignore) return;
-        setStatus(reply && !reply.error ? { running: reply.running, published: reply.published } : null);
+        const ok = reply && !reply.error;
+        setStatus(ok ? { running: reply.running, published: reply.published } : null);
+        setComponents(ok && reply.components ? reply.components : null);
       })
       .catch(() => {
-        if (!ignore) setStatus(null);
+        if (!ignore) {
+          setStatus(null);
+          setComponents(null);
+        }
       });
     return () => {
       ignore = true;
     };
   }, [vin]);
 
+  useEffect(() => {
+    const interval = window.setInterval(refreshStatus, 5000);
+    return () => window.clearInterval(interval);
+  }, [refreshStatus]);
+
   const runAction = useCallback(
     async (action: 'start' | 'stop') => {
       setBusy(true);
       try {
-        const res = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, vin }),
-        });
-        const reply = (await res.json().catch(() => null)) as (DemoStatus & { error?: string }) | null;
-        if (!res.ok || !reply || reply.error) {
+        // Command the live simulator, not the selected vehicle: the pool
+        // picker offers VINs without a simulator, and the simulator
+        // re-randomizes its VIN on container restart, so (re)discover before
+        // every start/stop. Start also jumps the view to the simulator's VIN
+        // so the generated telemetry is immediately visible.
+        const res = await fetch('/api/demo/discover', { cache: 'no-store' });
+        const data = (await res.json().catch(() => null)) as { vin?: string | null } | null;
+        const target = data?.vin ?? null;
+        if (!target) {
           const { toast } = await import('sonner');
-          toast.error(reply?.error ?? `HTTP ${res.status}`);
+          toast.error('No simulator detected — is the local stack running? Try `make demo` in local-dev/.');
           setStatus(null);
           return;
         }
+        setSimulatorVin(target);
+        if (action === 'start') setVin(target);
+        const ctl = await fetch('/api/demo/vehicle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, vin: target }),
+        });
+        const reply = (await ctl.json().catch(() => null)) as (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null;
+        if (!ctl.ok || !reply || reply.error) {
+          const { toast } = await import('sonner');
+          toast.error(reply?.error ?? `HTTP ${ctl.status}`);
+          setStatus(null);
+          setComponents(null);
+          return;
+        }
         setStatus({ running: reply.running, published: reply.published });
+        setComponents(reply.components ?? null);
       } catch (e) {
         const { toast } = await import('sonner');
         toast.error(e instanceof Error ? e.message : 'Failed to reach demo control');
@@ -129,11 +160,15 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
         setBusy(false);
       }
     },
-    [vin]
+    []
   );
 
-  const component = DEMO_COMPONENTS.find((c) => c.id === componentId) ?? DEMO_COMPONENTS[0];
-  const componentSeries = seriesForComponent(series, componentId);
+  const component = components?.find((c) => c.id === componentId) ?? null;
+  const componentSeries = useMemo(
+    () =>
+      component ? series.filter((s) => component.sensors.some((sig) => qualifierOf(s.column) === sig.name)) : [],
+    [series, component]
+  );
   // useReducedMotion is null during SSR/first paint; treat null as "not
   // reduced" so the prerendered page stays deterministic and the 3D scene
   // mounts before framer-motion resolves the media query.
@@ -236,7 +271,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
         <FadeIn>
           <Card>
             <CardHeader>
-              <CardTitle>{component.label} telemetry</CardTitle>
+              <CardTitle>{component?.label ?? componentId} telemetry</CardTitle>
             </CardHeader>
             <CardContent>
               <StateView state={stateView} onRetry={refetch}>
