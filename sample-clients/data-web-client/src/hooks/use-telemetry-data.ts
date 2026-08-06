@@ -75,13 +75,17 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const vins = [vin, ...compareVins.filter((c) => c && c !== vin)];
     try {
-      const vins = [vin, ...compareVins.filter((c) => c && c !== vin)];
       const all = (await Promise.all(vins.map((v, i) => fetchHistorical(v, i)))).flat();
       setSeries(all);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load telemetry';
       setError(msg);
+      // Don't leave stale series for the requested VINs after a failed
+      // refetch — they'd show outdated data (or duplicate live series)
+      // after a mid-session VIN change.
+      setSeries((prev) => prev.filter((s) => !vins.includes(s.vin)));
       const { toast } = await import('sonner');
       toast.error(msg);
     } finally {
@@ -136,7 +140,12 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
           });
           const additionsByKey = new Map(additions.map((a) => [a.key, a]));
           const existingKeys = new Set(prev.map((s) => s.key));
-          const merged = prev.map((s) => additionsByKey.get(s.key) ?? s);
+          // Drop series for VINs we are no longer tracking (e.g. after a
+          // mid-session re-discovery): otherwise stale series linger and
+          // every signal renders twice.
+          const currentVins = new Set([vin, ...compareVins]);
+          const relevant = prev.filter((s) => currentVins.has(s.vin));
+          const merged = relevant.map((s) => additionsByKey.get(s.key) ?? s);
           return [...merged, ...additions.filter((a) => !existingKeys.has(a.key))];
         });
       } catch {
