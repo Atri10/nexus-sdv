@@ -14,7 +14,8 @@ RUN go mod download
 COPY proto ./proto
 # Explicit COPYs only — the service dir holds gitignored local artifacts
 # (stale binary, certificates/) that must not enter the image.
-COPY sample-clients/vehicle-client/main.go sample-clients/vehicle-client/sim_test.go ./
+COPY sample-clients/vehicle-client/main.go sample-clients/vehicle-client/sim_test.go \
+     sample-clients/vehicle-client/trip_logic.go sample-clients/vehicle-client/trip_route.go ./
 
 # Mirrors the host Makefile `proto` target exactly (no gRPC stubs needed —
 # the client only uses message types).

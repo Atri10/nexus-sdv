@@ -142,8 +142,11 @@ auth callout, so no Keycloak token is needed.
 > writes decoded protobuf messages into the Bigtable emulator. The loop
 > closes: MQTT → data-converter → NATS → connector → Bigtable → Data API.
 >
-> The Bigtable emulator is **in-memory**: a container restart wipes the table.
-> `make ingest`/`make query` recreate the table + column families automatically.
+> The Bigtable emulator is **in-memory**: a container restart wipes the
+> table. The connector re-creates the `telemetry` table (with `dynamic`/
+> `static` families) on startup and re-checks every minute, so writes
+> self-heal after emulator restarts; `make ingest` also recreates it on
+> demand.
 
 ### Data model
 
@@ -298,6 +301,19 @@ open http://localhost:3000/device/VIN123
   `/api/telemetry/[vin]` proxy route, live updates via WebSocket
   `/api/v1/vehicles/{vin}/telemetry/live`.
 
+**Command Deck UI.** The dashboard uses an immersive HUD theme — Orbitron /
+JetBrains Mono typography, cyan-on-slate palette, glass panels and starfield
+backdrops. Fleet, vehicle and demo pages each feature a lazy-loaded three.js
+scene (react-three-fiber): the fleet map places every vehicle at its GPS
+position (click to dive to the device page), the vehicle scene renders the
+four component zones as clickable holographic boxes that filter the chart,
+and the demo scene shows the NATS → Bigtable pipeline with flowing particles.
+Scenes live in per-page chunks (never the app shell), detect WebGL support
+and fall back to the SVG schematic / table content when it is unavailable,
+and honor `prefers-reduced-motion` (starfield drift, pulse rings, particle
+flow and KPI count-ups switch off; entrances become opacity-only). Interactive
+elements expose keyboard-accessible controls with visible focus rings.
+
 ---
 
 ## 8. Demo mode
@@ -316,23 +332,35 @@ demo pages.
 
 The `/demo` page is the interactive dashboard:
 
-- **Vehicle schematic** — an SVG car with clickable component nodes (battery,
-  powertrain, chassis, cabin); each node shows the live value of its sensors.
+- **Component panel** — one card per telemetry component (battery, cabin,
+  powertrain, chassis) with an enable/disable switch and an Active / Paused /
+  Offline badge. Components and their sensors are **discovered** from the
+  simulator's status reply, so new sensors appear in the UI automatically.
+- **Vehicle schematic** — an SVG car with clickable component nodes; each
+  node shows the live value of its sensors. The 3D holographic scene dims a
+  zone when its component is paused.
 - **Animated data path** — Component → NATS → Connector → Bigtable → Chart
   service → Graph, with the active stage pulsing while telemetry flows.
-- **Live chart** — telemetry for the selected component's sensors, fed over
-  WebSocket by the chart service (same backend as `/device/<VIN>`).
+- **Live chart grid** — one real-time chart per discovered signal, grouped by
+  component; any chart expands into a full-size detail dialog. Charts freeze
+  (history retained) while their component is disabled.
+- **Live GPS track** — a canvas map of the vehicle's GPS trail with a
+  pulsing position marker and live lat/lng coordinates; freezes (history
+  retained) while the chassis component is paused.
 - **Start / Stop buttons** — control the simulator per VIN: the page POSTs to
   the web control route (`/api/demo/vehicle`), which sends a NATS
   request/reply on `commands.<VIN>.demo`; the simulator publishes
-  TelemetryMessage on `telemetry-generic.<VIN>.battery` and MetricsReport on
-  `telemetry.<VIN>` while running, and the connector persists everything into
-  Bigtable.
+  TelemetryMessage on `telemetry-generic.<VIN>.battery`/`...cabin` and
+  per-component MetricsReports on `telemetry.<VIN>` while running, and the
+  connector persists everything into Bigtable.
 
 The simulator starts **idle** on stack startup (random VIN from the pool
 `VIN1001`–`VIN1010`) — telemetry only flows once you press Start, or use the
-manual wrapper `make vehicle-client` for the host-side flow. See
-[ARCHITECTURE.md](./ARCHITECTURE.md) for the control flow.
+manual wrapper `make vehicle-client` for the host-side flow. Component
+toggles accept an optional `component` field on the same control subject
+(`{"action":"start","component":"battery"}`); omitting it starts/stops every
+component (legacy behavior). See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
+control flow.
 
 > **Pre-branch installs:** if your stack predates this branch (existing
 > `keycloak-data` volume / `.env.infra`), run `make clean && make go` once so
@@ -376,7 +404,7 @@ injects the dynamic tokens.
 
 | Gap / gotcha | Impact | What to do |
 |--------------|--------|------------|
-| **Bigtable emulator is in-memory** | Table wiped on container restart | Re-run `make ingest` (it recreates table + families) |
+| **Bigtable emulator is in-memory** | Table wiped on container restart | The connector recreates table + families automatically (startup + 1-min check); `make ingest` works too |
 | **Anonymous NATS is denied** | `nats sub`/`pub` with no creds → `Authorization Violation` | Use `--user connector --password connector-pass` |
 | **Keycloak key rotation** | See below — vehicle-client fails at the NATS step after a restart | `make clean && make go` (the `keycloak-data` volume keeps keys stable) |
 | **Keycloak X.509 client-auth unsupported** | Vehicle authenticates with a client secret, not a client cert | Intended for local dev; the per-VIN client flow works end to end |

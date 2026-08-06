@@ -86,18 +86,18 @@ export function DemoControlBar({ vin, onVinChange, simulatorVin, running, busy, 
         </SelectContent>
       </Select>
 
-      <Button variant="secondary" size="sm" onClick={handleNewVehicle}>
+      <Button variant="secondary" size="sm" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={handleNewVehicle}>
         <Plus />
         New vehicle
       </Button>
 
       {running ? (
-        <Button variant="destructive" size="sm" onClick={onStop} disabled={busy}>
+        <Button variant="destructive" size="sm" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={onStop} disabled={busy}>
           <Square />
           Stop
         </Button>
       ) : (
-        <Button size="sm" onClick={onStart} disabled={busy}>
+        <Button size="sm" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={onStart} disabled={busy}>
           <Play />
           Start
         </Button>

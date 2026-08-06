@@ -7,9 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-jb-mono);
+  --font-mono: var(--font-jb-mono);
+  --font-display: var(--font-orbitron);
+  --font-heading: var(--font-orbitron);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -81,40 +82,46 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --deck-star: rgba(51, 65, 85, 0.35);
+  --deck-grid: rgba(8, 145, 178, 0.14);
+  --deck-vignette: rgba(30, 41, 59, 0.18);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.145 0.02 260);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.16 0.02 260);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.16 0.02 260);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.8 0.13 210);
+  --primary-foreground: oklch(0.145 0.02 260);
+  --secondary: oklch(0.19 0.02 260);
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.19 0.02 260);
+  --muted-foreground: oklch(0.72 0.02 260);
+  --accent: oklch(0.78 0.2 150);
+  --accent-foreground: oklch(0.145 0.02 260);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --border: oklch(0.28 0.03 260);
+  --input: oklch(0.28 0.03 260);
+  --ring: oklch(0.8 0.13 210);
+  --chart-1: oklch(0.8 0.13 210);
+  --chart-2: oklch(0.78 0.2 150);
+  --chart-3: oklch(0.55 0.2 275);
+  --chart-4: oklch(0.7 0.15 60);
+  --chart-5: oklch(0.6 0.2 330);
+  --sidebar: oklch(0.13 0.02 260);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.8 0.13 210);
+  --sidebar-primary-foreground: oklch(0.145 0.02 260);
+  --sidebar-accent: oklch(0.19 0.02 260);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.28 0.03 260);
+  --sidebar-ring: oklch(0.8 0.13 210);
+  --deck-star: rgba(255, 255, 255, 0.6);
+  --deck-grid: rgba(34, 211, 238, 0.12);
+  --deck-vignette: rgba(2, 6, 23, 0.8);
 }
 
 @layer base {
@@ -126,6 +133,14 @@
   }
   html {
     @apply font-sans;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-display;
   }
 }
 
@@ -174,4 +189,155 @@
 g:focus-visible {
   outline: 2px solid #3B82F6;
   outline-offset: 4px;
+}
+
+/* ==== Command Deck: HUD utilities + backdrop layers ==== */
+
+@layer components {
+/* HUD glass panel — translucent card with cyan-tinted edge and blur */
+.hud-panel {
+  position: relative;
+  border: 1px solid hsl(from var(--border) h s l / 0.8);
+  background: linear-gradient(
+    180deg,
+    hsl(from var(--card) h s l / 0.7),
+    hsl(from var(--card) h s l / 0.4)
+  );
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 0 24px hsl(from var(--primary) h s l / 0.06),
+    inset 0 1px 0 hsl(from var(--border) h s l / 0.6);
+}
+
+/* Safari 16/17 only — the build pipeline collapses the -webkit- alias, so
+   keep the prefixed variant isolated in its own rule. */
+@supports (-webkit-backdrop-filter: blur(1px)) {
+  .hud-panel {
+    -webkit-backdrop-filter: blur(12px);
+  }
+}
+
+/* Cyan glow — active / selected */
+.glow-cyan {
+  box-shadow:
+    0 0 18px hsl(from var(--primary) h s l / 0.35),
+    0 0 40px hsl(from var(--primary) h s l / 0.12);
+}
+
+/* Emerald glow — positive / scoring */
+.glow-emerald {
+  box-shadow:
+    0 0 18px hsl(from var(--accent) h s l / 0.35),
+    0 0 40px hsl(from var(--accent) h s l / 0.12);
+}
+
+/* Cyan text glow — Orbitron headers / brand */
+.glow-text {
+  text-shadow:
+    0 0 12px hsl(from var(--primary) h s l / 0.6),
+    0 0 32px hsl(from var(--primary) h s l / 0.25);
+}
+}
+
+/* Slow scanline sweep across a HUD panel */
+.hud-scan {
+  position: relative;
+  overflow: hidden;
+}
+
+.hud-scan::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: -50%;
+  height: 45%;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    hsl(from var(--primary) h s l / 0.07),
+    transparent
+  );
+  animation: hud-scan-sweep 7s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes hud-scan-sweep {
+  to {
+    top: 105%;
+  }
+}
+
+/* Starfield backdrop — three independently drifting star layers */
+.deck-starfield {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--deck-star) 1px, transparent 1px);
+  background-size: 200px 200px;
+  animation: deck-star-drift-1 15s linear infinite;
+}
+
+.deck-starfield::before,
+.deck-starfield::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--deck-star) 1px, transparent 1px);
+  background-size: 320px 320px;
+  animation: deck-star-drift-2 25s linear infinite;
+}
+
+.deck-starfield::after {
+  background-size: 480px 480px;
+  animation: deck-star-drift-3 40s linear infinite;
+}
+
+@keyframes deck-star-drift-1 {
+  to {
+    background-position: 200px 200px;
+  }
+}
+
+@keyframes deck-star-drift-2 {
+  to {
+    background-position: 320px 320px;
+  }
+}
+
+@keyframes deck-star-drift-3 {
+  to {
+    background-position: 480px 480px;
+  }
+}
+
+/* Floor grid — subtle cyan perspective plane at the bottom (static) */
+.deck-grid {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 55%;
+  background-image:
+    linear-gradient(var(--deck-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--deck-grid) 1px, transparent 1px);
+  background-size: 44px 44px;
+  transform: perspective(500px) rotateX(60deg);
+  transform-origin: top;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 55%);
+  mask-image: linear-gradient(to bottom, transparent, black 55%);
+}
+
+/* Vignette — darkens the frame edges toward the deck background */
+.deck-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 55%, var(--deck-vignette));
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-starfield,
+  .deck-starfield::before,
+  .deck-starfield::after,
+  .hud-scan::after {
+    animation: none;
+  }
 }

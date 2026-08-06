@@ -179,6 +179,24 @@ The easiest way to run the vehicle client is using the provided run script, whic
 
 **Note**: The `-registration-url` can be provided either as a command-line flag or via the `REGISTRATION_URL` environment variable.
 
+### NATS Control Protocol (`-control-subject`)
+
+With `-control-subject=commands.<VIN>.demo`, the client listens for JSON
+control requests and replies on the request's reply subject:
+
+```
+Request:  {"action": "start"|"stop"|"status", "component": "<id>"}
+          component is optional — omitted = all components (legacy behavior).
+Reply:    {"vin","running","published","messageType",
+           "components":[{"id","label","enabled","sensors":[{"name","label","unit"}]}]}
+```
+
+Components: `battery`, `cabin`, `powertrain`, `chassis` (see
+`newControlState` in `main.go`). `start`/`stop` with a `component` toggles
+only that component; `running` is true while at least one component is
+enabled. The status reply doubles as the dashboard's telemetry discovery
+endpoint — the UI renders whatever components/sensors it declares.
+
 ### Message Types
 
 The vehicle client supports two different message formats:

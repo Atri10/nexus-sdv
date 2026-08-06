@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
-import { DEMO_COMPONENTS, latestValuesFor, seriesForComponent } from '@/lib/demo/vehicle-components';
+import { COMPONENT_ZONES, DEMO_COMPONENTS, latestValuesFor, seriesForComponent, unitForQualifier } from '@/lib/vehicle-components';
 
 /**
  * Connector contract (base-services/nats-bigtable-connector): columns are
@@ -63,6 +63,28 @@ describe('DEMO_COMPONENTS metadata', () => {
   });
 });
 
+describe('COMPONENT_ZONES', () => {
+  it('declares the four zones in the same order as DEMO_COMPONENTS', () => {
+    expect(COMPONENT_ZONES.map((z) => z.id)).toEqual(['battery', 'powertrain', 'chassis', 'cabin']);
+  });
+
+  it('references only known component ids (cross-check with DEMO_COMPONENTS)', () => {
+    const known: Record<string, true> = Object.fromEntries(DEMO_COMPONENTS.map((c) => [c.id, true]));
+    for (const zone of COMPONENT_ZONES) {
+      expect(known[zone.id], `zone ${zone.id} must resolve to a DEMO_COMPONENTS entry`).toBe(true);
+    }
+  });
+
+  it('keeps the brief zone geometry: center above the floor, positive size', () => {
+    expect(COMPONENT_ZONES).toEqual([
+      { id: 'battery', label: 'Battery', position: [0, 0.25, 1.0], size: [1.2, 0.35, 0.9], color: '#22D3EE' },
+      { id: 'powertrain', label: 'Powertrain', position: [0, 0.35, -0.9], size: [0.9, 0.4, 0.7], color: '#22C55E' },
+      { id: 'chassis', label: 'Chassis', position: [0, 0.1, 0], size: [1.5, 0.2, 2.6], color: '#8B5CF6' },
+      { id: 'cabin', label: 'Cabin', position: [0, 0.9, -0.2], size: [1.0, 0.55, 1.2], color: '#F59E0B' },
+    ]);
+  });
+});
+
 describe('seriesForComponent', () => {
   it('matches by column qualifier after the family prefix', () => {
     const all = [
@@ -99,6 +121,28 @@ describe('seriesForComponent', () => {
   it('returns [] for an unknown component or unmatched qualifiers', () => {
     expect(seriesForComponent([], 'battery')).toEqual([]);
     expect(seriesForComponent([series('VIN1', 'dynamic:battery.voltage', [[1, 1]])], 'nope')).toEqual([]);
+  });
+});
+
+describe('unitForQualifier', () => {
+  it('returns the unit declared for a sensor qualifier', () => {
+    expect(unitForQualifier('battery.voltage')).toBe('V');
+    expect(unitForQualifier('battery.current')).toBe('A');
+    expect(unitForQualifier('ENGINE_POWER')).toBe('kW');
+    expect(unitForQualifier('VELOCITY')).toBe('km/h');
+    expect(unitForQualifier('battery.temp')).toBe('°C');
+  });
+
+  it('returns undefined for sensors without a declared unit', () => {
+    expect(unitForQualifier('GPS_LATITUDE')).toBeUndefined();
+    expect(unitForQualifier('GPS_LONGITUDE')).toBeUndefined();
+    expect(unitForQualifier('make')).toBeUndefined();
+    expect(unitForQualifier('index')).toBeUndefined();
+  });
+
+  it('returns undefined for unknown qualifiers', () => {
+    expect(unitForQualifier('nope')).toBeUndefined();
+    expect(unitForQualifier('')).toBeUndefined();
   });
 });
 
