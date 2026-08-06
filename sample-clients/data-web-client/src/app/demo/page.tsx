@@ -1,6 +1,7 @@
 'use client';
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useReducedMotion } from 'framer-motion';
 import AppLayout from '@/components/app-layout';
 import TimeRangeSelector from '@/components/time-range-selector';
 import { LatestStats } from '@/components/latest-stats';
@@ -12,6 +13,7 @@ import { DEMO_COMPONENTS, seriesForComponent } from '@/lib/vehicle-components';
 import { DataPath } from '@/components/demo/data-path';
 import { DemoControlBar, VIN_POOL, type DemoStatus } from '@/components/demo/demo-control-bar';
 import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
+import DemoScene from '@/components/scene/demo-scene';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { TimeRange } from '@/types/telemetry';
 
@@ -130,6 +132,11 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
 
   const component = DEMO_COMPONENTS.find((c) => c.id === componentId) ?? DEMO_COMPONENTS[0];
   const componentSeries = seriesForComponent(series, componentId);
+  // useReducedMotion is null during SSR/first paint; treat null as "not
+  // reduced" so the prerendered page stays deterministic and the 3D scene
+  // mounts before framer-motion resolves the media query.
+  const reducedMotion = useReducedMotion() === true;
+  const flowing = status?.running ?? false;
   const toggle = (key: string) =>
     setHidden((prev) => {
       const next = new Set(prev);
@@ -161,9 +168,43 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           onStop={() => runAction('stop')}
         />
 
-        <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
-
-        <DataPath flowing={status?.running ?? false} />
+        {/* 3D holographic pipeline: vehicle zones (click to select) + the
+            NATS→Bigtable data flow. Reduced-motion users get the SVG
+            schematic + data path instead; WebGL-less browsers get them via
+            the scene's fallback prop. */}
+        {reducedMotion ? (
+          <>
+            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
+            <DataPath flowing={flowing} />
+          </>
+        ) : (
+          <section className="hud-panel overflow-hidden rounded-lg">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+              <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
+                HOLOGRAPHIC PIPELINE
+              </h2>
+              <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
+                DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO SELECT
+              </span>
+            </div>
+            <div className="relative h-[440px] overflow-y-auto">
+              <DemoScene
+                componentId={componentId}
+                onSelect={setComponentId}
+                flowing={flowing}
+                animate={!reducedMotion}
+                vin={vin}
+                fallback={
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} />
+                    <DataPath flowing={flowing} />
+                  </div>
+                }
+                className="h-full w-full"
+              />
+            </div>
+          </section>
+        )}
 
         {componentSeries.length > 0 && (
           <>
