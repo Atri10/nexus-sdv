@@ -83,7 +83,7 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
                 reasons.append(f"R_int {r_int:.1f} mΩ > {CRANK_R_MULT:.1f}x baseline")
     score = max(0, score)
     if ewma is None:
-        evidence = {"cranking_only": True,
+        evidence = {"cranking_only": "true",
                     "threshold_advisory": f"{BATTERY_ADVISORY_V}", "threshold_action": f"{BATTERY_ACTION_V}"}
         explanation = "; ".join(reasons) or "No anomaly."
     else:
