@@ -54,6 +54,8 @@ Key decisions:
 
 **Physics-informed, not runtime-PyBaMM.** PyBaMM's lead-acid models are run **offline once** to generate realistic voltage/SoC degradation curves across Indian temperature regimes (10–45 °C); curve parameters (degradation rate, noise floor, β compensation) are fitted and played back by the Go sim. The sim stays fast and dependency-free; the curve shapes are physics-derived.
 
+**Calibration tooling**: an optional offline script (`sample-services/predictive-maintenance/scripts/calibrate_battery_curve.py`, requires `pybamm` only in that venv) fits the curve parameters and writes them to a JSON config the Go sim reads. **The Go sim's runtime has zero Python/PyBaMM dependency** — if the calibration script isn't run, the shipped defaults (fitted values checked into config) are used. The curve shapes themselves follow the published Sulzer/PyBaMM lead-acid equations, so the sim is physics-honest even without the offline run.
+
 Per-component trajectories (from the 2026-08-05 specs, parameterized per VIN):
 
 - **Battery**: $V_{\text{rest}}(t) = 12.63 - deg\cdot(t/H) + \mathcal{N}(0, 0.025)$ over horizon $H$ (60–180 days configurable); cranking $V_{\min}$ declines and $R_{\text{int}}$ rises with $deg$; temperature compensation uses India-calibrated β ≈ −0.011 V/°C with a **30 °C reference**. Healthy cohort drifts ±0.05 V.
@@ -83,7 +85,8 @@ Structured alert message on `pm.{VIN}.{component}`:
 ```
 
 - **No LLM** — `explanation` is a deterministic template from evidence.
-- Composite per-VIN health score (0–100): battery 60/25/15 (resting trend / cranking / SOC drift), per the specs.
+- Composite per-VIN health score (0–100): battery 60/25/15 (resting trend / cranking / SOC drift); **brake = 100 − wear%** (min 0); **tires = linear 100→0 as $P_{\text{comp}}$ falls from the vehicle-recommended pressure to the 1.8 bar floor** (or 100 − |slope| normalized, whichever is lower — the binding constraint wins).
+- **Publish cadence**: an alert is published when the severity changes or the health score crosses a band boundary (green/amber/red) — not every poll cycle, so the SSE feed stays readable. A VIN that stays healthy publishes nothing.
 - Config: `SCHEDULED_VINS` + `POLL_INTERVAL` env (same shape as trip_analyzer); thresholds in settings with sane defaults.
 - Docker: new compose service `predictive-maintenance` (depends on data-api + NATS); `make pm-demo` = `make demo` + this service + open `/pm`.
 
@@ -102,6 +105,7 @@ Structured alert message on `pm.{VIN}.{component}`:
 - Alert feed: chronological list (severity, component, VIN, evidence, timestamp, explanation).
 - Drill-down per VIN+component: degradation trend chart (raw signal + EWMA/threshold overlays, 7d/30d), the computed math shown (slope, threshold, R_int, wear %, pressure slope), predicted-vs-actual (simulator ground truth vs predicted lead time, clearly labeled).
 - Fleet overview cards: % healthy / at-risk / critical per component; counts.
+- **Validation card**: precision/recall/mean lead-time numbers from the last offline evaluator run (static JSON loaded client-side, e.g. `public/pm-validation.json`), labeled as simulator-ground-truth evaluation — the "internal credibility" story for technical reviewers.
 
 New files: `src/components/pm/{pm-health-matrix,pm-alert-feed,pm-drill-down}.tsx`, `src/lib/pm-types.ts` (shared alert schema), `src/app/pm/page.tsx`, `src/app/api/pm/stream/route.ts`, `src/hooks/usePmMessages.ts`. Sidebar entry "Predictive Maintenance".
 
