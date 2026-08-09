@@ -18,14 +18,21 @@ install:
 test:
 	uv run pytest tests/
 
-# 3. Generate betterproto stubs from proto definitions
+# 3. Generate betterproto stubs from proto definitions.
+# NOTE: betterproto >=2.0.0b6 emits package-per-proto-package output
+# (model/pm/__init__.py) instead of the committed flat layout
+# (model/pm_message.py). The committed stub is the contract every
+# consumer imports; regenerate into a scratch dir and relocate, so `make
+# proto` always reproduces the committed file.
 proto:
 	@echo "Generating betterproto stubs..."
+	mkdir -p .proto-gen
 	uv run python -m grpc_tools.protoc \
 		-I proto \
-		--python_betterproto_out=src/predictive_maintenance/model \
+		--python_betterproto_out=.proto-gen \
 		proto/*.proto
-	@echo "Done."
+	mv .proto-gen/pm/__init__.py src/predictive_maintenance/model/pm_message.py
+	@echo "Done (relocated flat stub)."
 
 # 4. Cleanup
 clean:
