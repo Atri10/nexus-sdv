@@ -15,7 +15,18 @@ class NatsConnector:
         self.js: JetStreamContext | None = None
 
     async def connect(self):
+        # Await the background dial so callers can't race it: publish_message
+        # needs self.nc to exist. Re-entrant (Processor re-connects per run) —
+        # reuse an in-flight dial and never spawn a duplicate task.
+        if getattr(self, "_connect_task", None) is not None and not self._connect_task.done():
+            await self._connect_task
+            return
         self._connect_task = asyncio.create_task(self._do_connect())
+        try:
+            await self._connect_task
+        except Exception:
+            self._connect_task = None  # allow a future retry
+            raise
 
     async def _do_connect(self):
         logger.info("Connecting to NATS...", nats_host=settings.nats_host, nats_port=settings.nats_port)
@@ -48,12 +59,14 @@ class NatsConnector:
 
     async def close(self):
         # 1. Cancel the background connection task if it's still running
-        if hasattr(self, '_connect_task') and not self._connect_task.done():
-            self._connect_task.cancel()
-        try:
-            await self._connect_task
-        except asyncio.CancelledError:
-            logger.info("NATS background connection task cancelled")
+        task = getattr(self, '_connect_task', None)
+        if task is not None and not task.done():
+            task.cancel()
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.info("NATS background connection task cancelled")
 
         # 2. Drain and close the actual connection if it exists
         if self.nc and self.nc.is_connected:
