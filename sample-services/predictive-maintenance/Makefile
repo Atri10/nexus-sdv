@@ -30,9 +30,13 @@ proto:
 	uv run python -m grpc_tools.protoc \
 		-I proto \
 		--python_betterproto_out=.proto-gen \
-		proto/*.proto
+		proto/pm-message.proto
 	mv .proto-gen/pm/__init__.py src/predictive_maintenance/model/pm_message.py
-	@echo "Done (relocated flat stub)."
+	uv run python -m grpc_tools.protoc \
+		-I proto \
+		--python_betterproto_out=src/predictive_maintenance/client/generated/ \
+		proto/data-api.proto
+	@echo "Done (relocated flat stub + data-api client)."
 
 # 4. Cleanup
 clean:
