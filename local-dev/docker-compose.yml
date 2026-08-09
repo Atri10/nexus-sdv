@@ -103,6 +103,25 @@ services:
     networks:
       - nexus-local
 
+  predictive-maintenance:
+    build:
+      context: ../sample-services/predictive-maintenance
+      dockerfile: Dockerfile.local
+    container_name: nexus-predictive-maintenance
+    environment:
+      - DATA_API_GRPC_ADDR=${DATA_API_GRPC_ADDR}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - NATS_USER=connector
+      - NATS_PASSWORD=connector-pass
+      - SCHEDULED_VINS=${VIN_POOL}
+      - POLL_INTERVAL_SECONDS=60
+      - LOG_LEVEL=info
+    depends_on:
+      - data-api
+    networks:
+      - nexus-local
+
   nats-bigtable-connector:
     build:
       context: ../base-services/nats-bigtable-connector
