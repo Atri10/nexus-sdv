@@ -45,29 +45,31 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
     """rest: list[(t_epoch, V_rest)]; crank: list[(t, V_min, I_crank)]."""
     if len(rest) < 5 and not crank:
         return DetectorResult(100, "healthy", {}, "Insufficient data — no alert.")
-    # Temperature-compensate each resting reading against 30 °C reference.
-    comp = [v for _, v in rest]  # V already compensated by caller; see note
-    ewma = comp[0]
-    for v in comp[1:]:
-        ewma = (1 - BATTERY_EWMA_ALPHA) * ewma + BATTERY_EWMA_ALPHA * v
-    # 30-day slope via linear least squares (mV/day).
-    n = len(rest)
-    xs = [t / 86400.0 for t, _ in rest]
-    mean_x, mean_y = sum(xs) / n, sum(comp) / n
-    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, comp))
-    den = sum((x - mean_x) ** 2 for x in xs)
-    slope_mv_day = (num / den * 1000.0) if den else 0.0
     score = 100
     reasons = []
-    if ewma < BATTERY_ACTION_V:
-        score = min(score, 25)
-        reasons.append(f"EWMA {ewma:.2f} V < {BATTERY_ACTION_V} V (action)")
-    elif ewma < BATTERY_ADVISORY_V:
-        score = min(score, 60)
-        reasons.append(f"EWMA {ewma:.2f} V < {BATTERY_ADVISORY_V} V (advisory)")
-    if slope_mv_day < BATTERY_SLOPE_MV:
-        score = min(score, 55)
-        reasons.append(f"slope {slope_mv_day:.2f} mV/day < {BATTERY_SLOPE_MV} mV/day")
+    ewma = slope_mv_day = None
+    if rest:
+        # Temperature-compensate each resting reading against 30 °C reference.
+        comp = [v for _, v in rest]  # V already compensated by caller; see note
+        ewma = comp[0]
+        for v in comp[1:]:
+            ewma = (1 - BATTERY_EWMA_ALPHA) * ewma + BATTERY_EWMA_ALPHA * v
+        # 30-day slope via linear least squares (mV/day).
+        n = len(rest)
+        xs = [t / 86400.0 for t, _ in rest]
+        mean_x, mean_y = sum(xs) / n, sum(comp) / n
+        num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, comp))
+        den = sum((x - mean_x) ** 2 for x in xs)
+        slope_mv_day = (num / den * 1000.0) if den else 0.0
+        if ewma < BATTERY_ACTION_V:
+            score = min(score, 25)
+            reasons.append(f"EWMA {ewma:.2f} V < {BATTERY_ACTION_V} V (action)")
+        elif ewma < BATTERY_ADVISORY_V:
+            score = min(score, 60)
+            reasons.append(f"EWMA {ewma:.2f} V < {BATTERY_ADVISORY_V} V (advisory)")
+        if slope_mv_day < BATTERY_SLOPE_MV:
+            score = min(score, 55)
+            reasons.append(f"slope {slope_mv_day:.2f} mV/day < {BATTERY_SLOPE_MV} mV/day")
     # Cranking signature.
     baseline = baseline_r_int_mohm or CRANK_BASELINE_MOHM
     for _, vmin, ic in crank:
@@ -80,13 +82,20 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
                 score = min(score, 30)
                 reasons.append(f"R_int {r_int:.1f} mΩ > {CRANK_R_MULT:.1f}x baseline")
     score = max(0, score)
+    if ewma is None:
+        evidence = {"cranking_only": True,
+                    "threshold_advisory": f"{BATTERY_ADVISORY_V}", "threshold_action": f"{BATTERY_ACTION_V}"}
+        explanation = "; ".join(reasons) or "No anomaly."
+    else:
+        evidence = {"ewma_voltage": f"{ewma:.2f}", "slope_mv_day": f"{slope_mv_day:.2f}",
+                    "threshold_advisory": f"{BATTERY_ADVISORY_V}", "threshold_action": f"{BATTERY_ACTION_V}"}
+        explanation = ("Resting voltage {:.2f} V, drifting {:.2f} mV/day (advisory threshold {} V).".format(
+            ewma, slope_mv_day, BATTERY_ADVISORY_V)) or ("; ".join(reasons) or "No anomaly.")
     return DetectorResult(
         health_score=score,
         severity="critical" if score < 30 else _band(score),
-        evidence={"ewma_voltage": f"{ewma:.2f}", "slope_mv_day": f"{slope_mv_day:.2f}",
-                  "threshold_advisory": f"{BATTERY_ADVISORY_V}", "threshold_action": f"{BATTERY_ACTION_V}"},
-        explanation=("Resting voltage {:.2f} V, drifting {:.2f} mV/day (advisory threshold {} V).".format(
-            ewma, slope_mv_day, BATTERY_ADVISORY_V)) or ("; ".join(reasons) or "No anomaly."),
+        evidence=evidence,
+        explanation=explanation,
     )
 
 
