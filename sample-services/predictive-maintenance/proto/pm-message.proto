@@ -1,0 +1,12 @@
+syntax = "proto3";
+package pm;
+
+message PmMessage {
+  string vin = 1;
+  string component = 2;   // battery | brake | tires
+  int32 health_score = 3; // 0-100
+  string severity = 4;    // healthy | advisory | action | critical
+  map<string, string> evidence = 5;
+  string explanation = 6;
+  string timestamp = 7;   // RFC3339
+}
