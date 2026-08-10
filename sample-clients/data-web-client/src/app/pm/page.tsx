@@ -92,7 +92,7 @@ export function PmValidationCard() {
           Detector precision / recall / mean lead time vs the simulator.
           {data?.placeholder
             ? ' Placeholder values — the file self-identifies until a real evaluator run replaces them.'
-            : ' Placeholder values — replaced by real evaluator output.'}
+            : ' Measured against simulator ground truth from the last evaluator run.'}
         </CardDescription>
       </CardHeader>
       <CardContent>

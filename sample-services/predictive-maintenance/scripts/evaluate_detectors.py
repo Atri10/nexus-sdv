@@ -405,7 +405,7 @@ def parse_args(argv):
             "compose service mounts local-dev/data:/data and points it at "
             "/data/sim-ground-truth.jsonl). When no labels file exists the "
             "evaluator scores alerts only and writes null component metrics "
-            "— run it after a soak to get real numbers."
+            "— run it after a soak to get real numbers. "
             "Healthy VINs publish no alerts by design (Task 3 §publish-"
             "cadence); the default soak mixes healthy/degrading/critical "
             "presets (DEGRADATION_PRESET=demo)."
