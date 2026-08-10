@@ -14,8 +14,10 @@ describe('parsePmMessage', () => {
 });
 
 describe('severityColor', () => {
-  it('maps severities to colors', () => {
-    expect(severityColor('healthy')).toBeDefined();
-    expect(severityColor('critical')).toMatch(/red|rose/);
+  it('maps severities to real CSS colors (SVG stroke / inline style)', () => {
+    expect(severityColor('healthy')).toBe('#22C55E');
+    expect(severityColor('advisory')).toBe('#F59E0B');
+    expect(severityColor('action')).toBe('#F97316');
+    expect(severityColor('critical')).toBe('#DC2626');
   });
 });
