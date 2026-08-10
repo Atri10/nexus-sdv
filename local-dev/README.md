@@ -114,7 +114,7 @@ Run all of these from inside `local-dev/`.
 | Service | Endpoint | Notes |
 |---------|----------|-------|
 | **NATS** | `nats://localhost:4222` | NKey + auth-callout; HTTP monitor `http://localhost:8222` |
-| **Keycloak** | `http://localhost:8080` (admin UI) | admin/admin · realm `nexus-sdv` |
+| **Keycloak** | `http://localhost:8088` (admin UI) | admin/admin · realm `nexus-sdv` |
 | **Bigtable emulator** | `localhost:8086` | project `test-project`, instance `test-instance`, table `telemetry` |
 | **Mosquitto (MQTT)** | `mqtt://localhost:1883` | topic base `telemetry/#` |
 | **Data API (gRPC)** | `localhost:9090` | plaintext; container listens on 8080 |
@@ -509,7 +509,7 @@ Useful health checks:
 
 ```bash
 curl http://localhost:8222/healthz          # NATS
-curl http://localhost:8080/health/ready      # Keycloak
+curl http://localhost:8088/health/ready      # Keycloak
 docker compose ps                            # container status
 ```
 

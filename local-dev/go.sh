@@ -51,7 +51,7 @@ echo ""
 
 info "Service URLs:"
 echo "  NATS:            nats://localhost:4222"
-echo "  Keycloak:        http://localhost:8080 (admin/admin)"
+echo "  Keycloak:        http://localhost:8088 (admin/admin)"
 echo "  Bigtable:        localhost:8086"
 echo "  Mosquitto:       localhost:1883"
 echo "  Data API:        grpc://localhost:9090"

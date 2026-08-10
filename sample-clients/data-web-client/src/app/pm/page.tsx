@@ -2,319 +2,185 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import AppLayout from '@/components/app-layout';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FadeIn } from '@/components/motion/fade-in';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
-import {
-  PM_COMPONENTS,
-  PmHealthMatrix,
-  type PmComponent,
-} from '@/components/pm/pm-health-matrix';
-import { PmAlertFeed } from '@/components/pm/pm-alert-feed';
-import { PmDrillDown } from '@/components/pm/pm-drill-down';
-import type { DevicesResponse, DeviceRow } from '@/types/telemetry';
 
-export const SEVERITIES = ['healthy', 'advisory', 'action', 'critical'] as const;
-export type Severity = (typeof SEVERITIES)[number];
+type Vehicle = {
+  deviceId: string;
+  lastSeen: string;
+  columns: Record<string, string>;
+};
 
-export interface PmValidationData {
-  generated?: string;
-  simulated_vins?: number;
-  /** True when the numbers are placeholders (no real evaluator run yet). The
-   * file self-identifies so it can't be mistaken for real validation. */
-  placeholder?: boolean;
-  components: Partial<Record<PmComponent, { precision: number; recall: number; mean_lead_days: number }>>;
-}
-
-/** Counts per severity for one component across the fleet (latest msg per VIN). */
-export function severityCounts(messages: PmMessage[], component: PmComponent): Record<Severity, number> {
-  const byVin = new Map<string, PmMessage>();
-  for (const m of messages) {
-    if (m.component !== component) continue;
-    if (!byVin.has(m.vin)) byVin.set(m.vin, m);
-  }
-  const counts: Record<Severity, number> = { healthy: 0, advisory: 0, action: 0, critical: 0 };
-  for (const m of byVin.values()) counts[m.severity] += 1;
-  return counts;
-}
-
-/** Validation card: reads public/pm-validation.json (initial values; the
- * evaluator replaces them in Task 9) and renders the precision/recall/lead
- * table per component. */
-export function PmValidationCard() {
-  const [data, setData] = useState<PmValidationData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    fetch('/pm-validation.json', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((json: PmValidationData) => {
-        setData(json);
-        setError(null);
-      })
-      .catch((e: unknown) => {
-        setData(null);
-        setError(e instanceof Error ? e.message : String(e));
-      });
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  if (error) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Validation</CardTitle>
-          <CardDescription>Simulator ground truth</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-xs text-muted-foreground">Could not load pm-validation.json ({error}).</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">Validation</CardTitle>
-          <Badge variant={data?.placeholder ? 'secondary' : 'outline'} className="font-mono text-[10px] uppercase tracking-wider">
-            {data?.placeholder ? 'placeholder' : 'simulator ground truth'}
-          </Badge>
-        </div>
-        <CardDescription>
-          Detector precision / recall / mean lead time vs the simulator.
-          {data?.placeholder
-            ? ' Placeholder values — the file self-identifies until a real evaluator run replaces them.'
-            : ' Measured against simulator ground truth from the last evaluator run.'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {!data ? (
-          <Skeleton className="h-24 w-full rounded-lg" />
-        ) : (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border/60 text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                <th className="pb-1.5 pr-2">Component</th>
-                <th className="pb-1.5 pr-2 text-right">Precision</th>
-                <th className="pb-1.5 pr-2 text-right">Recall</th>
-                <th className="pb-1.5 text-right">Mean lead (days)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {PM_COMPONENTS.map((c) => {
-                const v = data.components?.[c];
-                return (
-                  <tr key={c} className="border-b border-border/30">
-                    <td className="py-1.5 pr-2 font-mono text-foreground/90">{c}</td>
-                    <td className="py-1.5 pr-2 text-right font-mono tabular-nums text-foreground/85">
-                      {v ? v.precision.toFixed(2) : '—'}
-                    </td>
-                    <td className="py-1.5 pr-2 text-right font-mono tabular-nums text-foreground/85">
-                      {v ? v.recall.toFixed(2) : '—'}
-                    </td>
-                    <td className="py-1.5 text-right font-mono tabular-nums text-foreground/85">
-                      {v ? v.mean_lead_days : '—'}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-        {data?.simulated_vins !== undefined && (
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            {data.simulated_vins} simulated VINs · generated {data.generated ?? '—'}
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-/** Fleet-health overview card: latest health counts per component, broken
- * down by severity band (from the live pm.* stream via usePmMessages). */
-function OverviewCard({ component, messages }: { component: PmComponent; messages: PmMessage[] }) {
-  const counts = useMemo(() => severityCounts(messages, component), [messages, component]);
-  const total = SEVERITIES.reduce((sum, sev) => sum + counts[sev], 0);
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <CardTitle className="font-mono text-sm capitalize">{component}</CardTitle>
-          <Badge variant="outline" className="font-mono text-[10px]">
-            {total} tracked
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
-          {total > 0 &&
-            (['critical', 'action', 'advisory', 'healthy'] as const).map((sev) =>
-              counts[sev] > 0 ? (
-                <div
-                  key={sev}
-                  className="h-full"
-                  style={{ width: `${(counts[sev] / total) * 100}%`, backgroundColor: severityColor(sev) }}
-                  title={`${sev}: ${counts[sev]}`}
-                />
-              ) : null
-            )}
-        </div>
-        <dl className="mt-3 grid grid-cols-4 gap-1 text-center">
-          {(['healthy', 'advisory', 'action', 'critical'] as const).map((sev) => (
-            <div key={sev}>
-              <dt className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                {sev}
-              </dt>
-              <dd className="font-mono text-lg font-semibold tabular-nums" style={{ color: severityColor(sev) }}>
-                {counts[sev]}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </CardContent>
-    </Card>
-  );
-}
-
+/**
+ * Simple live Predictive-Maintenance board.
+ *
+ * One table of vehicles (VIN, status, speed, battery voltage, health score,
+ * last alert) that updates every few seconds from the telemetry API, plus a
+ * live alert ticker on top fed by the pm.* NATS stream. No drill-down, no
+ * matrix, no validation card — just "is my vehicle progressing and is PM
+ * firing".
+ */
 export default function PmPage() {
   const messages = usePmMessages();
-  const [devices, setDevices] = useState<DeviceRow[]>([]);
-  const [devicesLoading, setDevicesLoading] = useState(true);
-  const [devicesError, setDevicesError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<{ vin: string; component: PmComponent } | null>(null);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const loadDevices = useCallback(() => {
+  const loadVehicles = useCallback(() => {
     fetch('/api/devices')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<DevicesResponse>;
+        return r.json() as Promise<{ devices: Vehicle[] }>;
       })
-      .then((data) => {
-        setDevices(data.devices);
-        setDevicesError(null);
-        setDevicesLoading(false);
-      })
-      .catch((e: unknown) => {
-        setDevicesError(e instanceof Error ? e.message : String(e));
-        setDevicesLoading(false);
-      });
+      .then((d) => setVehicles(d.devices))
+      .catch((e: unknown) => console.error('load vehicles', e))
+      .finally(() => setLoading(false));
   }, []);
 
+  // Refresh the vehicle list every 5s so speed/voltage/health stay live.
   useEffect(() => {
-    loadDevices();
-  }, [loadDevices]);
+    loadVehicles();
+    const id = setInterval(loadVehicles, 5000);
+    return () => clearInterval(id);
+  }, [loadVehicles]);
 
-  const vins = useMemo(() => devices.map((d) => d.deviceId), [devices]);
+  // Latest pm message per VIN (newest-first input).
+  const latestByVin = useMemo(() => {
+    const m = new Map<string, PmMessage>();
+    for (const msg of messages) if (!m.has(msg.vin)) m.set(msg.vin, msg);
+    return m;
+  }, [messages]);
+
+  const alertCount = messages.length;
+  const criticalCount = messages.filter((m) => m.severity === 'critical').length;
 
   return (
     <AppLayout>
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h1 className="text-xl font-semibold">Predictive Maintenance</h1>
-          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tracking-wider text-muted-foreground">
+          <h1 className="text-xl font-semibold">Predictive Maintenance — Live</h1>
+          <div className="flex items-center gap-2 font-mono text-[11px] tracking-wider text-muted-foreground">
             <span className="rounded border border-border/70 bg-card/50 px-2 py-1">
-              VEHICLES <span className="text-foreground">{vins.length}</span>
+              VEHICLES <span className="text-foreground">{vehicles.length}</span>
             </span>
             <span className="rounded border border-border/70 bg-card/50 px-2 py-1">
-              MESSAGES <span className="text-foreground">{messages.length}</span>
+              ALERTS <span className="text-foreground">{alertCount}</span>
+            </span>
+            <span className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-red-600">
+              CRITICAL <span className="font-semibold">{criticalCount}</span>
             </span>
           </div>
         </div>
 
-        <FadeIn>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {PM_COMPONENTS.map((c) => (
-              <OverviewCard key={c} component={c} messages={messages} />
-            ))}
-            <PmValidationCard />
-          </div>
-        </FadeIn>
-
+        {/* Live alert ticker */}
         <FadeIn>
           <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <div>
-                <CardTitle className="text-sm">Fleet health matrix</CardTitle>
-                <CardDescription>
-                  Latest health score per vehicle &amp; component — click a cell to drill down.
-                </CardDescription>
-              </div>
-              <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-wider">
-                live pm.* stream
-              </Badge>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Live alerts</CardTitle>
             </CardHeader>
             <CardContent>
-              {devicesLoading ? (
-                <Skeleton className="h-40 w-full rounded-lg" />
-              ) : devicesError ? (
-                <p className="text-sm text-destructive">Error loading vehicles: {devicesError}</p>
+              {messages.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No alerts yet — the simulator is backfilling history and the detector will
+                  start firing within a minute.
+                </p>
               ) : (
-                <PmHealthMatrix
-                  vins={vins}
-                  messages={messages}
-                  selected={selected}
-                  onSelect={(vin, component) => setSelected({ vin, component })}
-                />
+                <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                  {messages.slice(0, 15).map((m, i) => (
+                    <div key={`${m.timestamp}-${m.vin}-${i}`} className="flex items-start gap-2 text-sm">
+                      <Badge
+                        className="shrink-0 font-mono text-[10px] uppercase tracking-wider"
+                        style={{ backgroundColor: `${severityColor(m.severity)}26`, color: severityColor(m.severity) }}
+                      >
+                        {m.severity}
+                      </Badge>
+                      <span className="font-mono text-xs text-foreground/90">{m.vin}</span>
+                      <span className="font-mono text-xs text-muted-foreground">{m.component}</span>
+                      <span className="text-foreground/85">{m.explanation}</span>
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>
         </FadeIn>
 
-        <div className="grid gap-4 xl:grid-cols-2">
-          <FadeIn>
-            <Card>
-              <CardHeader className="flex-row items-center justify-between space-y-0">
-                <div>
-                  <CardTitle className="text-sm">Alert feed</CardTitle>
-                  <CardDescription>Newest-first detector alerts (capped at 50).</CardDescription>
+        {/* Live vehicle table */}
+        <FadeIn>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Fleet status</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">Loading fleet…</p>
+              ) : vehicles.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No vehicles with telemetry yet — the simulator publishes once the stack is up.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b text-[11px] uppercase tracking-wider text-muted-foreground">
+                        <th className="py-2 pr-3">Vehicle</th>
+                        <th className="py-2 pr-3">Status</th>
+                        <th className="py-2 pr-3">Speed</th>
+                        <th className="py-2 pr-3">Battery</th>
+                        <th className="py-2 pr-3">Health</th>
+                        <th className="py-2">Last alert</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vehicles.map((v) => {
+                        const pm = latestByVin.get(v.deviceId);
+                        const speed = parseFloat(v.columns['dynamic:VELOCITY'] ?? '0');
+                        const batteryV = parseFloat(v.columns['dynamic:battery.voltage'] ?? '0');
+                        const lastSeen = v.lastSeen ? new Date(v.lastSeen).toLocaleTimeString() : '—';
+                        return (
+                          <tr key={v.deviceId} className="border-b border-border/40">
+                            <td className="py-2 pr-3 font-mono text-xs">{v.deviceId}</td>
+                            <td className="py-2 pr-3">
+                              <span
+                                className="inline-block h-2 w-2 rounded-full"
+                                style={{ backgroundColor: pm ? severityColor(pm.severity) : '#22C55E' }}
+                              />
+                            </td>
+                            <td className="py-2 pr-3 font-mono text-xs">{speed.toFixed(1)} km/h</td>
+                            <td className="py-2 pr-3 font-mono text-xs">{batteryV ? batteryV.toFixed(2) : '—'} V</td>
+                            <td className="py-2 pr-3">
+                              {pm ? (
+                                <span className="font-mono text-xs" style={{ color: severityColor(pm.severity) }}>
+                                  {pm.health_score}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </td>
+                            <td className="py-2 text-xs text-muted-foreground">
+                              {pm ? (
+                                <>
+                                  <span className="font-mono" style={{ color: severityColor(pm.severity) }}>
+                                    {pm.severity}
+                                  </span>{' '}
+                                  · {pm.component} · {lastSeen}
+                                </>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-                <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-wider">
-                  {messages.length} total
-                </Badge>
-              </CardHeader>
-              <CardContent>
-                <PmAlertFeed messages={messages} />
-              </CardContent>
-            </Card>
-          </FadeIn>
-
-          <FadeIn>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Drill-down</CardTitle>
-                <CardDescription>
-                  {selected
-                    ? `${selected.vin} · ${selected.component}`
-                    : 'Select a cell in the matrix to see degradation trend, detector math and predicted-vs-actual.'}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {selected ? (
-                  <PmDrillDown
-                    key={`${selected.vin}|${selected.component}`}
-                    vin={selected.vin}
-                    component={selected.component}
-                    messages={messages}
-                  />
-                ) : (
-                  <div className="flex h-40 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-                    No selection — click a matrix cell to drill down.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </FadeIn>
-        </div>
+              )}
+            </CardContent>
+          </Card>
+        </FadeIn>
       </div>
     </AppLayout>
   );

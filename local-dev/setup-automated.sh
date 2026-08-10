@@ -265,7 +265,7 @@ phase_infra_startup() {
 
     while [ $attempt -lt $max_attempts ]; do
         if curl -sf http://localhost:8222/healthz >/dev/null 2>&1 && \
-           curl -sf http://localhost:8080/realms/nexus-sdv >/dev/null 2>&1 && \
+           curl -sf http://localhost:8088/realms/nexus-sdv >/dev/null 2>&1 && \
            nc -z localhost 8086 >/dev/null 2>&1 && \
            nc -z localhost 1883 >/dev/null 2>&1; then
             info "All infrastructure services healthy"
@@ -326,7 +326,7 @@ phase_bigtable_schema() {
 phase_keycloak_jwks() {
     log "Extracting Keycloak JWKS..."
 
-    local jwks_url="http://localhost:8080/realms/nexus-sdv/protocol/openid-connect/certs"
+    local jwks_url="http://localhost:8088/realms/nexus-sdv/protocol/openid-connect/certs"
     local max_attempts=30
     local attempt=0
 
@@ -428,7 +428,7 @@ phase_verify() {
         failed=1
     fi
 
-    if ! curl -sf http://localhost:8080/realms/nexus-sdv >/dev/null 2>&1; then
+    if ! curl -sf http://localhost:8088/realms/nexus-sdv >/dev/null 2>&1; then
         warn "Keycloak health check failed"
         failed=1
     fi
@@ -493,7 +493,7 @@ main() {
         echo ""
         info "Services ready at:"
         echo "  • NATS:           nats://localhost:4222"
-        echo "  • Keycloak:       http://localhost:8080"
+        echo "  • Keycloak:       http://localhost:8088"
         echo "  • Bigtable:       localhost:8086"
         echo "  • Mosquitto:      localhost:1883"
         echo "  • Data API:       grpc://localhost:9090"

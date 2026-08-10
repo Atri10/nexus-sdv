@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1637,6 +1638,52 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 					messageCount, m.subject, drive.enginePower, drive.engineRPM, drive.velocity, drive.fuelLevel)
 			}
 		}
+	}
+
+	// ---- History backfill -------------------------------------------------
+	// A fresh stack has no telemetry history, so the detector (which needs a
+	// 30-day trend window) would stay silent for days. Backfill simulated
+	// history so PM alerts fire within a minute of startup: advance the
+	// battery's age by one simulated day per row and publish a battery + tire
+	// sample, so Bigtable gets ~BACKFILL_DAYS daily rows and the detector's
+	// 30-day window + slope fire immediately. (The drive cycle is NOT stepped
+	// at day-scale — velocity math would explode; the brake/tire ground truth
+	// accrues live.)
+	backfillDays := 30
+	if b := os.Getenv("BACKFILL_DAYS"); b != "" {
+		if n, err := strconv.Atoi(b); err == nil && n >= 0 {
+			backfillDays = n
+		}
+	}
+	if backfillDays > 0 {
+		log.Printf("Backfilling %d days of telemetry history per VIN...", backfillDays)
+		for i := 0; i < backfillDays; i++ {
+			// Re-read the degradation config (control actions may change it),
+			// advance one simulated day, and emit a battery + tire sample.
+			if deg := ctl.degradationFor("battery"); deg != nil {
+				battery.deg = deg
+			}
+			battery.ageDays += 1.0 // one simulated day per backfill row
+			vRest, _, _ := battery.deg.BatteryAt(battery.ageDays)
+			battery.voltage = clamp(vRest+(mathrand.Float64()-0.5)*0.025, 11.0, 14.5)
+			battery.soc = clamp(85.5-30*(battery.deg.severityFactor()*battery.ageDays/120.0), 5, 100)
+			battery.temp = battery.deg.TireTempAt(battery.ageDays)
+
+			now := time.Now().Add(-time.Duration(backfillDays-i) * 24 * time.Hour)
+			// Free-run: backfill history for every component regardless of
+			// control gating (a fresh stack should have battery/tire history).
+			for _, m := range v.buildPayloads(now, battery, drive, v.MessageType, messageCount, func(string) bool { return true }) {
+				if m.kind != "telemetry" {
+					continue // battery/tire rows live on the TelemetryMessage path
+				}
+				if err := nc.Publish(m.subject, m.payload); err != nil {
+					log.Printf("Backfill publish failed: %v", err)
+					continue
+				}
+				messageCount++
+			}
+		}
+		log.Println("History backfill complete — entering live loop")
 	}
 
 	// Control loop: wait for start/stop over NATS when a control subject is
