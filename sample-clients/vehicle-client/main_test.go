@@ -251,7 +251,7 @@ func TestBuildCabinTelemetry(t *testing.T) {
 
 func TestChassisReportCarriesDynamics(t *testing.T) {
 	drive := driveState{velocity: 12.3, steeringAngle: -2.5, acceleratorPct: 33, brakePct: 0}
-	report, err := buildChassisReport("VIN1001", drive, time.Now())
+	report, err := buildChassisReport("VIN1001", drive, nil, 0, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,11 +262,43 @@ func TestChassisReportCarriesDynamics(t *testing.T) {
 	if vtd.VELOCITY == nil || *vtd.VELOCITY != 12.3 {
 		t.Errorf("velocity = %v, want 12.3", vtd.VELOCITY)
 	}
+	if vtd.TIRE_PRESSURE == nil {
+		t.Error("chassis report must carry TIRE_PRESSURE")
+	}
+	if vtd.TIRE_TEMP == nil {
+		t.Error("chassis report must carry TIRE_TEMP")
+	}
 	if vtd.VehicleDynamics == nil || vtd.VehicleDynamics.SteeringAngleDeg != -2.5 {
 		t.Errorf("dynamics missing: %#v", vtd.VehicleDynamics)
 	}
 	if vtd.ENGINE_RPM != nil {
 		t.Errorf("chassis report must not carry powertrain fields, rpm=%v", *vtd.ENGINE_RPM)
+	}
+}
+
+// TestChassisReportTireTempFromDegradation: when a tires degradation config
+// is present the chassis report's TIRE_TEMP must track the TireTempAt curve
+// (28 °C ± 8 °C India daily cycle), alongside TIRE_PRESSURE from
+// TirePressureAt — the typed path the detector reads as dynamic:TIRE_TEMP.
+func TestChassisReportTireTempFromDegradation(t *testing.T) {
+	tires := &DegradationConfig{Component: "tires", Preset: "degrading", HorizonDays: 60}
+	drive := driveState{velocity: 12.3, steeringAngle: -2.5, acceleratorPct: 33, brakePct: 0}
+	ageDays := 15.25
+	report, err := buildChassisReport("VIN1001", drive, tires, ageDays, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vtd pbVehicle.VehicleTelemetryData
+	if err := report.ReportData.UnmarshalTo(&vtd); err != nil {
+		t.Fatalf("unpack VehicleTelemetryData: %v", err)
+	}
+	wantTemp := float32(tires.TireTempAt(ageDays))
+	if vtd.TIRE_TEMP == nil || math.Abs(float64(*vtd.TIRE_TEMP-wantTemp)) > 0.01 {
+		t.Errorf("TIRE_TEMP = %v, want %v (TireTempAt day %v)", vtd.TIRE_TEMP, wantTemp, ageDays)
+	}
+	wantPressure := float32(tires.TirePressureAt(ageDays))
+	if vtd.TIRE_PRESSURE == nil || math.Abs(float64(*vtd.TIRE_PRESSURE-wantPressure)) > 0.01 {
+		t.Errorf("TIRE_PRESSURE = %v, want %v (TirePressureAt day %v)", vtd.TIRE_PRESSURE, wantPressure, ageDays)
 	}
 }
 
