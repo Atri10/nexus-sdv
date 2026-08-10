@@ -53,144 +53,172 @@ def _parse_point(point):
     return t, values
 
 
-def run_detectors_for_vin(vins, data_types, start, end, batch_size=50):
+def run_detectors_for_vin(vins, data_types, start, end, batch_size=50,
+                          data_api_addr=DEFAULT_DATA_API_ADDR):
     """Re-run the processor's data-poll + detectors over the given window.
 
     vins: iterable of VINs; data_types: qualifier list (see DATA_TYPES);
-    start/end: datetime window; batch_size: progress-log cadence.
-    Returns (alerts, active_pairs).
+    start/end: datetime window; batch_size: progress-log cadence;
+    data_api_addr: gRPC host:port of the data-api.
+    Returns (alerts, active_pairs, scored_vins).
       alerts:      list of dicts {vin, component, health_score, severity,
                   timestamp (ISO, UTC), t_epoch, evidence, explanation}
                   — only severity != 'healthy', matching the service cadence.
       active_pairs: set of (vin, component) that received ANY telemetry in
                   the window (the recall denominator's population).
+      scored_vins: count of VINs whose poll actually completed (a poll that
+                  fails — network error, empty reply — is logged and skipped,
+                  not counted, so simulated_vins reports scored/total).
     """
     alerts = []
     active_pairs = set()
+    scored = 0
 
-    host, _, port = DEFAULT_DATA_API_ADDR.partition(":")
-    channel = Channel(host, int(port))
-    try:
-        stub = TelemetryDataApiStub(channel)
+    host, _, port = data_api_addr.partition(":")
+    if not port:
+        port = "80"
 
-        async def poll(vin: str):
-            request = GetTelemetryDataRequest(
-                vehicle_id=vin,
-                data_types=list(data_types),
-                time_range=None,
-            )
-            # Explicit window instead of the service's last_duration so a
-            # soak can be re-scored against its full range, and so the
-            # evaluator doesn't depend on wall-clock "now".
-            from predictive_maintenance.client.generated.dataapi.v1 import TimeRange
-            request.time_range = TimeRange(start=start, end=end)
+    async def _run():
+        nonlocal scored
+        # Channel constructed INSIDE the running loop: grpclib binds
+        # Channel._loop = asyncio.get_event_loop() at construction and reuses
+        # it for every connection, so a channel built outside asyncio.run()
+        # (as with one asyncio.run() per VIN) dies on the second VIN with
+        # "Future attached to a different loop". One loop for the whole run —
+        # the channel is created once and every VIN polls through it.
+        channel = Channel(host, int(port))
+        try:
+            stub = TelemetryDataApiStub(channel)
 
-            rest, crank, brake_energy, tires = [], [], 0.0, []
-            batt_temp = BATTERY_V_REF
-            prev_brake = None
-            try:
-                async for point in stub.get_telemetry_data(request):
-                    t, values = _parse_point(point)
-                    if "dynamic:battery.temp" in values:
-                        batt_temp = values["dynamic:battery.temp"]
-                    if "dynamic:battery.voltage" in values:
-                        rest.append(
-                            (t, values["dynamic:battery.voltage"], batt_temp)
-                        )
-                    if (
-                        "dynamic:TIRE_PRESSURE" in values
-                        and "dynamic:TIRE_TEMP" in values
-                    ):
-                        tires.append(
-                            (
-                                t,
-                                values["dynamic:TIRE_PRESSURE"],
-                                values["dynamic:TIRE_TEMP"] + 273.15,
+            async def poll(vin: str):
+                nonlocal scored
+                request = GetTelemetryDataRequest(
+                    vehicle_id=vin,
+                    data_types=list(data_types),
+                    time_range=None,
+                )
+                # Explicit window instead of the service's last_duration so a
+                # soak can be re-scored against its full range, and so the
+                # evaluator doesn't depend on wall-clock "now".
+                from predictive_maintenance.client.generated.dataapi.v1 import TimeRange
+                request.time_range = TimeRange(start=start, end=end)
+
+                rest, crank, brake_energy, tires = [], [], 0.0, []
+                batt_temp = BATTERY_V_REF
+                prev_brake = None
+                try:
+                    async for point in stub.get_telemetry_data(request):
+                        t, values = _parse_point(point)
+                        if "dynamic:battery.temp" in values:
+                            batt_temp = values["dynamic:battery.temp"]
+                        if "dynamic:battery.voltage" in values:
+                            rest.append(
+                                (t, values["dynamic:battery.voltage"], batt_temp)
                             )
-                        )
-                    if (
-                        "dynamic:VELOCITY" in values
-                        and "dynamic:BRAKE_PEDAL_PCT" in values
-                    ):
-                        vel = values["dynamic:VELOCITY"]
-                        brake_pct = values["dynamic:BRAKE_PEDAL_PCT"]
-                        if prev_brake is not None and brake_pct > 5.0:
-                            prev_t, prev_v = prev_brake
-                            dt = t - prev_t
-                            if dt > 0:
-                                a = (vel - prev_v) / dt
-                                v_avg = 0.5 * (vel + prev_v)
-                                if a < -0.5 and v_avg > 0.5:
-                                    brake_energy += (
-                                        VEHICLE_MASS_KG * abs(a) * v_avg * dt
-                                    )
-                        prev_brake = (t, vel)
-            except Exception as exc:  # poll error — same swallow as Processor
-                print(f"  [warn] poll failed for {vin}: {exc!r}", file=sys.stderr)
-                return
+                        if (
+                            "dynamic:TIRE_PRESSURE" in values
+                            and "dynamic:TIRE_TEMP" in values
+                        ):
+                            tires.append(
+                                (
+                                    t,
+                                    values["dynamic:TIRE_PRESSURE"],
+                                    values["dynamic:TIRE_TEMP"] + 273.15,
+                                )
+                            )
+                        if (
+                            "dynamic:VELOCITY" in values
+                            and "dynamic:BRAKE_PEDAL_PCT" in values
+                        ):
+                            vel = values["dynamic:VELOCITY"]
+                            brake_pct = values["dynamic:BRAKE_PEDAL_PCT"]
+                            if prev_brake is not None and brake_pct > 5.0:
+                                prev_t, prev_v = prev_brake
+                                dt = t - prev_t
+                                if dt > 0:
+                                    a = (vel - prev_v) / dt
+                                    v_avg = 0.5 * (vel + prev_v)
+                                    if a < -0.5 and v_avg > 0.5:
+                                        brake_energy += (
+                                            VEHICLE_MASS_KG * abs(a) * v_avg * dt
+                                        )
+                            prev_brake = (t, vel)
+                except Exception as exc:  # poll error — same swallow as Processor
+                    print(f"  [warn] poll failed for {vin}: {exc!r}", file=sys.stderr)
+                    return
 
-            if rest:
-                active_pairs.add((vin, "battery"))
-            if brake_energy > 0:
-                active_pairs.add((vin, "brake"))
-            if tires:
-                active_pairs.add((vin, "tires"))
+                if rest:
+                    active_pairs.add((vin, "battery"))
+                if brake_energy > 0:
+                    active_pairs.add((vin, "brake"))
+                if tires:
+                    active_pairs.add((vin, "tires"))
 
-            results = {}
-            if rest:
-                comp = [
-                    (t, v0 - BATTERY_BETA * (t0 - BATTERY_V_REF))
-                    for t, v0, t0 in rest
-                ]
-                results["battery"] = detect_battery(comp, crank)
-            if brake_energy > 0:
-                results["brake"] = detect_brake(
-                    min(1.0, brake_energy / BRAKE_ENERGY_BUDGET_J)
-                )
-            if tires:
-                results["tires"] = detect_tires(tires)
+                results = {}
+                if rest:
+                    comp = [
+                        (t, v0 - BATTERY_BETA * (t0 - BATTERY_V_REF))
+                        for t, v0, t0 in rest
+                    ]
+                    results["battery"] = detect_battery(comp, crank)
+                if brake_energy > 0:
+                    results["brake"] = detect_brake(
+                        min(1.0, brake_energy / BRAKE_ENERGY_BUDGET_J)
+                    )
+                if tires:
+                    results["tires"] = detect_tires(tires)
 
-            for component, result in results.items():
-                if result.severity == "healthy":
-                    continue
-                alerts.append(
-                    {
-                        "vin": vin,
-                        "component": component,
-                        "health_score": result.health_score,
-                        "severity": result.severity,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "t_epoch": _first_alert_epoch(results, component, rest, tires),
-                        "evidence": result.evidence,
-                        "explanation": result.explanation,
-                    }
-                )
+                for component, result in results.items():
+                    if result.severity == "healthy":
+                        continue
+                    alerts.append(
+                        {
+                            "vin": vin,
+                            "component": component,
+                            "health_score": result.health_score,
+                            "severity": result.severity,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "t_epoch": _first_alert_epoch(
+                                results, component, rest, tires, window_start=start
+                            ),
+                            "evidence": result.evidence,
+                            "explanation": result.explanation,
+                        }
+                    )
+                scored += 1
 
-        for i, vin in enumerate(vins, 1):
-            asyncio.run(poll(vin))
-            if i % batch_size == 0 or i == len(vins):
-                print(f"  polled {i}/{len(vins)} VINs")
+            for i, vin in enumerate(vins, 1):
+                await poll(vin)
+                if i % batch_size == 0 or i == len(vins):
+                    print(f"  polled {i}/{len(vins)} VINs")
+        finally:
+            channel.close()
 
-    finally:
-        channel.close()
+    asyncio.run(_run())
 
-    return alerts, active_pairs
+    return alerts, active_pairs, scored
 
 
-def _first_alert_epoch(results, component, rest, tires):
+def _first_alert_epoch(results, component, rest, tires, window_start=None):
     """Best-effort first-alert epoch for lead-time math: the timestamp of the
     first telemetry sample that crosses the detector's alert threshold.
 
-    For battery this is the first resting-voltage sample at or below the
-    advisory threshold (12.4 V); for tires the first compensated-pressure
-    sample at or below the floor (1.8 bar). Brake has no per-sample crossing
-    (energy accumulates over the whole window), so it falls back to the
-    window start — the lead-time for brake is therefore a lower bound.
+    For battery this is the first temperature-compensated resting-voltage
+    sample at or below the advisory threshold (12.4 V — compared against the
+    SAME compensated voltage the detector consumes, not the raw reading);
+    for tires the first compensated-pressure sample at or below the floor
+    (1.8 bar). Brake has no per-sample crossing (energy accumulates over the
+    whole window), so it falls back to the window start — the lead-time for
+    brake is therefore a lower bound. window_start is the poll window's
+    start datetime; for brake it is converted to an epoch. If it is not
+    given, the alert's own timestamp (t of the last sample seen) is used so
+    an alert never carries a None epoch.
     """
     if component == "battery":
         from predictive_maintenance.core.detectors import BATTERY_ADVISORY_V
-        for t, v, _ in rest:
-            if v <= BATTERY_ADVISORY_V:
+        for t, v_raw, t0 in rest:
+            v_comp = v_raw - BATTERY_BETA * (t0 - BATTERY_V_REF)
+            if v_comp <= BATTERY_ADVISORY_V:
                 return t
     if component == "tires":
         from predictive_maintenance.core.detectors import TIRE_FLOOR_BAR, TIRE_REF_K
@@ -198,6 +226,22 @@ def _first_alert_epoch(results, component, rest, tires):
             p_comp = p * TIRE_REF_K / tk if tk > 0 else p
             if p_comp <= TIRE_FLOOR_BAR:
                 return t
+    if component == "brake":
+        # No per-sample crossing: energy accumulates over the whole window.
+        # Fall back to the window start (docstring promise) — a lower bound
+        # on lead time — or, when no window is available, the alert time.
+        if window_start is not None:
+            # main() strips tzinfo to keep the data-api request naive, but
+            # the wall-clock values ARE UTC — interpret them as UTC so the
+            # epoch matches the (UTC-aware) sample timestamps.
+            if window_start.tzinfo is None:
+                return window_start.replace(tzinfo=timezone.utc).timestamp()
+            return window_start.timestamp()
+        if rest:
+            return rest[-1][0]
+        if tires:
+            return tires[-1][0]
+        return 0.0
     return None
 
 
@@ -298,6 +342,14 @@ def compute_metrics(alerts, active_pairs, ground_truth):
         for vin in alerted:
             fail_epoch = ground_truth.get(vin, {}).get(component, {}).get("t_failure_epoch")
             alert_epoch = first_alert[vin]
+            # _first_alert_epoch never returns None for a real alert (brake
+            # falls back to the window start), but a None here (e.g. an alert
+            # dict built by an older caller) must not crash the whole run:
+            # treat it as an un-dated alert → can't prove it preceded the
+            # failure → FP.
+            if alert_epoch is None:
+                fp += 1
+                continue
             if fail_epoch is not None and alert_epoch <= fail_epoch:
                 tp += 1
                 leads.append((fail_epoch - alert_epoch) / 86400.0)
@@ -395,15 +447,16 @@ def main(argv=None):
         return 2
 
     end = datetime.now(timezone.utc)
-    start = end.replace(tzinfo=None)  # keep naive, matching data-api expectations
-    end = end.replace(tzinfo=None)
     from datetime import timedelta
     start = end - timedelta(days=args.soak_days)
 
     print(f"evaluating {len(vins)} VINs over {args.soak_days} days (window "
           f"{start.isoformat()} -> {end.isoformat()})")
-    alerts, active_pairs = run_detectors_for_vin(vins, DATA_TYPES, start, end)
-    print(f"alerts: {len(alerts)}")
+    alerts, active_pairs, scored = run_detectors_for_vin(
+        vins, DATA_TYPES, start, end, data_api_addr=args.data_api_addr
+    )
+    print(f"alerts: {len(alerts)} (from {scored}/{len(vins)} VINs scored; "
+          f"polls that failed are logged and skipped)")
     for component in ("battery", "brake", "tires"):
         n = sum(1 for a in alerts if a["component"] == component)
         print(f"  {component}: {n} alert(s), {sum(1 for p in active_pairs if p[1] == component)} VIN(s) with data")
@@ -420,7 +473,7 @@ def main(argv=None):
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_validation_json(metrics, output_path, simulated_vins=len(vins))
+    write_validation_json(metrics, output_path, simulated_vins=scored)
     return 0
 
 
