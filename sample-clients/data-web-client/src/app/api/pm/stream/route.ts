@@ -42,7 +42,9 @@ export async function GET(request: Request) {
   }
 
   const PmMessage = getPmMessageType();
-  const sub = nc.subscribe('pm.*');
+  // The detector publishes pm.{VIN}.{component} (3 tokens), so a single-token
+  // wildcard ('pm.*') would never match — '>' matches the full remainder.
+  const sub = nc.subscribe('pm.>');
 
   // Promise that resolves the moment the client disconnects so the start()
   // loop below can stop awaiting the next NATS message and exit. We feed

@@ -23,6 +23,7 @@ let subStub: {
   [Symbol.asyncIterator]: () => AsyncGenerator<{ data: Uint8Array }>;
   unsubscribe: () => void;
 };
+const subscribeCalls: string[] = [];
 
 mock.module('next-auth', () => ({
   getServerSession: (args: unknown) => mockGetServerSession(args),
@@ -30,7 +31,12 @@ mock.module('next-auth', () => ({
 mock.module('@/lib/auth', () => ({ authOptions: {} }));
 mock.module('@/lib/nats', () => ({
   getNatsScoringConnection: () =>
-    Promise.resolve({ subscribe: () => subStub }),
+    Promise.resolve({
+      subscribe: (subject: string) => {
+        subscribeCalls.push(subject);
+        return subStub;
+      },
+    }),
 }));
 
 const { GET } = await import('@/app/api/pm/stream/route');
@@ -61,6 +67,23 @@ function pmPayload(vin: string, component: string, healthScore: number, severity
 describe('GET /api/pm/stream', () => {
   beforeEach(() => {
     mockGetServerSession.mockReset();
+    subscribeCalls.length = 0;
+  });
+
+  it('subscribes to pm.> so 3-token pm.{VIN}.{component} subjects match', async () => {
+    // The detector publishes pm.VIN1001.battery (3 tokens). A 'pm.*' wildcard
+    // (exactly one token) would match nothing; the route must subscribe with
+    // 'pm.>' (full remainder). This is an integration assertion on the
+    // subscription subject — the mocked NATS can't catch the mismatch by
+    // itself because it never enforces subject matching.
+    mockGetServerSession.mockResolvedValueOnce({ user: { name: 'test' } });
+    subStub = {
+      [Symbol.asyncIterator]: () => makeMessages([]),
+      unsubscribe: () => {},
+    };
+    await GET(makeAbortableRequest());
+    expect(subscribeCalls).toContain('pm.>');
+    expect(subscribeCalls).not.toContain('pm.*');
   });
 
   it('returns 401 when unauthenticated', async () => {
