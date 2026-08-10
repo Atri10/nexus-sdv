@@ -23,6 +23,9 @@ export type Severity = (typeof SEVERITIES)[number];
 export interface PmValidationData {
   generated?: string;
   simulated_vins?: number;
+  /** True when the numbers are placeholders (no real evaluator run yet). The
+   * file self-identifies so it can't be mistaken for real validation. */
+  placeholder?: boolean;
   components: Partial<Record<PmComponent, { precision: number; recall: number; mean_lead_days: number }>>;
 }
 
@@ -81,13 +84,15 @@ export function PmValidationCard() {
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm">Validation</CardTitle>
-          <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-wider">
-            simulator ground truth
+          <Badge variant={data?.placeholder ? 'secondary' : 'outline'} className="font-mono text-[10px] uppercase tracking-wider">
+            {data?.placeholder ? 'placeholder' : 'simulator ground truth'}
           </Badge>
         </div>
         <CardDescription>
-          Detector precision / recall / mean lead time vs the simulator. Placeholder values —
-          replaced by real evaluator output.
+          Detector precision / recall / mean lead time vs the simulator.
+          {data?.placeholder
+            ? ' Placeholder values — the file self-identifies until a real evaluator run replaces them.'
+            : ' Placeholder values — replaced by real evaluator output.'}
         </CardDescription>
       </CardHeader>
       <CardContent>

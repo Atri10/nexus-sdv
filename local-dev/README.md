@@ -405,17 +405,24 @@ The `/pm` page is the predictive-maintenance fleet view:
 
 The detector service polls the data-api per pool VIN every 60 s
 (`POLL_INTERVAL_SECONDS`) and publishes `pm.{VIN}.{component}` only when a
-component leaves `healthy` (Task 3 §publish-cadence — healthy VINs publish
-nothing). With the default `DEGRADATION_PRESET=demo` the pool's first VIN
-(`VIN1001`) is on the `critical` preset and alerts within a poll cycle once
-the data-api has enough history; run the stack with `DEGRADATION_PRESET=critical`
-for a deterministic publish on every pool VIN.
+component leaves `healthy` or its severity/health band changes (Task 3
+§publish-cadence — healthy VINs publish nothing). Aging is exactly real-time:
+each 2 s simulator tick advances the simulated age by 2 s (1 sim day per 24 h
+wall), so a `critical` VIN's battery reaches the 12.0 V failure floor only
+after ~60 wall-clock days, tires floor out at ~day 67, and 80% brake wear
+needs days of simulated braking. With the default `DEGRADATION_PRESET=demo`
+the pool's first VIN (`VIN1001`) is on the `critical` preset and the first
+alert appears once the detector has ~5+ resting battery samples (a few minutes
+of wall time — not within one poll cycle); run the stack with
+`DEGRADATION_PRESET=critical` for a deterministic publish on every pool VIN.
 
 **Offline validation numbers** come from
 `sample-services/predictive-maintenance/scripts/evaluate_detectors.py` — run
 it after a soak (e.g. 20 VINs × 60 accelerated sim days), with the simulator's
-ground-truth labels (`local-dev/data/sim-ground-truth.jsonl`), and it writes
-the real precision/recall/lead numbers into
+ground-truth labels (`local-dev/data/sim-ground-truth.jsonl`, written by the
+vehicle-simulator's labels writer via `GROUND_TRUTH_LABELS` — one JSON object
+per VIN per tick, mounted from the `./data` bind volume), and it writes the
+real precision/recall/lead numbers into
 `sample-clients/data-web-client/public/pm-validation.json`. Until such a run
 happens the card shows the Task 8 placeholder values.
 

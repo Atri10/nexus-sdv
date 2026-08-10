@@ -56,6 +56,25 @@ describe('PmValidationCard', () => {
     expect(screen.getByText('simulator ground truth')).toBeInTheDocument();
   });
 
+  it('labels the card as a placeholder when the JSON self-identifies', async () => {
+    const json: PmValidationData = {
+      generated: '2026-08-09',
+      placeholder: true,
+      simulated_vins: 20,
+      components: {
+        battery: { precision: 0.82, recall: 0.75, mean_lead_days: 21 },
+      },
+    };
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve(json) }));
+    // @ts-expect-error minimal stub
+    globalThis.fetch = fetchMock;
+
+    render(<PmValidationCard />);
+    await waitFor(() => expect(screen.getByText('placeholder')).toBeInTheDocument());
+    // The placeholder file must not present itself as real ground truth.
+    expect(screen.queryByText('simulator ground truth')).not.toBeInTheDocument();
+  });
+
   it('shows an error state when the fetch fails', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: false, status: 404 }));
     // @ts-expect-error minimal stub
