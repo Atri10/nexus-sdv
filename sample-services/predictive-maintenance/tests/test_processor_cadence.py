@@ -225,3 +225,201 @@ def test_processor_skips_publish_when_nats_unavailable():
         # Must not raise.
         await p.run("VIN1001")
     asyncio.run(run())
+
+
+def _make_processor(stub, nats):
+    return Processor(stub, nats)
+
+
+class _Result:
+    def __init__(self, health_score, severity):
+        self.health_score = health_score
+        self.severity = severity
+        self.evidence = {}
+        self.explanation = ""
+
+
+def test_processor_publishes_once_then_suppresses_unchanged():
+    """Spec §4 publish cadence: a component that stays in the same severity
+    AND band across polls publishes once, then nothing until something
+    changes — not a message every 60 s poll."""
+    import predictive_maintenance.core.processor as mod
+
+    async def run():
+        stub = AsyncMock()
+
+        async def gen(_req):
+            for _ in range(5):
+                yield _healthy_point(datetime(2026, 8, 1, tzinfo=timezone.utc), "12.10")
+
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = _make_processor(stub, nats)
+
+        # Every poll returns the same result: score 25 → action, red band.
+        mod.detect_battery = lambda *a, **k: _Result(25, "action")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+        subject, msg = nats.publish_message.await_args.args
+        assert subject == "pm.VIN1001.battery"
+        assert msg.severity == "action"
+
+        # Poll 2: identical result → suppressed.
+        nats.publish_message.reset_mock()
+        await p.run("VIN1001")
+        nats.publish_message.assert_not_awaited()
+
+        # Poll 3: identical result → still suppressed.
+        nats.publish_message.reset_mock()
+        await p.run("VIN1001")
+        nats.publish_message.assert_not_awaited()
+    asyncio.run(run())
+
+
+def test_processor_publishes_on_severity_change():
+    """Spec §4: a severity change (advisory → action) publishes a new alert
+    even when the band is unchanged."""
+    import predictive_maintenance.core.processor as mod
+
+    async def run():
+        stub = AsyncMock()
+
+        async def gen(_req):
+            for _ in range(5):
+                yield _healthy_point(datetime(2026, 8, 1, tzinfo=timezone.utc), "12.10")
+
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = _make_processor(stub, nats)
+
+        # Poll 1: advisory / amber (score 55).
+        mod.detect_battery = lambda *a, **k: _Result(55, "advisory")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+        subject, msg = nats.publish_message.await_args.args
+        assert subject == "pm.VIN1001.battery"
+        assert msg.severity == "advisory"
+
+        # Poll 2: same band (amber), new severity → publish.
+        nats.publish_message.reset_mock()
+        mod.detect_battery = lambda *a, **k: _Result(52, "action")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+        subject, msg = nats.publish_message.await_args.args
+        assert msg.severity == "action"
+    asyncio.run(run())
+
+
+def test_processor_publishes_on_band_crossing_without_severity_change():
+    """Spec §4: a health score crossing a band boundary (amber → red) inside
+    the same severity publishes — the band, not just the severity label, is
+    part of the cadence contract."""
+    import predictive_maintenance.core.processor as mod
+
+    async def run():
+        stub = AsyncMock()
+
+        async def gen(_req):
+            for _ in range(5):
+                yield _healthy_point(datetime(2026, 8, 1, tzinfo=timezone.utc), "12.10")
+
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = _make_processor(stub, nats)
+
+        # Poll 1: action severity but amber band (score 55).
+        mod.detect_battery = lambda *a, **k: _Result(55, "action")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+        subject, msg = nats.publish_message.await_args.args
+        assert msg.severity == "action"
+
+        # Poll 2: same severity, band crosses amber → red (score 25).
+        nats.publish_message.reset_mock()
+        mod.detect_battery = lambda *a, **k: _Result(25, "action")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+        subject, msg = nats.publish_message.await_args.args
+        assert msg.severity == "action"
+
+        # Poll 3: unchanged severity + band → suppressed.
+        nats.publish_message.reset_mock()
+        await p.run("VIN1001")
+        nats.publish_message.assert_not_awaited()
+    asyncio.run(run())
+
+
+def test_processor_recovery_to_healthy_resets_state():
+    """Spec §4: a component returning to healthy resets the publish state, so
+    a later re-entry to a non-healthy band publishes a fresh alert."""
+    import predictive_maintenance.core.processor as mod
+
+    async def run():
+        stub = AsyncMock()
+
+        async def gen(_req):
+            for _ in range(5):
+                yield _healthy_point(datetime(2026, 8, 1, tzinfo=timezone.utc), "12.10")
+
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = _make_processor(stub, nats)
+
+        mod.detect_battery = lambda *a, **k: _Result(25, "action")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+
+        # Back to healthy: publishes nothing and resets state.
+        nats.publish_message.reset_mock()
+        mod.detect_battery = lambda *a, **k: _Result(100, "healthy")
+        await p.run("VIN1001")
+        nats.publish_message.assert_not_awaited()
+
+        # Degrades again: must publish (state was reset, not suppressed).
+        nats.publish_message.reset_mock()
+        mod.detect_battery = lambda *a, **k: _Result(25, "action")
+        await p.run("VIN1001")
+        assert nats.publish_message.await_count == 1
+    asyncio.run(run())
+
+
+def test_processor_first_nonhealthy_result_always_publishes():
+    """Spec §4: the first non-healthy result publishes even when there is no
+    prior state (a fresh Processor, or a component never seen before)."""
+    import predictive_maintenance.core.processor as mod
+
+    async def run():
+        stub = AsyncMock()
+        base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+        async def gen(_req):
+            # 5 battery rows + 2 braking rows (velocity 20 → 15 m/s, 5 s
+            # apart) so both the battery AND brake detectors run.
+            out = [_healthy_point(base + timedelta(minutes=10 * i), "12.10") for i in range(5)]
+            out.append(_point(base, **{"dynamic:VELOCITY": 20.0, "dynamic:BRAKE_PEDAL_PCT": 40.0}))
+            out.append(_point(base + timedelta(seconds=5), **{"dynamic:VELOCITY": 15.0, "dynamic:BRAKE_PEDAL_PCT": 40.0}))
+            for r in out:
+                yield r
+
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = _make_processor(stub, nats)
+
+        mod.detect_battery = lambda *a, **k: _Result(45, "action")
+        mod.detect_brake = lambda *a, **k: _Result(20, "action")
+        await p.run("VIN1001")
+        # Both components have no prior state → both publish on the first poll.
+        subjects = {args[0] for args, _ in nats.publish_message.await_args_list}
+        assert "pm.VIN1001.battery" in subjects
+        assert "pm.VIN1001.brake" in subjects
+
+        # Second poll, identical results → both suppressed.
+        nats.publish_message.reset_mock()
+        await p.run("VIN1001")
+        nats.publish_message.assert_not_awaited()
+    asyncio.run(run())

@@ -22,6 +22,16 @@ class Processor:
     def __init__(self, connector: TelemetryDataApiStub, nats: NatsConnector):
         self._dataApi = connector
         self._nats = nats
+        # Last published severity per (vin, component). Publish-on-change
+        # cadence (spec §4): an alert is published when the severity changes
+        # or the health score crosses a band boundary — not every poll cycle.
+        # Keyed by (vin, component) so the same Processor instance can run
+        # several VINs without cross-talk.
+        self._last_severity: dict[tuple[str, str], str] = {}
+        # Last published health-score band ("green"/"amber"/"red") per
+        # (vin, component). Band and severity can move independently, so the
+        # publish decision compares both.
+        self._last_band: dict[tuple[str, str], str] = {}
 
     async def run(self, vin: str):
         request = GetTelemetryDataRequest(
@@ -101,12 +111,41 @@ class Processor:
         try:
             for component, r in results.items():
                 if r.severity == "healthy":
-                    continue  # publish only on change/band-crossing; healthy = nothing
+                    # Healthy = nothing, and a return to healthy resets the
+                    # publish state so a later re-entry to a non-healthy band
+                    # publishes again (a fresh alert, not a repeat).
+                    self._last_severity.pop((vin, component), None)
+                    self._last_band.pop((vin, component), None)
+                    continue
+                key = (vin, component)
+                previous = self._last_severity.get(key)
+                previous_band = self._last_band.get(key)
+                band = self._band_of(r.health_score)
+                # Spec §4 publish cadence: publish only when the severity
+                # changes OR the health score crosses a band boundary
+                # (green ≥ 70 / amber 50–69 / red < 50). First non-healthy
+                # result always publishes (no prior state). Severity and band
+                # can move independently (e.g. battery: score 55 advisory,
+                # then score 25 → severity "critical" — both changed), so
+                # compare them separately.
+                if previous == r.severity and previous_band == band:
+                    continue
                 await self._nats.publish_message(
                     f"pm.{vin}.{component}",
                     PmMessage(vin=vin, component=component, health_score=r.health_score,
                               severity=r.severity, evidence=r.evidence,
                               explanation=r.explanation,
                               timestamp=datetime.now().isoformat()))
+                self._last_severity[key] = r.severity
+                self._last_band[key] = band
         except Exception as e:
             logger.error("Publish failed", vehicle_id=vin, error=repr(e))
+
+    @staticmethod
+    def _band_of(score: int) -> str:
+        """Health-score band per spec §4: green ≥ 70, amber 50–69, red < 50."""
+        if score >= 70:
+            return "green"
+        if score >= 50:
+            return "amber"
+        return "red"
