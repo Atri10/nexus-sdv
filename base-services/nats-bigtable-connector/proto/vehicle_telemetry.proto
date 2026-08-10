@@ -40,6 +40,9 @@ message VehicleTelemetryData {
   // Tyre pressure in bar.
   optional float TIRE_PRESSURE = 8;
 
+  // Tyre temperature in °C.
+  optional float TIRE_TEMP = 16;
+
   // Vehicle speed in m/s.
   optional float VELOCITY = 9;
 

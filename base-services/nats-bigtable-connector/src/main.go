@@ -229,6 +229,9 @@ func main() {
 		if vtd.TIRE_PRESSURE != nil {
 			addMetric("TIRE_PRESSURE", float64(*vtd.TIRE_PRESSURE))
 		}
+		if vtd.TIRE_TEMP != nil {
+			addMetric("TIRE_TEMP", float64(*vtd.TIRE_TEMP))
+		}
 		if vtd.VELOCITY != nil {
 			addMetric("VELOCITY", float64(*vtd.VELOCITY))
 		}
