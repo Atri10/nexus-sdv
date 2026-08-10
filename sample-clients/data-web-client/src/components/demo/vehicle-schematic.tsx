@@ -161,21 +161,23 @@ export function VehicleSchematic({ componentId, onSelect, series, components, al
                   />
                 )}
                 {/* PM alert badge: pulsing dot at the node when the latest
-                    pm message for this component is not healthy. */}
+                    pm message for this component is not healthy. The live-ping
+                    halo is deliberately larger than the dot so the pulse ring
+                    shows around the solid dot. */}
                 {alertState?.[comp.id] && alertState[comp.id].severity !== 'healthy' && (
                   <g aria-label={`${comp.label} PM alert`}>
                     <circle
                       className="live-ping"
                       cx={pos.x + 14}
                       cy={pos.y - 14}
-                      r={7}
+                      r={10}
                       fill={severityColor(alertState[comp.id].severity)}
                       style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
                     />
                     <circle
                       cx={pos.x + 14}
                       cy={pos.y - 14}
-                      r={7}
+                      r={5}
                       fill={severityColor(alertState[comp.id].severity)}
                       stroke="#ffffff"
                       strokeWidth="1.5"
