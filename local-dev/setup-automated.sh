@@ -223,7 +223,7 @@ authorization {
 
     # Default permissions for users without auth callout
     users: [
-        {user: "connector", password: "connector-pass", permissions: {subscribe: ["telemetry.>", "telemetry-generic.>", "local.telemetry.>", "scoring.>", "commands.>", "_INBOX.>"], publish: ["telemetry.>", "telemetry-generic.>", "local.telemetry.>", "scoring.>", "commands.>", "_INBOX.>"]}}
+        {user: "connector", password: "connector-pass", permissions: {subscribe: ["telemetry.>", "telemetry-generic.>", "local.telemetry.>", "scoring.>", "commands.>", "pm.>", "_INBOX.>"], publish: ["telemetry.>", "telemetry-generic.>", "local.telemetry.>", "scoring.>", "commands.>", "pm.>", "_INBOX.>"]}}
     ]
 }
 
