@@ -129,7 +129,7 @@ auth callout, so no Keycloak token is needed.
 
 | User | Password | Permissions | Use for |
 |------|----------|-------------|---------|
-| `connector` | `connector-pass` | pub/sub on `telemetry.>`, `telemetry-generic.>`, `local.telemetry.>`, `scoring.>`, `commands.>` | Subscribing/publishing telemetry from the host or nats-box |
+| `connector` | `connector-pass` | pub/sub on `telemetry.>`, `telemetry-generic.>`, `local.telemetry.>`, `scoring.>`, `commands.>`, `pm.>` | Subscribing/publishing telemetry from the host or nats-box |
 | `app-user` | `app-pass` | (account `APP`) | Application-account connections |
 | `auth-callout-service` | `auth-callout-pass` | (account `AUTH`) | The auth-callout service itself |
 
