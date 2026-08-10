@@ -31,9 +31,17 @@ export function usePmMessages() {
         if (Array.isArray(parsed)) {
           // Trim on hydration too — protects against legacy entries that
           // pre-date the cap, or a manual edit of sessionStorage.
+          //
+          // Entries stored by the message effect are PmMessage OBJECTS
+          // (JSON.stringify of the parsed message), unlike useScoringMessages
+          // which stores raw strings. Accept both forms; parsePmMessage wraps
+          // JSON.parse in try/catch, so corrupted entries map to null and are
+          // filtered out below.
           setMessages(
             parsed
-              .map((m) => (typeof m === 'string' ? parsePmMessage(m) : null))
+              .map((m) =>
+                parsePmMessage(typeof m === 'string' ? m : JSON.stringify(m)),
+              )
               .filter((m): m is PmMessage => m !== null)
               .slice(0, MAX_MESSAGES),
           );
