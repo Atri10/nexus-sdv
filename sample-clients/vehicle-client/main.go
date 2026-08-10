@@ -75,6 +75,11 @@ type VehicleClient struct {
 	// vehicle's simulated age (also maintained in batteryState.ageDays).
 	tiresDeg       *DegradationConfig
 	batteryAgeDays float64
+
+	// groundTruthLabels is the path of the JSONL file the publish loop
+	// appends one ground-truth object per VIN per tick to (offline evaluator
+	// input). Empty string disables the writer.
+	groundTruthLabels string
 }
 
 // --- Randomized drive simulation -------------------------------------------
@@ -476,6 +481,47 @@ func (v *VehicleClient) groundTruth(battery batteryState, drive driveState) map[
 	return gt
 }
 
+// writeGroundTruthLabels appends one JSON object per VIN per tick to the
+// labels file, matching collect_ground_truth's schema in
+// sample-services/predictive-maintenance/scripts/evaluate_detectors.py:
+//
+//	{"vin": "VIN1001", "t_epoch": 1728000000.0,
+//	 "battery": {"wear_fraction": 0.42, "days_to_failure": 69},
+//	 "brake":   {"wear_fraction": 0.12, "energy_joules": 720000000},
+//	 "tires":   {"pressure_bar": 2.10, "temp_c": 30.0}}
+//
+// Fields mirror the status reply's ground_truth (the same curves the
+// published telemetry walks), so the evaluator can compare detector output
+// against truth. No labels path configured = no-op. Appends (never
+// truncates) so a soak's labels survive simulator restarts; write errors are
+// logged and skipped, never fatal — ground truth is best-effort bookkeeping.
+func (v *VehicleClient) writeGroundTruthLabels(now time.Time, battery batteryState, drive driveState) {
+	if v.groundTruthLabels == "" {
+		return
+	}
+	rec := map[string]any{
+		"vin":     v.VIN,
+		"t_epoch": float64(now.UnixNano()) / 1e9,
+	}
+	for component, fields := range v.groundTruth(battery, drive) {
+		rec[component] = fields
+	}
+	line, err := json.Marshal(rec)
+	if err != nil {
+		log.Printf("Failed to marshal ground-truth label: %v", err)
+		return
+	}
+	f, err := os.OpenFile(v.groundTruthLabels, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("Failed to open ground-truth labels file %s: %v", v.groundTruthLabels, err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		log.Printf("Failed to write ground-truth label: %v", err)
+	}
+}
+
 // --- NATS control mode ------------------------------------------------------
 
 // sensorInfo is one publishable signal of a component. Name matches the
@@ -840,6 +886,12 @@ func main() {
 	interval := flag.Int("interval", 5, "Interval in seconds between telemetry messages")
 	messageType := flag.String("message-type", "both", "Message type to send: 'telemetry' (TelemetryMessage), 'metrics_report' (MetricsReport), or 'both' (default: both per tick)")
 	controlSubject := flag.String("control-subject", "", "NATS subject to listen for start/stop commands (empty = publish immediately)")
+	// Path of the ground-truth labels JSONL file the simulator appends one
+	// object per VIN per tick (see writeGroundTruthLabels). Empty = disabled.
+	// Defaults to the GROUND_TRUTH_LABELS env so the compose service can mount
+	// a writable volume without a flag change.
+	groundTruthLabels := flag.String("ground-truth-labels", envOr("GROUND_TRUTH_LABELS", ""),
+		"Path to append ground-truth labels JSONL (one object per VIN per tick); empty = disabled")
 	flag.Parse()
 
 	if *messageType != "telemetry" && *messageType != "metrics_report" && *messageType != "both" {
@@ -857,10 +909,11 @@ func main() {
 	}
 
 	client := &VehicleClient{
-		VIN:            *vin,
-		pkiStrategy:    *pkiStrategy,
-		MessageType:    *messageType,
-		controlSubject: *controlSubject,
+		VIN:                *vin,
+		pkiStrategy:        *pkiStrategy,
+		MessageType:        *messageType,
+		controlSubject:     *controlSubject,
+		groundTruthLabels:  *groundTruthLabels,
 	}
 
 	log.Printf("================================================")
@@ -1418,8 +1471,8 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 
 	// Initial battery state. The degradation trajectory comes from the
 	// control state (default preset per DEGRADATION_PRESET); ageDays starts
-	// at 0 and accrues real-time (intervalSeconds per tick) — a 2 s tick
-	// ages the battery ~1 day per 12 hours of wall time.
+	// at 0 and accrues real-time (intervalSeconds per tick — a 2 s tick
+	// advances simulated age by 2 s, so 1 sim day per 24 h wall time).
 	battery := batteryState{
 		voltage: 12.6,
 		current: 45.2,
@@ -1548,6 +1601,10 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// published telemetry walks (so detector-vs-truth stays comparable).
 		now := time.Now()
 		ctl.setGroundTruth(v.groundTruth(battery, drive))
+
+		// Offline evaluator labels: one JSONL object per VIN per tick (no-op
+		// when no GROUND_TRUTH_LABELS path is configured).
+		v.writeGroundTruthLabels(now, battery, drive)
 
 		// Build the payload(s) for this tick based on the configured message
 		// type and publish each one. Control mode gates per component; free-run

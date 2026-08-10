@@ -247,7 +247,8 @@ def _first_alert_epoch(results, component, rest, tires, window_start=None):
 
 def collect_ground_truth(labels_path):
     """Load simulator ground-truth labels from a JSONL file written by the
-    vehicle-simulator (one JSON object per line, one per VIN per tick):
+    vehicle-simulator's ground-truth labels writer (one JSON object per
+    line, one per VIN per tick; enabled via GROUND_TRUTH_LABELS):
 
         {"vin": "VIN1001", "t_epoch": 1728000000.0,
          "battery": {"wear_fraction": 0.42, "days_to_failure": 69},
@@ -396,13 +397,15 @@ def parse_args(argv):
             "      --vins VIN1001,VIN1002,VIN1003,VIN1004,VIN1005 \\\n"
             "      --soak-days 60 \\\n"
             "      --labels local-dev/data/sim-ground-truth.jsonl\n"
-            "The labels file is written by the vehicle-simulator (Task 4): "
-            "one JSON line per VIN per tick with the status reply's "
-            "ground_truth (battery wear_fraction/days_to_failure, brake "
-            "wear_fraction/energy_joules, tires pressure_bar/temp_c). When "
-            "no labels file exists the evaluator scores alerts only and "
-            "writes null component metrics — run it after a soak to get "
-            "real numbers.\n\n"
+            "The labels file is written by the vehicle-simulator: one JSON "
+            "line per VIN per tick with the status reply's ground_truth "
+            "(battery wear_fraction/days_to_failure, brake "
+            "wear_fraction/energy_joules, tires pressure_bar/temp_c). The "
+            "simulator writes it when GROUND_TRUTH_LABELS is set (the local "
+            "compose service mounts local-dev/data:/data and points it at "
+            "/data/sim-ground-truth.jsonl). When no labels file exists the "
+            "evaluator scores alerts only and writes null component metrics "
+            "— run it after a soak to get real numbers."
             "Healthy VINs publish no alerts by design (Task 3 §publish-"
             "cadence); the default soak mixes healthy/degrading/critical "
             "presets (DEGRADATION_PRESET=demo)."
