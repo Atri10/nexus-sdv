@@ -51,7 +51,7 @@ class NatsConnector:
             raise e
 
     async def publish_message(self, subject: str, message: PmMessage):
-        logger.info("Publishing Message: ", message=message)
+        logger.info("Publishing Message: ", message=message, subject=subject)
         raw_bytes = message.SerializeToString()
         await self.nc.publish(subject, raw_bytes)
         await self.nc.flush()
