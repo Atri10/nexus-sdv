@@ -29,11 +29,18 @@ export function parsePmMessage(raw: string): PmMessage | null {
   }
 }
 
+/**
+ * Map a PM severity to a real CSS color. Consumed as an SVG stroke / fill
+ * and an inline `style.color` on /demo (gauges, alert chips, ticker), so
+ * these must be actual colors — not Tailwind class names — or nothing
+ * renders. The hex values match the Tailwind-600/500 palette in the
+ * comments below.
+ */
 export function severityColor(sev: string): string {
   switch (sev) {
-    case 'critical': return 'red-600';    // #DC2626
-    case 'action': return 'orange-500';   // #F97316
-    case 'advisory': return 'amber-500';  // #F59E0B
-    default: return 'green-500';          // #22C55E
+    case 'critical': return '#DC2626'; // red-600
+    case 'action': return '#F97316';   // orange-500
+    case 'advisory': return '#F59E0B'; // amber-500
+    default: return '#22C55E';         // green-500
   }
 }

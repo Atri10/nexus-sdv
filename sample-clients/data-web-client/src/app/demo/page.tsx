@@ -17,6 +17,8 @@ import { VehicleSchematic } from '@/components/demo/vehicle-schematic';
 import DemoScene from '@/components/scene/demo-scene';
 import { FadeIn } from '@/components/motion/fade-in';
 import type { TimeRange } from '@/types/telemetry';
+import { usePmMessages } from '@/hooks/usePmMessages';
+import { severityColor, type PmMessage } from '@/lib/pm-types';
 
 /** Random pool VIN, never the same as the current one. */
 function randomVin(exclude?: string): string {
@@ -202,6 +204,18 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
       component ? series.filter((s) => component.sensors.some((sig) => qualifierOf(s.column) === sig.name)) : [],
     [series, component]
   );
+  // Predictive maintenance: latest pm message per component (usePmMessages
+  // prepends newest-first). Keyed by component id and consumed as the
+  // ComponentPanel `health` prop (gauge score/severity) and the schematic's
+  // `alertState` (pulsing node badges).
+  const pmMessages = usePmMessages();
+  const latestByComponent = useMemo(() => {
+    const m = new Map<string, PmMessage>();
+    for (const msg of pmMessages) if (!m.has(msg.component)) m.set(msg.component, msg);
+    return m;
+  }, [pmMessages]);
+  const health = Object.fromEntries([...latestByComponent.entries()].map(([k, v]) => [k, { score: v.health_score, severity: v.severity }]));
+  const alertState = Object.fromEntries([...latestByComponent.entries()].map(([k, v]) => [k, { severity: v.severity }]));
   // useReducedMotion is null during SSR/first paint; treat null as "not
   // reduced" so the prerendered page stays deterministic and the 3D scene
   // mounts before framer-motion resolves the media query.
@@ -244,8 +258,28 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             simulatorVin={simulatorVin}
             busy={busy}
             onToggle={toggleComponent}
+            health={health}
           />
         </FadeIn>
+
+        {/* PM ALERTS ticker: latest predictive-maintenance messages (newest
+            first) — severity-colored, one line per message. Hidden until the
+            PM stream delivers its first message. */}
+        {pmMessages.length > 0 && (
+          <FadeIn>
+            <div className="flex items-center gap-2 overflow-hidden rounded-lg border border-border/60 px-3 py-2 text-xs">
+              <span className="font-semibold tracking-wider text-muted-foreground">PM ALERTS</span>
+              <div className="flex gap-4 overflow-x-auto">
+                {pmMessages.slice(0, 8).map((m, i) => (
+                  <span key={i} className="whitespace-nowrap font-mono">
+                    <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
+                    <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </FadeIn>
+        )}
 
         {/* 3D holographic pipeline: vehicle zones (click to select) + the
             NATS→Bigtable data flow. Reduced-motion users get the SVG
@@ -253,7 +287,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             the scene's fallback prop. */}
         {reducedMotion ? (
           <FadeIn>
-            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} />
+            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
             <DataPath flowing={flowing} />
           </FadeIn>
         ) : (
@@ -277,7 +311,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                   components={components}
                   fallback={
                     <div className="grid gap-4 xl:grid-cols-2">
-                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} />
+                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
                       <DataPath flowing={flowing} />
                     </div>
                   }
