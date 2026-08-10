@@ -197,8 +197,13 @@ services:
       - NATS_URL=nats://nats:4222
       - KEYCLOAK_URL=http://keycloak:8080
       - PKI_STRATEGY=local
+      - GROUND_TRUTH_LABELS=/data/sim-ground-truth.jsonl
     volumes:
       - ./certs:/certs:ro
+      # Ground-truth labels for the offline evaluator: the simulator appends
+      # one JSON object per VIN per tick to local-dev/data/sim-ground-truth.jsonl
+      # (host path, bind-mounted so the evaluator on the host can read it).
+      - ./data:/data
     depends_on:
       - registration
       - nats-bigtable-connector
