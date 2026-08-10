@@ -47,7 +47,7 @@ done
 
 log "Test 2: Infrastructure & API endpoints reachable"
 check "NATS /healthz"          curl -sf http://localhost:8222/healthz
-check "Keycloak realm nexus-sdv" curl -sf http://localhost:8080/realms/nexus-sdv
+check "Keycloak realm nexus-sdv" curl -sf http://localhost:8088/realms/nexus-sdv
 check "Registration TLS :8444"  bash -c 'curl -sk -o /dev/null https://localhost:8444/'
 check "Data API gRPC :9090"     nc -z localhost 9090
 check "Bigtable emulator :8086" nc -z localhost 8086

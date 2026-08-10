@@ -72,7 +72,7 @@ export FACTORY_CA_KEY="$SCRIPT_DIR/certs/registration/factory-ca.key.pem"
 # registration, so it needs to already match here for the reuse-existing-
 # certs path too. NATS_URL likewise matches REG_CLIENT_NATS_URL. ---
 export REGISTRATION_URL="${REGISTRATION_URL:-https://localhost:8444}"
-export KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8080}"
+export KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8088}"
 export NATS_URL="${NATS_URL:-nats://localhost:4222}"
 
 # --- Force local PKI strategy ---
