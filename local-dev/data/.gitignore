@@ -1,0 +1,4 @@
+# Ground-truth labels appended by the vehicle-simulator (one JSON object per
+# VIN per tick). Runtime data — never commit it; the evaluator reads it fresh
+# after a soak.
+sim-ground-truth.jsonl

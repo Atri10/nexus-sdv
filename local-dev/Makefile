@@ -1,4 +1,4 @@
-.PHONY: help go demo setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs frontend
+.PHONY: help go demo pm-demo setup-auto logs stop clean query ingest test status shell vehicle-client connector-logs frontend
 
 # ============================================================================
 # FASTEST WAY TO START (One command!)
@@ -12,6 +12,12 @@ demo:
 	@echo "Opening demo dashboard..."
 	@open http://localhost:3000/demo 2>/dev/null || true
 
+pm-demo:
+	@bash go.sh
+	docker compose --env-file .env.base-services --env-file .env.sample-services up -d vehicle-simulator predictive-maintenance
+	@echo "Opening Predictive Maintenance dashboard..."
+	@open http://localhost:3000/pm 2>/dev/null || true
+
 help:
 	@echo "Nexus SDV Local Development - Commands"
 	@echo ""
@@ -20,6 +26,7 @@ help:
 	@echo ""
 	@echo "Demo:"
 	@echo "  make demo            - Stack + simulator + open the /demo dashboard"
+	@echo "  make pm-demo         - Stack + simulator + detector service + open the /pm dashboard"
 	@echo ""
 	@echo "Inspection:"
 	@echo "  make logs            - Tail all logs in real-time"

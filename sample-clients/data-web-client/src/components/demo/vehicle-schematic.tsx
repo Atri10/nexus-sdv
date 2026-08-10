@@ -3,6 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
 import { formatValue } from '@/lib/telemetry-chart-utils';
 import type { ComponentStatus } from '@/lib/demo-control';
+import { severityColor } from '@/lib/pm-types';
 
 interface VehicleSchematicProps {
   componentId: string;
@@ -10,6 +11,12 @@ interface VehicleSchematicProps {
   series: ChartSeries[];
   /** Discovered components from the simulator status reply. */
   components: ComponentStatus[] | null;
+  /**
+   * Latest predictive-maintenance severity per component id, from
+   * usePmMessages(). Any id with severity !== 'healthy' gets a pulsing
+   * alert dot at its node position.
+   */
+  alertState?: Record<string, { severity: string }>;
 }
 
 /** Clickable node anchors over the car silhouette (viewBox 0 0 640 240). */
@@ -48,7 +55,7 @@ function latestValueFor(series: ChartSeries[], qualifier: string): number | stri
  * live value (mono) per sensor of the active component. Component labels,
  * sensors and units all come from the discovery prop — nothing hardcoded.
  */
-export function VehicleSchematic({ componentId, onSelect, series, components }: VehicleSchematicProps) {
+export function VehicleSchematic({ componentId, onSelect, series, components, alertState }: VehicleSchematicProps) {
   const discovered = components ?? [];
   const active = discovered.find((c) => c.id === componentId) ?? null;
   const nodes = discovered.map((comp, i) => ({
@@ -152,6 +159,30 @@ export function VehicleSchematic({ componentId, onSelect, series, components }: 
                     strokeWidth="2"
                     style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
                   />
+                )}
+                {/* PM alert badge: pulsing dot at the node when the latest
+                    pm message for this component is not healthy. The live-ping
+                    halo is deliberately larger than the dot so the pulse ring
+                    shows around the solid dot. */}
+                {alertState?.[comp.id] && alertState[comp.id].severity !== 'healthy' && (
+                  <g aria-label={`${comp.label} PM alert`}>
+                    <circle
+                      className="live-ping"
+                      cx={pos.x + 14}
+                      cy={pos.y - 14}
+                      r={10}
+                      fill={severityColor(alertState[comp.id].severity)}
+                      style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+                    />
+                    <circle
+                      cx={pos.x + 14}
+                      cy={pos.y - 14}
+                      r={5}
+                      fill={severityColor(alertState[comp.id].severity)}
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                    />
+                  </g>
                 )}
                 <circle
                   cx={pos.x}

@@ -3,8 +3,29 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import type { ComponentStatus } from '@/lib/demo-control';
+import { severityColor } from '@/lib/pm-types';
 
 type ComponentPhase = 'active' | 'paused' | 'offline';
+
+/**
+ * Predictive-maintenance health ring for one component: an SVG donut showing
+ * the latest PM health score (0–100) stroked with the severity color from the
+ * newest pm message for that component id. Score null → placeholder dash.
+ */
+function HealthGauge({ score, severity }: { score: number | null; severity: string }) {
+  const r = 20, c = 2 * Math.PI * r;
+  const pct = score === null ? 0 : Math.max(0, Math.min(100, score));
+  return (
+    <div className="flex items-center gap-2">
+      <svg width="52" height="52" viewBox="0 0 52 52">
+        <circle cx="26" cy="26" r={r} fill="none" stroke="currentColor" strokeWidth="5" className="text-muted-foreground/20" />
+        <circle cx="26" cy="26" r={r} fill="none" stroke={severityColor(severity)} strokeWidth="5"
+                strokeDasharray={`${(pct / 100) * c} ${c}`} strokeLinecap="round" transform="rotate(-90 26 26)" />
+      </svg>
+      <span className="font-mono text-lg font-semibold">{score === null ? '—' : score}</span>
+    </div>
+  );
+}
 
 function phaseFor(component: ComponentStatus, online: boolean): ComponentPhase {
   if (!online) return 'offline';
@@ -37,6 +58,11 @@ export interface ComponentPanelProps {
   simulatorVin: string | null;
   busy: boolean;
   onToggle: (componentId: string, enable: boolean) => void;
+  /**
+   * Latest predictive-maintenance message per component id, from
+   * usePmMessages(). Missing ids render a placeholder (—) gauge.
+   */
+  health?: Record<string, { score: number; severity: string }>;
 }
 
 /**
@@ -45,7 +71,7 @@ export interface ComponentPanelProps {
  * Everything (labels, sensors, units) comes from the simulator's status
  * reply — new components appear automatically.
  */
-export function ComponentPanel({ components, simulatorVin, busy, onToggle }: ComponentPanelProps) {
+export function ComponentPanel({ components, simulatorVin, busy, onToggle, health }: ComponentPanelProps) {
   if (!components || components.length === 0) {
     return (
       <Card>
@@ -97,6 +123,12 @@ export function ComponentPanel({ components, simulatorVin, busy, onToggle }: Com
                       {s.unit ? ` · ${s.unit}` : ''}
                     </span>
                   ))}
+                </div>
+                <div className="mt-2">
+                  <HealthGauge
+                    score={health?.[component.id]?.score ?? null}
+                    severity={health?.[component.id]?.severity ?? 'healthy'}
+                  />
                 </div>
               </div>
               <Switch
