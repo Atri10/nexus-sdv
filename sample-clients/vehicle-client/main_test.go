@@ -251,7 +251,7 @@ func TestBuildCabinTelemetry(t *testing.T) {
 
 func TestChassisReportCarriesDynamics(t *testing.T) {
 	drive := driveState{velocity: 12.3, steeringAngle: -2.5, acceleratorPct: 33, brakePct: 0}
-	report, err := buildChassisReport("VIN1001", drive, time.Now())
+	report, err := buildChassisReport("VIN1001", drive, nil, 0, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
