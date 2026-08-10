@@ -275,10 +275,9 @@ func buildBatteryTelemetry(vin string, b batteryState, now time.Time) (*pb.Telem
 				Sensor:    "battery.temp",
 			},
 			{
-				// TIRE_TEMP value wired now (same 28 °C ± 8 °C India daily
-				// cycle the chassis tires walk; b.temp carries TireTempAt in
-				// the publish loop). Task 5 adds the typed proto field 16 +
-				// connector mapping on the metrics path.
+				// Legacy telemetry-path TIRE_TEMP (b.temp carries TireTempAt
+				// from the publish loop). The typed path — proto field 16 →
+				// dynamic:TIRE_TEMP — is emitted in buildChassisReport.
 				Timestamp: timestamppb.New(now),
 				Value:     fmt.Sprintf("%.2f", b.temp),
 				DataType:  pb.DataType_DYNAMIC,
@@ -342,24 +341,27 @@ func buildPowertrainReport(vin string, drive driveState, now time.Time, count in
 }
 
 // buildChassisReport constructs a MetricsReport with only the chassis/dynamics
-// fields (velocity, tire pressure, GPS, steering/pedals, ignition).
+// fields (velocity, tire pressure/temperature, GPS, steering/pedals, ignition).
 // tires is the per-VIN degradation config for the tires component (may be
 // nil in tests — falls back to the legacy constant + noise) and ageDays the
-// vehicle's simulated age used to walk the tire-leak curve. TIRE_TEMP value
-// is emitted on the telemetry path (see buildBatteryTelemetry); Task 5 adds
-// the proto field 16 + connector mapping here.
+// vehicle's simulated age used to walk the tire-leak/temperature curves.
+// TIRE_TEMP rides the same metrics path (typed proto field 16, mapped to
+// dynamic:TIRE_TEMP by the connector) alongside the telemetry-path value.
 func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, ageDays float64, now time.Time) (*pbMetrics.MetricsReport, error) {
 	ignitionState := drive.engineRPM > 0
 	gpsLat := float32(drive.lat)
 	gpsLon := float32(drive.lng)
 	tirePressure := 2.2 + (mathrand.Float64()-0.5)*0.1
+	tireTemp := 28.0 + (mathrand.Float64()-0.5)*0.5
 	if tires != nil {
 		tirePressure = tires.TirePressureAt(ageDays)
+		tireTemp = tires.TireTempAt(ageDays)
 	}
 
 	vehicleData := &pbVehicle.VehicleTelemetryData{
 		VELOCITY:       f32(float32(drive.velocity)),
 		TIRE_PRESSURE:  f32(float32(tirePressure)),
+		TIRE_TEMP:      f32(float32(tireTemp)),
 		IGNITION_STATE: &ignitionState,
 		GPS_LATITUDE:   &gpsLat,
 		GPS_LONGITUDE:  &gpsLon,
