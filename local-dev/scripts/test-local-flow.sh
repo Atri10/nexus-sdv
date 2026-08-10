@@ -36,7 +36,7 @@ check() {  # check "<label>" <command...>
 
 log "Test 1: All application services running"
 running="$(compose_app ps --status running --services 2>/dev/null)"
-for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer nats-bigtable-connector telemetry-chart-service data-web-client; do
+for svc in data-api data-converter auth-callout registration data-api-sampler trip-analyzer nats-bigtable-connector telemetry-chart-service data-web-client predictive-maintenance; do
     if echo "$running" | grep -qx "$svc"; then
         log "  OK: $svc running"
     else
@@ -102,6 +102,36 @@ if command -v go >/dev/null 2>&1 && command -v protoc >/dev/null 2>&1 \
     fi
 else
     skip "  go/protoc/jq/openssl not all on PATH - skipping vehicle flow"
+fi
+echo ""
+log "Test 6: Predictive-maintenance loop (detector polls data-api, publishes pm.*)"
+# Deterministic by design (Task 3 §publish-cadence): healthy VINs publish
+# nothing, so the stable assertion is that the detector's poll loop is
+# alive (its "Polling data-api ..." line). The pm.* publish assertion is
+# best-effort: it only fires when a degrading VIN is in the pool (the
+# default DEGRADATION_PRESET=demo gives the pool's first VIN the
+# "critical" preset) AND the detector has accumulated enough telemetry
+# (30 days of resting voltage for the battery slope, 14 tire samples).
+# Run the stack with DEGRADATION_PRESET=critical for a deterministic
+# publish within one poll cycle.
+PM_LOGS="$(compose_app logs --tail 200 predictive-maintenance 2>/dev/null || true)"
+if printf '%s' "$PM_LOGS" | grep -q "Data poll failed"; then
+    fail "  predictive-maintenance logged a data poll error"
+    failed=1
+else
+    log "  OK: no data poll errors"
+fi
+if printf '%s' "$PM_LOGS" | grep -q "Polling data-api"; then
+    log "  OK: detector polling loop alive"
+else
+    fail "  predictive-maintenance not polling data-api (service up? see 'make pm-demo')"
+    failed=1
+fi
+SUBJECT_LINE="$(printf '%s' "$PM_LOGS" | grep -m1 "pm\." || true)"
+if [ -z "$SUBJECT_LINE" ]; then
+    skip "  no pm.* publish in the last 200 log lines (healthy VINs publish nothing by design; use DEGRADATION_PRESET=critical for a deterministic alert)"
+else
+    log "  OK: predictive-maintenance published $(printf '%s' "$SUBJECT_LINE" | sed -E 's/.*(pm\.[^ ]+).*/\1/')"
 fi
 echo ""
 if [ "$failed" -eq 0 ]; then
