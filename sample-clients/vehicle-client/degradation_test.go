@@ -36,6 +36,18 @@ func TestTireLeak(t *testing.T) {
 	}
 }
 
+// TestHealthyTirePressureStable: healthy VINs must not leak — the
+// 'healthy publishes nothing' contract breaks if a healthy tire crosses the
+// detector's 1.8 bar floor, so pressure stays at the 2.3 bar baseline.
+func TestHealthyTirePressureStable(t *testing.T) {
+	d := &DegradationConfig{Component: "tires", Preset: "healthy", HorizonDays: 60}
+	p0 := d.TirePressureAt(0)
+	p60 := d.TirePressureAt(60)
+	if math.Abs(p0-2.3) > 0.01 || math.Abs(p60-2.3) > 0.01 {
+		t.Fatalf("healthy tire drifted %.3f → %.3f bar, want ~2.3 stable", p0, p60)
+	}
+}
+
 func TestDegradationControlAction(t *testing.T) {
 	ctl, _ := newTestControl("battery")
 	send(ctl, `{"action":"degradation","component":"battery","preset":"critical"}`)

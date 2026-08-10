@@ -46,8 +46,13 @@ func (d *DegradationConfig) BatteryAt(day float64) (float64, float64, float64) {
 	return vRest, vMin, rInt
 }
 
-// TirePressureAt returns bar at day (leak rate 0.2 bar/month for degrading).
+// TirePressureAt returns bar at day. Leak rate is 0.2 bar/month for
+// degrading/critical presets; healthy VINs do not leak (they must publish
+// nothing, so their pressure stays at the 2.3 bar baseline).
 func (d *DegradationConfig) TirePressureAt(day float64) float64 {
+	if d.Preset == "healthy" {
+		return 2.3
+	}
 	leak := 0.2 * d.norm(day)
 	return 2.3 - leak*day/30.0
 }
