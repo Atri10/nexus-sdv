@@ -1,5 +1,5 @@
 'use client';
-import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import AppLayout from '@/components/app-layout';
 import TimeRangeSelector from '@/components/time-range-selector';
@@ -20,6 +20,7 @@ import type { TimeRange } from '@/types/telemetry';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
 import { toast } from 'sonner';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 /** Random pool VIN, never the same as the current one. */
 function randomVin(exclude?: string): string {
@@ -242,7 +243,8 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           <TimeRangeSelector value={range} onChange={setRange} />
         </div>
 
-        <FadeIn>
+        {/* ============ SECTION: CONTROL ============ */}
+        <Section title="Simulator control" meta={simulatorVin ? `sim: ${simulatorVin}` : 'no simulator detected'}>
           <DemoControlBar
             vin={vin}
             onVinChange={(v) => {
@@ -255,9 +257,6 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             onStart={() => runAction('start')}
             onStop={() => runAction('stop')}
           />
-        </FadeIn>
-
-        <FadeIn>
           <ComponentPanel
             components={components}
             simulatorVin={simulatorVin}
@@ -265,77 +264,62 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             onToggle={toggleComponent}
             health={health}
           />
-        </FadeIn>
+        </Section>
 
-        {/* PM ALERTS ticker: latest predictive-maintenance messages (newest
-            first) — severity-colored, one line per message. Hidden until the
-            PM stream delivers its first message. */}
-        {selectedPm.length > 0 && (
-          <FadeIn>
-            <div className="flex items-center gap-2 overflow-hidden rounded-lg border border-border/60 px-3 py-2 text-xs">
-              <span className="font-semibold tracking-wider text-muted-foreground">PM ALERTS · {vin}</span>
-              <div className="flex gap-4 overflow-x-auto">
-                {selectedPm.slice(0, 8).map((m, i) => (
-                  <span key={i} className="whitespace-nowrap font-mono">
-                    <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
-                    <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          </FadeIn>
-        )}
-
-        {/* 3D holographic pipeline: vehicle zones (click to select) + the
-            NATS→Bigtable data flow. Reduced-motion users get the SVG
-            schematic + data path instead; WebGL-less browsers get them via
-            the scene's fallback prop. */}
-        {reducedMotion ? (
-          <FadeIn>
-            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
-            <DataPath flowing={flowing} />
-          </FadeIn>
-        ) : (
-          <FadeIn>
-            <section className="hud-panel overflow-hidden rounded-lg">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-                <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-                  HOLOGRAPHIC PIPELINE
-                </h2>
-                <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
-                  DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO SELECT
+        {/* ============ SECTION: PM ALERTS ============ */}
+        <Section title="PM alerts" meta={vin}>
+          {selectedPm.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No PM alerts for {vin} yet — alerts appear as the detector crosses
+              severity bands.
+            </p>
+          ) : (
+            <div className="flex gap-4 overflow-x-auto">
+              {selectedPm.slice(0, 8).map((m, i) => (
+                <span key={i} className="whitespace-nowrap font-mono text-sm">
+                  <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
+                  <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
                 </span>
-              </div>
-              <div className="relative h-[440px] overflow-y-auto">
-                <DemoScene
-                  componentId={componentId}
-                  onSelect={setComponentId}
-                  flowing={flowing}
-                  animate={!reducedMotion}
-                  vin={vin}
-                  components={components}
-                  fallback={
-                    <div className="grid gap-4 xl:grid-cols-2">
-                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
-                      <DataPath flowing={flowing} />
-                    </div>
-                  }
-                  className="h-full w-full"
-                />
-              </div>
-            </section>
-          </FadeIn>
-        )}
+              ))}
+            </div>
+          )}
+        </Section>
 
-        <FadeIn>
+        {/* ============ SECTION: LIVE PIPELINE ============ */}
+        <Section title="Live pipeline" meta="vehicle + data flow">
+          {reducedMotion ? (
+            <div className="grid gap-4 xl:grid-cols-2">
+              <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
+              <DataPath flowing={flowing} />
+            </div>
+          ) : (
+            <div className="relative h-[440px] overflow-hidden rounded-lg border border-border/60">
+              <DemoScene
+                componentId={componentId}
+                onSelect={setComponentId}
+                flowing={flowing}
+                animate={!reducedMotion}
+                vin={vin}
+                components={components}
+                fallback={
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
+                    <DataPath flowing={flowing} />
+                  </div>
+                }
+                className="h-full w-full"
+              />
+            </div>
+          )}
+        </Section>
+
+        {/* ============ SECTION: TELEMETRY ============ */}
+        <Section title="Telemetry" meta={`${vin} · ${range}`}>
           <VehicleMap
             series={series}
             paused={!(components?.find((c) => c.id === 'chassis')?.enabled ?? true)}
           />
-        </FadeIn>
-
-        {componentSeries.length > 0 && (
-          <FadeIn>
+          {componentSeries.length > 0 && (
             <LatestStats
               series={componentSeries}
               hidden={hidden}
@@ -345,10 +329,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                   .filter((entry): entry is [string, string] => entry[1] !== undefined)
               )}
             />
-          </FadeIn>
-        )}
-
-        <FadeIn>
+          )}
           <ChartGrid
             series={series}
             components={components}
@@ -356,8 +337,34 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             theme={theme}
             onToggleSeries={toggle}
           />
-        </FadeIn>
+        </Section>
       </div>
     </AppLayout>
+  );
+}
+
+/** Recursive section wrapper: consistent card anatomy (title + meta +
+ * children) shared across pages. */
+function Section({
+  title,
+  meta,
+  children,
+}: {
+  title: string;
+  meta?: string;
+  children: ReactNode;
+}) {
+  return (
+    <FadeIn>
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <CardTitle className="text-base font-semibold">{title}</CardTitle>
+            {meta && <span className="font-mono text-xs text-muted-foreground">{meta}</span>}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-1">{children}</CardContent>
+      </Card>
+    </FadeIn>
   );
 }

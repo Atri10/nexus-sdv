@@ -66,7 +66,7 @@ export function PmCharts({ samples }: { samples: PmSample[] }) {
   ) => (
     <Card>
       <CardHeader className="pb-1">
-        <CardTitle className="text-sm">{title}</CardTitle>
+        <CardTitle className="text-base font-medium">{title}</CardTitle>
       </CardHeader>
       <CardContent className="pt-1">
         <div className="h-36">

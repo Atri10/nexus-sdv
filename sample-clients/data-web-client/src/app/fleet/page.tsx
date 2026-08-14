@@ -13,6 +13,10 @@ import FleetScene from '@/components/scene/fleet-scene';
 import type { FleetVehicle } from '@/components/scene/fleet-scene';
 import type { DevicesResponse, DeviceRow } from '@/types/telemetry';
 
+// Live fleet board: never statically prerender (live data + demo-mode
+// session bypass must resolve at request time, not build time).
+export const dynamic = 'force-dynamic';
+
 function formatLastSeen(iso: string): string {
   if (!iso) return '—';
   const diff = Date.now() - new Date(iso).getTime();
@@ -64,6 +68,19 @@ export default function FleetPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedVin, setSelectedVin] = useState<string | null>(null);
+  // The running simulator's VIN — shown as a badge so the fleet→demo story
+  // is clear (only ONE VIN has a live simulator at a time).
+  const [simVin, setSimVin] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/demo/discover', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const vin = d?.vin as string | null | undefined;
+        if (vin) setSimVin(vin);
+      })
+      .catch(() => {});
+  }, []);
 
   // State is only set in async callbacks (fetch resolution), never
   // synchronously in the effect body — react-hooks/set-state-in-effect.
@@ -108,11 +125,12 @@ export default function FleetPage() {
     new Set(devices.flatMap((d) => Object.keys(d.columns).filter((k) => !isGpsColumn(k))))
   ).sort();
 
-  const tableColumnKeys = ['deviceId', 'lastSeen', ...allColumnKeys];
+  const tableColumnKeys = ['deviceId', 'lastSeen', ...(simVin ? ['simulator'] : []), ...allColumnKeys];
 
   const tableData = devices.map((d) => ({
     deviceId: d.deviceId,
     lastSeen: formatLastSeen(d.lastSeen),
+    ...(d.deviceId === simVin ? { simulator: '● SIM' } : {}),
     ...d.columns,
   }));
 
@@ -125,16 +143,21 @@ export default function FleetPage() {
           <section className="hud-panel overflow-hidden rounded-lg">
             <FadeIn delay={0.08}>
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-                <h2 className="font-display text-lg font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-                  FLEET
+                <h2 className="text-lg font-semibold tracking-wide text-foreground">
+                  Fleet
                 </h2>
-                <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tracking-wider">
+                <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
                   <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
                     VEHICLES <span className="text-foreground">{devices.length}</span>
                   </span>
                   <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
                     LIVE <span className="text-emerald-500">{liveVins.size}</span>
                   </span>
+                  {simVin && (
+                    <span className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-cyan-600 dark:text-cyan-400">
+                      SIMULATOR <span className="font-semibold">{simVin}</span>
+                    </span>
+                  )}
                   <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
                     SEL <span className="text-cyan-600 dark:text-cyan-400">{selectedVin ?? '—'}</span>
                   </span>

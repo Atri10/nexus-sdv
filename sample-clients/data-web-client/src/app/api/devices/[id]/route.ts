@@ -32,7 +32,10 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getServerSession(authOptions);
-  if (!session) {
+  // Local-demo bypass: DEMO_MODE=true (local stack) allows time-series access
+  // without a Keycloak session (NextAuth 4 is incompatible with this repo's
+  // Next.js 16 runtime). Production keeps DEMO_MODE unset.
+  if (!session && process.env.DEMO_MODE !== 'true') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -43,9 +46,12 @@ export async function GET(
   }
 
   try {
-    const allowedIds = await getAllowedVehicleIds(session.groups);
-    if (allowedIds !== undefined && !allowedIds.includes(id)) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    // Demo mode has no session — skip the ACL gate (all vehicles allowed).
+    if (session) {
+      const allowedIds = await getAllowedVehicleIds(session.groups);
+      if (allowedIds !== undefined && !allowedIds.includes(id)) {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      }
     }
 
     const { searchParams } = new URL(request.url);
