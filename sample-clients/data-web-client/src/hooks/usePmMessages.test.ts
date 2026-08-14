@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from 'bun:test';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import type { PmMessage } from '@/lib/pm-types';
 
@@ -43,9 +43,9 @@ describe('usePmMessages sessionStorage hydration', () => {
       JSON.stringify([makeMessage('VIN1'), makeMessage('VIN2')]),
     );
     const { result } = renderHook(() => usePmMessages());
-    expect(result.current).toHaveLength(2);
-    expect(result.current[0].vin).toBe('VIN1');
-    expect(result.current[1].vin).toBe('VIN2');
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[0].vin).toBe('VIN1');
+    expect(result.current.messages[1].vin).toBe('VIN2');
   });
 
   it('still hydrates legacy string entries', () => {
@@ -54,8 +54,8 @@ describe('usePmMessages sessionStorage hydration', () => {
       JSON.stringify([JSON.stringify(makeMessage('VIN3'))]),
     );
     const { result } = renderHook(() => usePmMessages());
-    expect(result.current).toHaveLength(1);
-    expect(result.current[0].vin).toBe('VIN3');
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].vin).toBe('VIN3');
   });
 
   it('skips corrupted entries instead of dropping the whole list', () => {
@@ -64,12 +64,32 @@ describe('usePmMessages sessionStorage hydration', () => {
       JSON.stringify(['not-json', makeMessage('VIN4')]),
     );
     const { result } = renderHook(() => usePmMessages());
-    expect(result.current).toHaveLength(1);
-    expect(result.current[0].vin).toBe('VIN4');
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].vin).toBe('VIN4');
   });
 
   it('starts empty when storage is empty', () => {
     const { result } = renderHook(() => usePmMessages());
-    expect(result.current).toEqual([]);
+    expect(result.current.messages).toEqual([]);
+  });
+});
+
+describe('usePmMessages clearAlerts', () => {
+  it('clears in-memory messages and sessionStorage', () => {
+    window.sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([makeMessage('VIN1'), makeMessage('VIN2')]),
+    );
+    const { result } = renderHook(() => usePmMessages());
+    expect(result.current.messages).toHaveLength(2);
+    act(() => result.current.clearAlerts());
+    expect(result.current.messages).toEqual([]);
+    expect(window.sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it('is safe on an already-empty list', () => {
+    const { result } = renderHook(() => usePmMessages());
+    expect(() => act(() => result.current.clearAlerts())).not.toThrow();
+    expect(result.current.messages).toEqual([]);
   });
 });

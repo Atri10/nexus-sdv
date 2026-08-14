@@ -126,7 +126,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   // prepends newest-first). Keyed by component id and consumed as the
   // ComponentPanel `health` prop (gauge score/severity) and the schematic's
   // `alertState` (pulsing node badges).
-  const pmMessages = usePmMessages();
+  const { messages: pmMessages, clearAlerts } = usePmMessages();
   // PM health/alert state is scoped to the SELECTED VIN (the vehicle being
   // inspected), never mixed across VINs — the detector publishes for every
   // VIN it polls, and the sim VIN may differ from the selection.
@@ -193,14 +193,28 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
               severity bands.
             </p>
           ) : (
-            <div className="flex gap-4 overflow-x-auto">
-              {selectedPm.slice(0, 8).map((m, i) => (
-                <span key={i} className="whitespace-nowrap font-mono text-sm">
-                  <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
-                  <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
-                </span>
-              ))}
-            </div>
+            <>
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearAlerts();
+                    toast.success('Alerts cleared');
+                  }}
+                  className="rounded-md border border-border px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                >
+                  Clear alerts
+                </button>
+              </div>
+              <div className="flex gap-4 overflow-x-auto">
+                {selectedPm.slice(0, 8).map((m, i) => (
+                  <span key={i} className="whitespace-nowrap font-mono text-sm">
+                    <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
+                    <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
+                  </span>
+                ))}
+              </div>
+            </>
           )}
         </Section>
 
