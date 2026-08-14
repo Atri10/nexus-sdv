@@ -1,13 +1,46 @@
 # predictive-maintenance
 
-Predictive maintenance prototype service.
+Predictive Maintenance Copilot prototype — a deterministic telemetry-driven
+detector service for the Nexus SDV platform. It watches each scheduled VIN's
+slow signals (12V battery, brake wear, tire pressure), computes health scores
+and alerts with plain math (no ML, no LLM), and publishes `pm.{VIN}.{component}`
+messages on NATS that the web dashboard consumes.
+
+Mirrors the `sample-services/trip_analyzer` pattern: a FastAPI app that polls
+the data-api per VIN, runs the detectors, and publishes on NATS.
+
+## What it detects
+
+| Component | Method | Alert rules (thresholds) |
+|---|---|---|
+| **12V battery** | M1: temperature-compensated resting-voltage trend (EWMA + 30-day slope); M2: cranking signature (V_min, internal resistance) | EWMA < 12.4 V or slope < −0.5 mV/day → advisory; EWMA < 12.2 V → action; cranking V_min < 9.5 V or R_int > 1.5× baseline → action/critical |
+| **Brake pads** | Energy integral `W = Σ m·a·v·Δt` (1500 kg, 6 GJ pad budget) | wear index > 80 % → advisory; > 90 % → action |
+| **Tires** | Temperature-compensated pressure trend (`P_comp = P·T_ref/T`), steady-driving samples | slope < −0.15 bar/month → advisory; P_comp < 1.8 bar → action |
+
+Detection is **deterministic and explainable** — every alert carries the
+evidence (ewma voltage, slope, threshold…) and a plain-language explanation
+built from templates. Details in
+`docs/superpowers/research/2026-08-05-predictive-maintenance-*.md` and the
+design spec.
 
 ## Message contract
 
 `proto/pm-message.proto` defines `PmMessage` (package `pm`) — the message
-serialized over NATS by the detector service and decoded by the web client.
-The betterproto stub is committed at
+serialized over NATS by the detector and decoded by the web client. The
+betterproto stub is committed at
 `src/predictive_maintenance/model/pm_message.py` (generated, DO NOT EDIT).
+
+```proto
+message PmMessage {
+  string vin = 1;
+  string component = 2;   // battery | brake | tires
+  int32 health_score = 3; // 0-100
+  string severity = 4;    // healthy | advisory | action | critical
+  map<string, string> evidence = 5;
+  string explanation = 6;
+  string timestamp = 7;   // RFC3339
+}
+```
 
 Regenerate after changing the proto:
 
@@ -15,38 +48,88 @@ Regenerate after changing the proto:
 make proto
 ```
 
-## Detector service
+> `make proto` regenerates into a scratch dir and relocates the flat stub
+> (betterproto ≥ 2.0.0b6 emits a package layout that does not match the
+> committed file). The relocation path assumes the `pm` package.
 
-Mirrors `sample-services/trip_analyzer`'s pattern: FastAPI app
-(`predictive_maintenance.main:app`) that polls the data-api per scheduled
-VIN, runs the deterministic detectors, and publishes `pm.{vin}.{component}`
-alerts on NATS.
+## Configuration (env vars)
 
-- `config/` — pydantic-settings `Settings` (env-driven: `DATA_API_GRPC_ADDR`,
-  `NATS_*`, `SCHEDULED_VINS`, `POLL_INTERVAL_SECONDS`, `LOG_LEVEL`),
-  structlog setup.
-- `client/` — `NatsConnector` (nats-py, JetStream) + `DataApiConnector`
-  (grpclib Channel → generated `TelemetryDataApiStub`). The generated data-api
-  client is committed at `src/predictive_maintenance/client/generated/dataapi/v1/`
-  (DO NOT EDIT; regenerate with `make proto`).
-- `core/` — `Processor.run(vin)`: polls `dynamic:battery.*`, `VELOCITY`,
-  `acceleration_modulus_m_s2`, `brake_pedal_pct`, `distance_meters`,
-  `TIRE_PRESSURE`, `TIRE_TEMP`; temperature-compensates battery resting
-  voltages (`V_comp = V - BATTERY_BETA * (T - BATTERY_V_REF)`); accumulates
-  brake energy (1500 kg, 6 GJ pad budget); runs
-  `detect_battery`/`detect_brake`/`detect_tires`; publishes
-  `pm.{vin}.{component}` only when severity != healthy (healthy VINs publish
-  nothing). `PmScheduler` (APScheduler AsyncIOScheduler, in-memory) drives the
-  per-VIN poll loop.
-- `api/` — `/health` (liveness + data-api/nats status), mirroring trip_analyzer.
+All settings are environment-driven (pydantic-settings). See `example.env`.
 
-## Test
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATA_API_GRPC_ADDR` | `data-api:8080` | data-api gRPC `host:port` |
+| `NATS_HOST` / `NATS_PORT` | `nats` / `4222` | NATS server |
+| `NATS_USER` / `NATS_PASSWORD` | `connector` / `connector-pass` | NATS account (must have `pm.>` pub perms — see local-dev README) |
+| `SCHEDULED_VINS` | (empty) | comma/whitespace-separated VINs to monitor; empty = none |
+| `POLL_INTERVAL_SECONDS` | `60` | per-VIN poll cadence |
+| `BATTERY_WINDOW_DAYS` | `30` | battery trend lookback (days) |
+| `LOG_LEVEL` | `info` | structlog level |
+
+## Interfaces
+
+* `GET /` — health: `{status, grpc, nats}`; 200 when data-api is reachable,
+  503 otherwise.
+* `GET /liveness` — 200 liveness probe.
+
+## Local development
 
 ```bash
-uv run pytest tests/ -v
+# from sample-services/predictive-maintenance
+make install        # uv sync (first time)
+make test           # uv run pytest tests/
+make dev            # local uvicorn (needs data-api + NATS reachable)
 ```
 
-## Local dev
+The service runs in the local stack as `predictive-maintenance`
+(container `nexus-predictive-maintenance`). One command:
 
-Runs in the local stack via `local-dev/docker-compose.yml` (service
-`predictive-maintenance`, container `nexus-predictive-maintenance`).
+```bash
+cd local-dev
+make pm-demo        # stack + simulator + detector + open http://localhost:3000/pm
+```
+
+## Deployment
+
+**Local / demo:** `local-dev/docker-compose.yml` service
+`predictive-maintenance` (env injected from `.env.base-services` +
+`.env.sample-services`; `SCHEDULED_VINS` defaults to the `VIN_POOL`).
+
+**GCP:** the service is not yet wired into `iac/` (cloudbuild/helm) — the
+prototype is local-first. To run it on GCP later, mirror `trip_analyzer`'s
+deployment (its `Dockerfile` + cloudbuild/helm patterns): build
+`Dockerfile.local`'s equivalent for production, grant the NATS account
+`pm.>` perms, point `DATA_API_GRPC_ADDR` at the in-cluster data-api, and set
+`SCHEDULED_VINS` from the fleet. See
+`docs/superpowers/2026-08-10-predictive-maintenance-guide.md` for the
+full operations guide.
+
+## Testing
+
+```bash
+make test   # uv run pytest tests/ -v
+```
+
+Covers: message round-trip, detector math (healthy/degrading/critical per
+component), processor publish cadence (publish on severity/band change,
+healthy publishes nothing, poll errors never crash), and the evaluator's
+precision/recall math.
+
+## Validation (offline evaluator)
+
+`scripts/evaluate_detectors.py` computes real precision / recall / mean lead
+time from a simulator soak + ground-truth labels, and writes
+`sample-clients/data-web-client/public/pm-validation.json` (the /pm
+validation card). See the guide's "Validation" section for the exact soak.
+
+## Troubleshooting
+
+- **No alerts on /pm** — check the NATS account has `pm.>` pub/sub perms
+  (local-dev connector user does; re-run `make go` if `nats.conf` predates the
+  `pm.>` grant), the detector is polling (`docker compose logs
+  predictive-maintenance` should show `Polling data-api`), and a degrading VIN
+  exists (`DEGRADATION_PRESET=critical` for a deterministic first alert).
+- **Healthy VINs publish nothing** — by design. Only severity/band changes
+  are published.
+- **`make proto` leaves stale output** — the relocation assumes one proto
+  package (`pm`); a new package needs a matching move line.

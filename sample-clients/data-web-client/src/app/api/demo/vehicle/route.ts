@@ -2,21 +2,21 @@ import { NextResponse } from 'next/server';
 import { demoControl, type DemoAction } from '@/lib/demo-control';
 
 export async function POST(request: Request) {
-  let body: { action?: unknown; vin?: unknown; component?: unknown };
+  let body: { action?: unknown; vin?: unknown; component?: unknown; preset?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
   }
-  const { action, vin, component } = body ?? {};
+  const { action, vin, component, preset } = body ?? {};
   if (
     typeof action !== 'string' ||
-    !['start', 'stop', 'status'].includes(action) ||
+    !['start', 'stop', 'status', 'speed', 'reset'].includes(action) ||
     typeof vin !== 'string' ||
     !vin
   ) {
     return NextResponse.json(
-      { error: 'expected { action: start|stop|status, vin: string, component?: string }' },
+      { error: 'expected { action: start|stop|status|speed|reset, vin: string, component?: string, preset?: string }' },
       { status: 400 }
     );
   }
@@ -24,7 +24,8 @@ export async function POST(request: Request) {
     const reply = await demoControl(
       action as DemoAction,
       vin,
-      typeof component === 'string' && component ? component : undefined
+      typeof component === 'string' && component ? component : undefined,
+      typeof preset === 'string' && preset ? preset : undefined
     );
     if (reply.error) return NextResponse.json(reply, { status: 400 });
     return NextResponse.json(reply);
