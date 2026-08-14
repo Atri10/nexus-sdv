@@ -38,10 +38,10 @@ export interface DemoSceneProps {
 const VEHICLE_SCALE = 1.8;
 const VEHICLE_POSITION: [number, number, number] = [-4.5, 0, 1.5];
 
-const IDLE_FILL_OPACITY = 0.12;
-const ACTIVE_FILL_OPACITY = 0.35;
-const IDLE_EDGE_OPACITY = 0.4;
-const ACTIVE_EDGE_OPACITY = 0.95;
+const IDLE_FILL_OPACITY = 0.04;
+const ACTIVE_FILL_OPACITY = 0.22;
+const IDLE_EDGE_OPACITY = 0.15;
+const ACTIVE_EDGE_OPACITY = 0.7;
 
 /**
  * One clickable component zone: translucent fill box + emissive wireframe

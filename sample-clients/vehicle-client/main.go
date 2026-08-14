@@ -1081,7 +1081,7 @@ func main() {
 		log.Println("✓ Registered and obtained operational certificate")
 
 		var err error
-		jwt, err = client.AuthenticateWithKeycloak()
+		jwt, _, err = client.AuthenticateWithKeycloak()
 		if err != nil {
 			log.Fatalf("Keycloak authentication failed: %v", err)
 		}
@@ -1371,7 +1371,7 @@ func (v *VehicleClient) createCSR(privateKey *rsa.PrivateKey) ([]byte, error) {
 }
 
 // AuthenticateWithKeycloak obtains a JWT token using the operational certificate
-func (v *VehicleClient) AuthenticateWithKeycloak() (string, error) {
+func (v *VehicleClient) AuthenticateWithKeycloak() (string, int, error) {
 	log.Println("Authenticate With Keycloak Step 1: Configuring mTLS with operational certificate...")
 
 	// Create TLS certificate from operational cert and key
@@ -1382,13 +1382,13 @@ func (v *VehicleClient) AuthenticateWithKeycloak() (string, error) {
 
 	cert, err := tls.X509KeyPair(v.operationalCertPEM, keyPEM)
 	if err != nil {
-		return "", fmt.Errorf("failed to create X509 key pair: %w", err)
+		return "", 0, fmt.Errorf("failed to create X509 key pair: %w", err)
 	}
 
 	// Load CA certificate for the Keycloak server
 	keycloakCA, err := os.ReadFile("certificates/KEYCLOAK_TLS_CRT.pem")
 	if err != nil {
-		return "", fmt.Errorf("failed to load Keycloak CA: %w", err)
+		return "", 0, fmt.Errorf("failed to load Keycloak CA: %w", err)
 	}
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(keycloakCA)
@@ -1443,24 +1443,24 @@ func (v *VehicleClient) AuthenticateWithKeycloak() (string, error) {
 
 	req, err := http.NewRequest("POST", tokenURL, bytes.NewBufferString(data))
 	if err != nil {
-		return "", fmt.Errorf("failed to create token request: %w", err)
+		return "", 0, fmt.Errorf("failed to create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to request token: %w", err)
+		return "", 0, fmt.Errorf("failed to request token: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+		return "", 0, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp KeycloakTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("failed to decode token response: %w", err)
+		return "", 0, fmt.Errorf("failed to decode token response: %w", err)
 	}
 
 	log.Printf("  Token expires in: %d seconds", tokenResp.ExpiresIn)
@@ -1494,7 +1494,7 @@ func (v *VehicleClient) AuthenticateWithKeycloak() (string, error) {
 		}
 	}
 
-	return tokenResp.AccessToken, nil
+	return tokenResp.AccessToken, tokenResp.ExpiresIn, nil
 }
 
 // ConnectToNATS establishes a connection to NATS using the JWT
@@ -1546,7 +1546,7 @@ func (v *VehicleClient) PublishTelemetry() error {
 	log.Println("Publishing telemetry data...")
 
 	// For telemetry publishing, we need a fresh NATS connection
-	jwt, err := v.AuthenticateWithKeycloak()
+	jwt, _, err := v.AuthenticateWithKeycloak()
 	if err != nil {
 		return fmt.Errorf("failed to get JWT for telemetry: %w", err)
 	}
@@ -1660,14 +1660,24 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		}
 
 		log.Println("Establishing telemetry NATS connection (re-authenticating with Keycloak)...")
-		jwt, err := v.AuthenticateWithKeycloak()
+		jwt, expiresIn, err := v.AuthenticateWithKeycloak()
 		if err != nil {
 			return fmt.Errorf("failed to get JWT: %w", err)
 		}
 
-		// JWT expires in 2 weeks (1209600 seconds, matching Keycloak realm config)
-		jwtExpiry = time.Now().Add(1209600 * time.Second)
-		log.Printf("JWT refreshed, expires at: %s", jwtExpiry.Format(time.RFC3339))
+		// Use the REAL token lifetime from Keycloak (expires_in). The old
+		// hardcoded 2 weeks made the refresh loop sleep past the actual
+		// 5-minute token, so the connection died with 'authentication
+		// expired' and never recovered. Refresh well before expiry.
+		if expiresIn <= 0 {
+			expiresIn = 300 // sane default if the realm omits it
+		}
+		refreshBuffer = time.Duration(expiresIn/10) * time.Second
+		if refreshBuffer < 30*time.Second {
+			refreshBuffer = 30 * time.Second
+		}
+		jwtExpiry = time.Now().Add(time.Duration(expiresIn) * time.Second)
+		log.Printf("JWT refreshed, expires in %ds (refresh buffer %s)", expiresIn, refreshBuffer)
 
 		nc, err = nats.Connect(v.natsURL, nats.Token(jwt))
 		if err != nil {

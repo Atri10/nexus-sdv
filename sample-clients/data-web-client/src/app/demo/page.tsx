@@ -1,11 +1,12 @@
 'use client';
-import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import AppLayout from '@/components/app-layout';
 import TimeRangeSelector from '@/components/time-range-selector';
 import { LatestStats } from '@/components/latest-stats';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
+import { useSimulatorState } from '@/hooks/use-simulator-state';
 import { qualifierOf, stableComponents, unitForSignal } from '@/lib/telemetry-discovery';
 import { DataPath } from '@/components/demo/data-path';
 import { ComponentPanel } from '@/components/demo/component-panel';
@@ -19,6 +20,8 @@ import { FadeIn } from '@/components/motion/fade-in';
 import type { TimeRange } from '@/types/telemetry';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
+import { toast } from 'sonner';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 /** Random pool VIN, never the same as the current one. */
 function randomVin(exclude?: string): string {
@@ -37,135 +40,58 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   const [componentId, setComponentId] = useState<string>('battery');
   const [range, setRange] = useState<TimeRange>('1h');
   const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const [status, setStatus] = useState<DemoStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [simulatorVin, setSimulatorVin] = useState<string | null>(null);
   const [components, setComponents] = useState<ComponentStatus[] | null>(null);
   const userPicked = useRef(false);
+  // Shared simulator state — one poll loop, every page agrees.
+  const simState = useSimulatorState();
+  const simulatorVin = simState.vin;
+  const status: DemoStatus | null = simState.sim
+    ? { running: simState.sim.running, published: simState.sim.published }
+    : null;
 
   const theme = useChartTheme();
   const { series } = useTelemetryData({ vin, range });
 
+  // Follow the discovered sim for the default vehicle (user pick wins).
+  useEffect(() => {
+    if (simulatorVin && !userPicked.current) setVin(simulatorVin);
+  }, [simulatorVin]);
+
   // No ?vin= given: randomize the default vehicle client-side (after the
   // deterministic first paint so SSR and hydration agree).
+  // Component registry comes from the shared status reply.
   useEffect(() => {
-    if (urlVin) return;
-    const t = window.setTimeout(() => setVin((prev) => randomVin(prev)), 0);
-    return () => window.clearTimeout(t);
-  }, [urlVin]);
-
-  // Find the running simulator (its entrypoint randomizes the VIN) so the
-  // Start button targets it on first press. Discovery runs server-side (the
-  // nats client must not enter the browser bundle). Set state only in .then
-  // callbacks (lint: react-hooks/set-state-in-effect); never clobber a manual
-  // pick.
-  useEffect(() => {
-    let ignore = false;
-    fetch('/api/demo/discover', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : Promise.resolve(null)))
-      .then((data: { vin?: string | null } | null) => {
-        if (ignore || !data?.vin) return;
-        setSimulatorVin(data.vin);
-        if (!userPicked.current) setVin(data.vin);
-      })
-      .catch(() => {});
-    return () => {
-      ignore = true;
-    };
-  }, []);
-
-  // Initial status check + refresh whenever the vehicle changes, plus a light
-  // poll so component toggles made elsewhere (or a simulator restart) are
-  // reflected without reloading. Components come from the status reply — the
-  // dashboard's discovery endpoint. SetState only inside .then callbacks
-  // (lint: react-hooks/set-state-in-effect).
-  const refreshStatus = useCallback(() => {
-    let ignore = false;
-    fetch('/api/demo/vehicle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'status', vin }),
-    })
-      .then((res) => res.json().catch(() => null))
-      .then((reply: (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null) => {
-        if (ignore) return;
-        const ok = reply && !reply.error;
-        setStatus(ok ? { running: reply.running, published: reply.published } : null);
-        setComponents(ok && reply.components ? stableComponents(reply.components) : null);
-        // The simulator re-randomizes its VIN on container restarts — when
-        // the current VIN goes silent, re-discover so the panel recovers
-        // without a reload.
-        if (!ok) {
-          fetch('/api/demo/discover', { cache: 'no-store' })
-            .then((res) => (res.ok ? res.json() : Promise.resolve(null)))
-            .then((data: { vin?: string | null } | null) => {
-              if (ignore || !data?.vin) return;
-              setSimulatorVin(data.vin);
-              if (!userPicked.current) setVin(data.vin);
-            })
-            .catch(() => {});
-        }
-      })
-      .catch(() => {
-        if (!ignore) {
-          setStatus(null);
-          setComponents(null);
-        }
-      });
-    return () => {
-      ignore = true;
-    };
-  }, [vin]);
-
-  useEffect(() => {
-    const interval = window.setInterval(refreshStatus, 5000);
-    return () => window.clearInterval(interval);
-  }, [refreshStatus]);
+    setComponents(
+      simState.sim?.components ? stableComponents(simState.sim.components) : null
+    );
+  }, [simState.sim]);
 
   const runAction = useCallback(
     async (action: 'start' | 'stop') => {
       setBusy(true);
       try {
-        // Command the live simulator, not the selected vehicle: the pool
-        // picker offers VINs without a simulator, and the simulator
-        // re-randomizes its VIN on container restart, so (re)discover before
-        // every start/stop. Start also jumps the view to the simulator's VIN
-        // so the generated telemetry is immediately visible.
-        const res = await fetch('/api/demo/discover', { cache: 'no-store' });
-        const data = (await res.json().catch(() => null)) as { vin?: string | null } | null;
-        const target = data?.vin ?? null;
+        // Command the live simulator via the shared hook — the user's
+        // vehicle selection is NEVER changed by Start/Stop (telemetry
+        // display and simulator control are decoupled).
+        const target = simState.vin;
         if (!target) {
-          const { toast } = await import('sonner');
           toast.error('No simulator detected — is the local stack running? Try `make demo` in local-dev/.');
-          setStatus(null);
           return;
         }
-        setSimulatorVin(target);
-        if (action === 'start') setVin(target);
-        const ctl = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, vin: target }),
-        });
-        const reply = (await ctl.json().catch(() => null)) as (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null;
-        if (!ctl.ok || !reply || reply.error) {
-          const { toast } = await import('sonner');
-          toast.error(reply?.error ?? `HTTP ${ctl.status}`);
-          setStatus(null);
-          setComponents(null);
+        const reply = await simState.command(action);
+        if (!reply || reply.error) {
+          toast.error(reply?.error ?? `Simulator did not respond`);
           return;
         }
-        setStatus({ running: reply.running, published: reply.published });
         setComponents(reply.components ? stableComponents(reply.components) : null);
       } catch (e) {
-        const { toast } = await import('sonner');
         toast.error(e instanceof Error ? e.message : 'Failed to reach demo control');
-        setStatus(null);
       } finally {
         setBusy(false);
       }
     },
-    []
+    [simState]
   );
 
   const component = components?.find((c) => c.id === componentId) ?? null;
@@ -177,27 +103,19 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     async (componentId: string, enable: boolean) => {
       setBusy(true);
       try {
-        const res = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: enable ? 'start' : 'stop', component: componentId, vin }),
-        });
-        const reply = (await res.json().catch(() => null)) as (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null;
-        if (!res.ok || !reply || reply.error) {
-          const { toast } = await import('sonner');
-          toast.error(reply?.error ?? `HTTP ${res.status}`);
+        const reply = await simState.command(enable ? 'start' : 'stop', undefined, componentId);
+        if (!reply || reply.error) {
+          toast.error(reply?.error ?? 'Simulator did not respond');
           return;
         }
-        setStatus({ running: reply.running, published: reply.published });
         if (reply.components) setComponents(stableComponents(reply.components));
       } catch (e) {
-        const { toast } = await import('sonner');
         toast.error(e instanceof Error ? e.message : 'Failed to toggle component');
       } finally {
         setBusy(false);
       }
     },
-    [vin]
+    [simState]
   );
   const componentSeries = useMemo(
     () =>
@@ -209,11 +127,18 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   // ComponentPanel `health` prop (gauge score/severity) and the schematic's
   // `alertState` (pulsing node badges).
   const pmMessages = usePmMessages();
+  // PM health/alert state is scoped to the SELECTED VIN (the vehicle being
+  // inspected), never mixed across VINs — the detector publishes for every
+  // VIN it polls, and the sim VIN may differ from the selection.
+  const selectedPm = useMemo(
+    () => pmMessages.filter((m) => m.vin === vin),
+    [pmMessages, vin]
+  );
   const latestByComponent = useMemo(() => {
     const m = new Map<string, PmMessage>();
-    for (const msg of pmMessages) if (!m.has(msg.component)) m.set(msg.component, msg);
+    for (const msg of selectedPm) if (!m.has(msg.component)) m.set(msg.component, msg);
     return m;
-  }, [pmMessages]);
+  }, [selectedPm]);
   const health = Object.fromEntries([...latestByComponent.entries()].map(([k, v]) => [k, { score: v.health_score, severity: v.severity }]));
   const alertState = Object.fromEntries([...latestByComponent.entries()].map(([k, v]) => [k, { severity: v.severity }]));
   // useReducedMotion is null during SSR/first paint; treat null as "not
@@ -237,7 +162,8 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
           <TimeRangeSelector value={range} onChange={setRange} />
         </div>
 
-        <FadeIn>
+        {/* ============ SECTION: CONTROL ============ */}
+        <Section title="Simulator control" meta={simulatorVin ? `sim: ${simulatorVin}` : 'no simulator detected'}>
           <DemoControlBar
             vin={vin}
             onVinChange={(v) => {
@@ -250,9 +176,6 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             onStart={() => runAction('start')}
             onStop={() => runAction('stop')}
           />
-        </FadeIn>
-
-        <FadeIn>
           <ComponentPanel
             components={components}
             simulatorVin={simulatorVin}
@@ -260,77 +183,62 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             onToggle={toggleComponent}
             health={health}
           />
-        </FadeIn>
+        </Section>
 
-        {/* PM ALERTS ticker: latest predictive-maintenance messages (newest
-            first) — severity-colored, one line per message. Hidden until the
-            PM stream delivers its first message. */}
-        {pmMessages.length > 0 && (
-          <FadeIn>
-            <div className="flex items-center gap-2 overflow-hidden rounded-lg border border-border/60 px-3 py-2 text-xs">
-              <span className="font-semibold tracking-wider text-muted-foreground">PM ALERTS</span>
-              <div className="flex gap-4 overflow-x-auto">
-                {pmMessages.slice(0, 8).map((m, i) => (
-                  <span key={i} className="whitespace-nowrap font-mono">
-                    <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
-                    <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          </FadeIn>
-        )}
-
-        {/* 3D holographic pipeline: vehicle zones (click to select) + the
-            NATS→Bigtable data flow. Reduced-motion users get the SVG
-            schematic + data path instead; WebGL-less browsers get them via
-            the scene's fallback prop. */}
-        {reducedMotion ? (
-          <FadeIn>
-            <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
-            <DataPath flowing={flowing} />
-          </FadeIn>
-        ) : (
-          <FadeIn>
-            <section className="hud-panel overflow-hidden rounded-lg">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-                <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-                  HOLOGRAPHIC PIPELINE
-                </h2>
-                <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
-                  DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO SELECT
+        {/* ============ SECTION: PM ALERTS ============ */}
+        <Section title="PM alerts" meta={vin}>
+          {selectedPm.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No PM alerts for {vin} yet — alerts appear as the detector crosses
+              severity bands.
+            </p>
+          ) : (
+            <div className="flex gap-4 overflow-x-auto">
+              {selectedPm.slice(0, 8).map((m, i) => (
+                <span key={i} className="whitespace-nowrap font-mono text-sm">
+                  <span style={{ color: severityColor(m.severity) }}>{m.severity.toUpperCase()}</span>
+                  <span className="text-muted-foreground"> · {m.vin} · {m.component} · {m.explanation}</span>
                 </span>
-              </div>
-              <div className="relative h-[440px] overflow-y-auto">
-                <DemoScene
-                  componentId={componentId}
-                  onSelect={setComponentId}
-                  flowing={flowing}
-                  animate={!reducedMotion}
-                  vin={vin}
-                  components={components}
-                  fallback={
-                    <div className="grid gap-4 xl:grid-cols-2">
-                      <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
-                      <DataPath flowing={flowing} />
-                    </div>
-                  }
-                  className="h-full w-full"
-                />
-              </div>
-            </section>
-          </FadeIn>
-        )}
+              ))}
+            </div>
+          )}
+        </Section>
 
-        <FadeIn>
+        {/* ============ SECTION: LIVE PIPELINE ============ */}
+        <Section title="Live pipeline" meta="vehicle + data flow">
+          {reducedMotion ? (
+            <div className="grid gap-4 xl:grid-cols-2">
+              <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
+              <DataPath flowing={flowing} />
+            </div>
+          ) : (
+            <div className="relative h-[440px] overflow-hidden rounded-lg border border-border/60">
+              <DemoScene
+                componentId={componentId}
+                onSelect={setComponentId}
+                flowing={flowing}
+                animate={!reducedMotion}
+                vin={vin}
+                components={components}
+                fallback={
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <VehicleSchematic componentId={componentId} onSelect={setComponentId} series={series} components={components} alertState={alertState} />
+                    <DataPath flowing={flowing} />
+                  </div>
+                }
+                className="h-full w-full"
+              />
+            </div>
+          )}
+        </Section>
+
+        {/* ============ SECTION: TELEMETRY ============ */}
+        <Section title="Telemetry" meta={`${vin} · ${range}`}>
           <VehicleMap
             series={series}
             paused={!(components?.find((c) => c.id === 'chassis')?.enabled ?? true)}
           />
-        </FadeIn>
-
-        {componentSeries.length > 0 && (
-          <FadeIn>
+          {componentSeries.length > 0 && (
             <LatestStats
               series={componentSeries}
               hidden={hidden}
@@ -340,10 +248,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
                   .filter((entry): entry is [string, string] => entry[1] !== undefined)
               )}
             />
-          </FadeIn>
-        )}
-
-        <FadeIn>
+          )}
           <ChartGrid
             series={series}
             components={components}
@@ -351,8 +256,34 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
             theme={theme}
             onToggleSeries={toggle}
           />
-        </FadeIn>
+        </Section>
       </div>
     </AppLayout>
+  );
+}
+
+/** Recursive section wrapper: consistent card anatomy (title + meta +
+ * children) shared across pages. */
+function Section({
+  title,
+  meta,
+  children,
+}: {
+  title: string;
+  meta?: string;
+  children: ReactNode;
+}) {
+  return (
+    <FadeIn>
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <CardTitle className="text-base font-semibold">{title}</CardTitle>
+            {meta && <span className="font-mono text-xs text-muted-foreground">{meta}</span>}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-1">{children}</CardContent>
+      </Card>
+    </FadeIn>
   );
 }

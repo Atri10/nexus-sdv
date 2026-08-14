@@ -39,6 +39,8 @@ export interface DemoControlReply {
   route?: RouteStatus;
   /** Live ground truth (battery wear, brake wear, tire pressure). */
   ground_truth?: Record<string, Record<string, unknown>>;
+  /** Live drive values (velocity, tire pressure, GPS, battery voltage). */
+  live?: Record<string, unknown>;
   error?: string;
 }
 
