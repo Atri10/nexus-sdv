@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -175,7 +176,10 @@ func newDriveState() driveState {
 
 // driveCycleStep advances the drive profile by dt seconds. Velocity follows a
 // smooth accelerate/cruise/brake/idle cycle; derived sensors correlate.
-func driveCycleStep(s *driveState, dt float64) {
+// speed > 1 (demo fast-forward) scales the travelled distance and brake
+// energy — the two quantities that feed the route/lap counter and the brake
+// wear detector — while velocity/sensor values stay at normal scale.
+func driveCycleStep(s *driveState, dt, speed float64) {
 	s.phaseLeft -= dt
 	if s.phaseLeft <= 0 {
 		s.phase = (s.phase + 1) % 4
@@ -213,7 +217,7 @@ func driveCycleStep(s *driveState, dt float64) {
 		// the vehicle is still moving.
 		if s.brakePct > 5 && s.velocity > 0.5 {
 			vAvg := 0.5 * (vStart + s.velocity)
-			s.brakeEnergyJ += 1500.0 * math.Abs(s.velocity-vStart) * vAvg
+			s.brakeEnergyJ += speed * 1500.0 * math.Abs(s.velocity-vStart) * vAvg
 		}
 	case 3: // idle
 		s.velocity -= 0.5 * dt
@@ -233,9 +237,10 @@ func driveCycleStep(s *driveState, dt float64) {
 	}
 	s.steeringAngle = clamp(s.steeringAngle+(mathrand.Float64()-0.5)*0.8, -45, 45)
 
-	// Advance along the real trip route: distance = velocity * dt, position
-	// interpolated on the embedded street loop, heading following the road.
-	s.tripDist += s.velocity * dt
+	// Advance along the real trip route: distance = velocity * dt * speed
+	// (demo fast-forward laps the route faster), position interpolated on
+	// the embedded street loop, heading following the road.
+	s.tripDist += s.velocity * dt * speed
 	s.lat, s.lng, s.headingDeg = simTrip.positionAt(s.tripDist)
 }
 
@@ -568,6 +573,29 @@ type controlState struct {
 	// (see stateLocked). Set by the publish loop each tick; only components
 	// with an enabled config are populated.
 	groundTruth map[string]map[string]any
+	// speed is the demo-speed multiplier (DEMO_SPEED env, or the "speed"
+	// control action). It accelerates simulation time — degradation accrual,
+	// trip progress and brake energy — while the published sensor values stay
+	// at normal scale. 1 = real-time, 5 = fast demo, 20 = showcase.
+	speed float64
+	// routeDist is the latest travelled distance along the trip loop (m),
+	// recorded by the publish loop each tick for the status reply's lap
+	// computation.
+	routeDist float64
+	// live carries the current drive-state values the /pm console displays:
+	// velocity (m/s), tire pressure (bar), GPS position and battery voltage.
+	// Set by the publish loop each tick (see setLive).
+	live map[string]any
+	// resetFn re-initializes the drive/battery state owned by the publish
+	// loop (battery age 0, fresh drive cycle, zeroed brake accumulator).
+	// Set once by PublishTelemetryContinuously; "reset" control action calls
+	// it so the demo restarts from a known healthy state.
+	resetFn func()
+	// degradationAccel multiplies simulated aging beyond the demo-speed
+	// multiplier (DEGRADATION_ACCEL env, default 1). The demo sets it high
+	// so component health visibly trends downward within a 1-3 minute
+	// showcase instead of the real-time horizon.
+	degradationAccel float64
 }
 
 // defaultDegradationConfig returns the per-VIN default DegradationConfig for
@@ -616,11 +644,26 @@ func newControlState(vin, messageType string) *controlState {
 	for _, comp := range degradableComponents {
 		degradation[comp] = defaultDegradationConfig(comp, poolIndex)
 	}
+	speed := 1.0
+	if v := os.Getenv("DEMO_SPEED"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil && n >= 1 {
+			speed = n
+		}
+	}
+	accel := 1.0
+	if v := os.Getenv("DEGRADATION_ACCEL"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil && n >= 1 {
+			accel = n
+		}
+	}
 	return &controlState{
-		vin:         vin,
-		messageType: messageType,
-		degradation: degradation,
-		groundTruth: map[string]map[string]any{},
+		vin:              vin,
+		messageType:      messageType,
+		degradation:      degradation,
+		groundTruth:      map[string]map[string]any{},
+		live:             map[string]any{},
+		speed:            speed,
+		degradationAccel: accel,
 		components: map[string]*componentState{
 			"battery": {
 				id: "battery", label: "Battery",
@@ -696,6 +739,23 @@ func (c *controlState) handle(msg *nats.Msg) {
 		c.mu.Unlock()
 		c.applyDegradation(msg, req.Component, req.Preset)
 		return
+	case "speed":
+		var mult float64
+		if req.Preset != "" {
+			if n, err := strconv.ParseFloat(req.Preset, 64); err == nil && n >= 1 {
+				mult = n
+			}
+		}
+		if mult == 0 {
+			c.mu.Unlock()
+			c.reply(msg, map[string]any{"error": "invalid multiplier"})
+			return
+		}
+		c.speed = mult
+	case "reset":
+		c.mu.Unlock()
+		c.resetSimulation(msg)
+		return
 	case "start", "stop":
 		if req.Component == "" {
 			for _, comp := range c.components {
@@ -735,6 +795,42 @@ func (c *controlState) anyEnabledLocked() bool {
 		}
 	}
 	return false
+}
+
+// resetSimulation handles {"action":"reset"}: restore the vehicle to its
+// demo starting state — battery age 0, fresh drive cycle, zeroed brake
+// accumulator — so a presenter can re-run the degradation story. Resets
+// degradation horizons to the preset defaults but keeps the current speed
+// multiplier. The reply carries the fresh state.
+func (c *controlState) resetSimulation(msg *nats.Msg) {
+	c.mu.Lock()
+	c.published = 0
+	c.startedAt = time.Now()
+	c.groundTruth = map[string]map[string]any{}
+	c.routeDist = 0
+	c.live = map[string]any{}
+	for _, deg := range c.degradation {
+		deg.HorizonDays = defaultDegradationConfig(deg.Component, poolIndex(c.vin)).HorizonDays
+	}
+	// Re-init the publish loop's drive/battery state (called outside the
+	// lock — it touches the sim's own state, not the control state).
+	reset := c.resetFn
+	state := c.stateLocked()
+	c.mu.Unlock()
+	if reset != nil {
+		reset()
+	}
+	c.reply(msg, state)
+}
+
+// speedMultiplier returns the current demo-speed multiplier (1 = real-time).
+func (c *controlState) speedMultiplier() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.speed < 1 {
+		return 1
+	}
+	return c.speed
 }
 
 // applyDegradation handles {"action":"degradation","component":"<id>",
@@ -816,13 +912,45 @@ func (c *controlState) stateLocked() map[string]any {
 		}
 	}
 	return map[string]any{
-		"vin":          c.vin,
-		"running":      c.running,
-		"published":    c.published,
-		"messageType":  c.messageType,
-		"components":   comps,
-		"ground_truth": c.groundTruth,
+		"vin":               c.vin,
+		"running":           c.running,
+		"published":         c.published,
+		"messageType":       c.messageType,
+		"components":        comps,
+		"ground_truth":      c.groundTruth,
+		"speed":             c.speed,
+		"degradation_accel": c.degradationAccel,
+		"route": map[string]any{
+			"total_m": int(simTrip.total),
+			"lap":     c.lap(),
+		},
+		"live": c.live,
 	}
+}
+
+// setLive stores the current drive-state values for the status reply. Called
+// by the publish loop each tick. Map values are replaced wholesale — the
+// /pm console polls the status reply for its KPI row.
+func (c *controlState) setLive(vals map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.live = vals
+}
+
+// lap reports the current lap number (0-based from the route loop) and the
+// fractional progress through it, computed from the drive state's travelled
+// distance. The publish loop records the latest routeDist each tick.
+// NOTE: called from stateLocked() while the caller already holds c.mu —
+// must NOT lock.
+func (c *controlState) lap() map[string]any {
+	dist := c.routeDist
+	total := simTrip.total
+	if total <= 0 {
+		return map[string]any{"number": 0, "progress": 0.0}
+	}
+	lap := int(dist / total)
+	progress := (dist - float64(lap)*total) / total
+	return map[string]any{"number": lap, "progress": math.Round(progress*1000) / 1000}
 }
 
 // isComponentEnabled reports whether a component is currently publishing.
@@ -910,11 +1038,11 @@ func main() {
 	}
 
 	client := &VehicleClient{
-		VIN:                *vin,
-		pkiStrategy:        *pkiStrategy,
-		MessageType:        *messageType,
-		controlSubject:     *controlSubject,
-		groundTruthLabels:  *groundTruthLabels,
+		VIN:               *vin,
+		pkiStrategy:       *pkiStrategy,
+		MessageType:       *messageType,
+		controlSubject:    *controlSubject,
+		groundTruthLabels: *groundTruthLabels,
 	}
 
 	log.Printf("================================================")
@@ -1485,6 +1613,19 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 	// Randomized drive cycle state (velocity, engine, GPS, dynamics)
 	drive := newDriveState()
 
+	// Reset flag set by the "reset" control action (via ctl.resetFn); the
+	// publish loop consumes it on its next tick (same goroutine, race-free).
+	var resetRequested int32
+
+	// Reset hook for the "reset" control action: restore the demo to its
+	// starting state (battery age 0, fresh drive cycle, zeroed brake
+	// accumulator) so a presenter can re-run the degradation story. The
+	// actual re-init happens in publishOnce (same goroutine as the state it
+	// mutates) — the handler only sets the flag.
+	ctl.resetFn = func() {
+		atomic.StoreInt32(&resetRequested, 1)
+	}
+
 	// JWT refresh parameters
 	var nc *nats.Conn
 	var jwtExpiry time.Time
@@ -1558,6 +1699,20 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 	// needed, advance battery + drive state, build the payload(s) for the
 	// configured message type, publish each, and track the published count.
 	publishOnce := func() {
+		// Consume a pending reset: re-init battery + drive state so the
+		// demo restarts from its known healthy starting point.
+		if atomic.CompareAndSwapInt32(&resetRequested, 1, 0) {
+			battery = batteryState{
+				voltage: 12.6,
+				current: 45.2,
+				soc:     85.5,
+				temp:    25.3,
+				deg:     ctl.degradationFor("battery"),
+				ageDays: 0,
+			}
+			drive = newDriveState()
+		}
+
 		// Check if JWT needs refresh
 		if time.Until(jwtExpiry) < refreshBuffer {
 			log.Println("JWT expiring soon, refreshing connection...")
@@ -1575,7 +1730,8 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		if deg := ctl.degradationFor("battery"); deg != nil {
 			battery.deg = deg
 		}
-		battery.ageDays += float64(intervalSeconds) / 86400.0
+		speed := ctl.speedMultiplier()
+		battery.ageDays += float64(intervalSeconds) / 86400.0 * speed * ctl.degradationAccel
 		vRest, vMin, rInt := battery.deg.BatteryAt(battery.ageDays)
 		battery.voltage = vRest + (mathrand.Float64()-0.5)*0.025 // ±0.025 V noise
 		battery.soc = 85.5 - 30*((battery.deg.severityFactor()*battery.ageDays/120.0)/1.0)
@@ -1589,7 +1745,10 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		battery.current = clamp(battery.current, 0, 100)
 
 		// Advance the randomized drive cycle (velocity, engine, GPS, dynamics).
-		driveCycleStep(&drive, float64(intervalSeconds))
+		driveCycleStep(&drive, float64(intervalSeconds), speed)
+		ctl.mu.Lock()
+		ctl.routeDist = drive.tripDist
+		ctl.mu.Unlock()
 
 		// Mirror the live degradation state onto the client so the chassis
 		// report and ground truth use the same config the battery walks
@@ -1602,6 +1761,18 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// published telemetry walks (so detector-vs-truth stays comparable).
 		now := time.Now()
 		ctl.setGroundTruth(v.groundTruth(battery, drive))
+		tireBar := 2.2
+		if v.tiresDeg != nil {
+			tireBar = v.tiresDeg.TirePressureAt(v.batteryAgeDays)
+		}
+		ctl.setLive(map[string]any{
+			"velocity_m_s":      math.Round(drive.velocity*10) / 10,
+			"tire_pressure_bar": math.Round(tireBar*100) / 100,
+			"lat":               drive.lat,
+			"lng":               drive.lng,
+			"battery_voltage":   math.Round(battery.voltage*100) / 100,
+			"heading_deg":       math.Round(drive.headingDeg),
+		})
 
 		// Offline evaluator labels: one JSONL object per VIN per tick (no-op
 		// when no GROUND_TRUTH_LABELS path is configured).

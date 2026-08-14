@@ -36,7 +36,7 @@ func TestRandomVinFromPool(t *testing.T) {
 func TestDriveCycleBounds(t *testing.T) {
 	s := newDriveState()
 	for i := 0; i < 2000; i++ {
-		driveCycleStep(&s, 1.0)
+		driveCycleStep(&s, 1.0, 1.0)
 		if s.velocity < 0 || s.velocity > 200 {
 			t.Fatalf("velocity out of bounds: %v", s.velocity)
 		}
@@ -64,7 +64,7 @@ func TestTripRouteBounds(t *testing.T) {
 	}
 	s := newDriveState()
 	for i := 0; i < 2000; i++ {
-		driveCycleStep(&s, 2.0)
+		driveCycleStep(&s, 2.0, 1.0)
 		if s.lat < minLat-0.001 || s.lat > maxLat+0.001 || s.lng < minLng-0.001 || s.lng > maxLng+0.001 {
 			t.Fatalf("position off the trip route: %v, %v (route bbox %.5f..%.5f, %.5f..%.5f)",
 				s.lat, s.lng, minLat, maxLat, minLng, maxLng)
@@ -79,7 +79,7 @@ func TestDriveCycleProfileVariety(t *testing.T) {
 	s := newDriveState()
 	velocities := map[float64]bool{}
 	for i := 0; i < 3000; i++ {
-		driveCycleStep(&s, 1.0)
+		driveCycleStep(&s, 1.0, 1.0)
 		velocities[s.velocity] = true
 	}
 	if len(velocities) < 10 {
