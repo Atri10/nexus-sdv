@@ -53,7 +53,7 @@ const MAX_SAMPLES = 600; // hard cap on top of the window (10 min @ ~1/s)
  * tells the "same route, repeated laps, accumulating degradation" story.
  */
 export default function PmPage() {
-  const messages = usePmMessages();
+  const { messages, clearAlerts } = usePmMessages();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehiclesLoading, setVehiclesLoading] = useState(true);
   const [selectedVin, setSelectedVin] = useState<string | null>(null);
@@ -168,12 +168,18 @@ export default function PmPage() {
       }
       lastSamples.current = [];
       setSamples([]);
+      // The reset restores the vehicle to healthy — wipe the accumulated
+      // alert list too so the PM events section doesn't show a dead
+      // battery's old alerts after the reset. (The detector publishes on
+      // severity change; if the fleet is still degrading, fresh alerts
+      // re-appear as bands re-cross.)
+      clearAlerts();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to reset demo');
     } finally {
       setBusy(false);
     }
-  }, [simVin, simState]);
+  }, [simVin, simState, clearAlerts]);
 
   // ---- Live sample buffer (charts) ----------------------------------------
   // Append a sample every poll from the freshest available source. When the
@@ -407,7 +413,24 @@ export default function PmPage() {
         </Section>
 
         {/* ============ SECTION: PM EVENTS ============ */}
-        <Section title="PM events" meta={selectedVin ?? 'no vehicle'}>
+        <Section
+          title="PM events"
+          meta={selectedVin ?? 'no vehicle'}
+          action={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                clearAlerts();
+                toast.success('Alerts cleared');
+              }}
+              disabled={selectedMessages.length === 0}
+              className="gap-1.5"
+            >
+              Clear alerts
+            </Button>
+          }
+        >
           {selectedMessages.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No PM events for this vehicle yet — with Fast Demo enabled, degradation
@@ -448,21 +471,26 @@ export default function PmPage() {
 function Section({
   title,
   meta,
+  action,
   children,
 }: {
   title: string;
   meta?: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <FadeIn>
       <Card>
         <CardHeader className="pb-2">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <CardTitle className="text-base font-semibold">{title}</CardTitle>
-            {meta && (
-              <span className="font-mono text-xs text-muted-foreground">{meta}</span>
-            )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-baseline gap-2">
+              <CardTitle className="text-base font-semibold">{title}</CardTitle>
+              {meta && (
+                <span className="font-mono text-xs text-muted-foreground">{meta}</span>
+              )}
+            </div>
+            {action}
           </div>
         </CardHeader>
         <CardContent className="space-y-3 pt-1">{children}</CardContent>

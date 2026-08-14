@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { parsePmMessage, type PmMessage } from '@/lib/pm-types';
 
 const STORAGE_KEY = 'pmMessages';
@@ -77,5 +77,20 @@ export function usePmMessages() {
     return () => source.close();
   }, []);
 
-  return messages;
+  // Clear the accumulated alert list — demo reset hygiene. Drops the
+  // in-memory state and the sessionStorage copy atomically so a reload
+  // after "clear alerts" starts empty instead of resurrecting stale
+  // alerts. The SSE stream keeps running: new alerts append as they
+  // arrive (the detector publishes on severity change, so a cleared
+  // list stays empty until a component actually re-crosses a band).
+  const clearAlerts = useCallback(() => {
+    setMessages([]);
+    try {
+      window.sessionStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Storage disabled — in-memory clear above is enough.
+    }
+  }, []);
+
+  return { messages, clearAlerts };
 }

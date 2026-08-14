@@ -327,23 +327,52 @@ vMin   = 10.8 − 1.3·deg  V     → 9.5 V at deg = 1
 
 with `norm(day) = clamp(day/HorizonDays, 0, 1)` (`degradation.go(norm)`, default horizon 120) and `severityFactor` ∈ {0, 0.85, 1.0} (`degradation.go(severityFactor)`). The √-shape is the PyBaMM-informed aging curve — fast early sulfation that plateaus, then drops as `deg` saturates. The three full-degradation endpoints (12.0 V, 15.3 mΩ, 9.5 V) line up exactly with the detector's alert lines: the simulator's "dead battery" is the battery that hits `CRANK_VMIN` (9.5 V) and the R_int multiplier, and its resting voltage sits well under `BATTERY_ACTION_V`.
 
-Worked: degrading preset (0.85), horizon 120, day 60 → `deg = 0.85·√0.5 = 0.601`; `vRest = 12.63 − 0.63·0.601 = 12.251 V`; `vMin = 10.8 − 1.3·0.601 = 10.019 V`; `rInt = 9.3 + 6.0·0.601 = 12.91 mΩ`. Critical preset, day 60 of horizon 60 → `deg = 1.0`; `vRest = 12.0 V`.
+**Death collapse** (`degradation.go(BatteryAt)`, beyond the horizon): a real battery doesn't plateau at 12.0 V — once it can't hold charge it falls off a cliff and stops starting the car. For `day > HorizonDays` and a non-healthy preset:
+
+```
+f     = 1 − exp(−(day − HorizonDays)/7)     # 0 → 1 over ~3 sim weeks
+vRest −= 1.5·f                              # 12.0 → 10.5 V dead cell
+vMin  −= 2.5·f                              # cranking can no longer turn the starter
+rInt  += 15.0·f                             # 15.3 → ~30 mΩ internal resistance
+```
+
+The collapse only applies when `severityFactor() > 0` — healthy batteries hold the plateau forever (the "healthy publishes nothing" contract). The 7-day time constant means the death arc is watchable in a demo: the battery crosses the 12.2 V action line at the horizon, then visibly dives to ~10.5 V over the next couple of minutes of fast-demo time, staying well below every detector threshold so severity saturates at critical.
+
+Worked: degrading preset (0.85), horizon 120, day 60 → `deg = 0.85·√0.5 = 0.601`; `vRest = 12.63 − 0.63·0.601 = 12.251 V`; `vMin = 10.8 − 1.3·0.601 = 10.019 V`; `rInt = 9.3 + 6.0·0.601 = 12.91 mΩ`. Critical preset, day 60 of horizon 60 → `deg = 1.0`; `vRest = 12.0 V`. Same battery at day 74 (14 days past horizon): `f = 1 − e^−2 = 0.865`, `vRest = 12.0 − 1.5·0.865 = 10.70 V`, `rInt = 15.3 + 15·0.865 = 28.3 mΩ` — a dead cell that would never crank.
 
 The publish loop ages the battery by `intervalSeconds/86400 · speed · degradationAccel` days per tick (`main.go(publishOnce)`), adds ±0.025 V noise to `vRest`, and clamps voltage to [11.0, 14.5]. SoC is `85.5 − 30·(severityFactor·ageDays/120)` floored at 5 — a linear proxy that the processor never reads (see §8.3). Battery temp reuses the tire temperature cycle (`main.go(publishOnce)`).
 
-### 6.2 Tire curves
+### 6.2 Tire curves — the three-phase death
 
 `degradation.go(TirePressureAt)` / `degradation.go(TireTempAt)`:
 
 ```
-TirePressureAt(day): healthy → 2.3 bar
-                     else    → 2.3 − leak·day/30,  leak = 0.2·norm(day)
-TireTempAt(day):     28 + 8·sin(day·2π) °C
+Phase 1 — slow puncture:  2.3 − leakRate·day,  leakRate = 0.2·severityFactor/30 bar/day
+                           (the spec's linear 0.2 bar/month leak) until P = 1.9 bar
+Phase 2 — flex acceleration: 1.9 − 2·leakRate·(day − floorDay)
+                           underinflated sidewalls flex + heat up, doubling the leak,
+                           until the 1.2 bar structural floor
+Phase 3 — structural collapse: 1.2 − 0.2·(1 − exp(−(day − collapseDay)/7))
+                           the carcass is destroyed; pressure decays to the
+                           ~1.0 bar "flat tire" asymptote — the whole tyre is useless
+TireTempAt: 28 + 8·sin(day·2π) °C ambient; below 1.9 bar add flex heat
+            clamp((1.9 − P)·20, 0, 14) °C — +2 °C per 0.1 bar underinflation
 ```
 
-The leak term is subtle: `leak = 0.2·norm(day)` is already 0.2 at day ≥ horizon, then multiplied by `day/30` again — so the pressure drop is `0.2·norm(day)·day/30` bar, quadratic in day until the horizon clamps `norm`. Worked: degrading, day 45, horizon 120 → `leak = 0.2·(45/120) = 0.075`, `P = 2.3 − 0.075·45/30 = 2.3 − 0.1125 = 2.1875 bar`. The temperature cycle is 28 °C mean ± 8 °C with period exactly one day (`day·2π`), the India regime (spec §1 goals). Both values are published via `buildChassisReport` (`main.go(buildChassisReport)`): raw pressure `P(day)` and raw temp `T(day)` (which the processor converts to Kelvin).
+Healthy VINs return a flat 2.3 bar and ambient temp (they must publish nothing, so no leak, no heat). The self-acceleration is the physical story: the leak drops pressure, the drop flexes the sidewalls, the flexing heats the tire, and the heat — via the detector's ideal-gas compensation `P_comp = P·293.15/T` — makes the *compensated* pressure decline even faster than the raw leak. Phase 2 starts at the 1.9 bar threshold (below the detector's 1.8 bar floor is reached mid-phase-2, so the floor rule fires while the tire is already self-accelerating); phase 3 crosses into the 1.0–1.2 bar range where the tire is structurally dead, well below `TIRE_FLOOR_BAR`, so severity saturates at action and stays there.
 
-### 6.3 Brake accumulator (simulator side)
+Worked (degrading, severityFactor 0.85): `leakRate = 0.00567 bar/day`; the 1.9 bar threshold is crossed at day 70.6; the 1.2 bar floor at day ~132; at day 160 (28 days into collapse) `f = 1 − e^−4 = 0.982`, `P = 1.2 − 0.196 = 1.004 bar`, flex heat `(1.9 − 1.004)·20 = 17.9 → clamped 14 °C` — a flat, hot tire. The critical preset (severityFactor 1.0, horizon 60) reaches the flat asymptote twice as fast.
+
+Both values are published via `buildChassisReport` (`main.go(buildChassisReport)`): raw pressure `P(day)` and raw temp `T(day)` (which the processor converts to Kelvin). The flex heat rides the same `TIRE_TEMP` field the connector maps, so the detector's temperature compensation sees the full physics.
+
+### 6.3 The realistic trip narrative (what a viewer watches)
+
+The single-vehicle demo is a story, not just three drifting numbers. One VIN drives the Bangalore loop repeatedly while the simulated clock advances:
+
+1. **Advisories first** — after the backfill seeds 30 days of history, the battery slope and the tire leak trend cross their advisory lines within a minute of live time; brake wear climbs lap over lap.
+2. **Action band** — tire pressure crosses the 1.8 bar floor (phase 2 of the leak), the battery EWMA dips under 12.2 V, brake wear passes 80 %.
+3. **Death** — the battery's death collapse dives it past 11 V (the dashboard's `days_to_failure` ground truth hits 0), the tire hits its ~1.0 bar flat asymptote with a +14 °C flex-heat signature, and the brake accumulator saturates its 6 GJ budget. Every component is now permanently critical — the "vehicle is scrap" ending, at which point **Reset demo** is the only way back (below).
+### 6.4 Brake accumulator (simulator side)
 
 `main.go(driveCycleStep)` (brake phase): during the brake phase, velocity decreases by `3.0·dt` m/s per step, `brakePct = clamp(20+rand·40, 0, 100)`, and — only when `brakePct > 5 && velocity > 0.5` —
 
@@ -353,17 +382,17 @@ s.brakeEnergyJ += speed · 1500.0 · |velocity − vStart| · 0.5·(vStart + vel
 
 `m·|Δv|·v_avg` with the same 1500 kg mass and the same trapezoidal form the processor derives from stored rows — the comment states the algebraic identity explicitly: "algebraically identical to the processor's velocity-delta estimate (m·|Δv|·v_avg, mass 1500 kg), so detector and truth stay comparable." The `speed` factor is the demo fast-forward multiplier: energy (and distance) scale with simulated time while the published velocity/sensor values stay at normal scale. The ground-truth wear fraction is `clamp(E/6e9, 0, 1)` (`main.go(brakeWearFraction)`) — the same clamp the processor applies.
 
-### 6.4 Presets, demo fleet spread, backfill
+### 6.5 Presets, demo fleet spread, backfill
 
 - **Presets**: `severityFactor` 0 (healthy) / 0.85 (degrading) / 1.0 (critical) (`degradation.go(severityFactor)`); horizons 120 days, or 60 days for critical (`main.go(defaultDegradationConfig)`).
 - **Demo fleet spread** (`DEGRADATION_PRESET=demo`, the default) in `main.go(defaultDegradationConfig)`: pool index < 0 (no pool) → healthy; odd pool index → healthy; pool index 0 → critical; otherwise → degrading. So a 20-VIN pool looks like: VIN0 critical, odd indices healthy, even indices ≥2 degrading. `poolIndex` is the index in the `VIN_POOL` env list (`main.go(poolIndex)`). The critical VIN is the "hero" that alerts within a poll cycle; the degrading VINs trend visibly.
 - **Backfill** (`main.go(PublishTelemetryContinuously)`): a fresh stack has no telemetry history, so a 30-day-window detector would stay silent for days. Before the live loop, the sim advances the battery age by one simulated day per row (30 rows default, `BACKFILL_DAYS` env), publishes a battery + tire sample per day with timestamps `now − (backfillDays−i)·24h`, then enters live publishing. The drive cycle is deliberately NOT stepped at day scale ("velocity math would explode"); brake ground truth only accrues live. The result is that the detector's 30-day window fills with ~30 daily rows at startup and the slope rules fire immediately.
 
-### 6.5 Ground truth labels
+### 6.6 Ground truth labels
 
 `main.go(groundTruth)` computes, from the same curves the telemetry walks:
 
-- **battery**: `wear = (12.63 − vRest)/0.63` (fraction of the full 0.63 V decline) and `days_to_failure = (1 − norm(ageDays))·HorizonDays`.
+- **battery**: `wear = clamp((12.63 − vRest)/0.63, 0, 1)` (fraction of the full 0.63 V decline, clamped — the death collapse drives `vRest` below 12.0 V and a dead battery is 100 % worn, never 123 %) and `days_to_failure = (1 − norm(ageDays))·HorizonDays`, forced to 0 past the horizon (the death collapse means failure has already happened).
 - **brake**: `wear_fraction = round(brakeWearFraction, 3)` and `energy_joules = int64(brakeEnergyJ)`.
 - **tires**: `pressure_bar = round(P(ageDays), 2)`, `temp_c = round(T(ageDays), 1)`.
 
@@ -440,6 +469,64 @@ The strongest design property of this prototype is that the detector and the gro
 | Tire compensation | `P·293.15/T` (`detectors.py(detect_tires)`) | temp cycle feeding raw `P` (`degradation.go(TireTempAt)`) |
 
 This is deliberate and documented in comments on both sides ("algebraically identical… so detector and truth stay comparable" — `main.go(driveCycleStep)`; "Kept in sync with Processor.BRAKE_ENERGY_BUDGET_J so the evaluator reproduces the service's wear estimate exactly" — `evaluate_detectors.py(top)`). The honest framing matters: because the sim is the source of the "truth", high precision/recall scores are **circular evidence** — they prove the detector reproduces the formulas, not that the formulas predict real fleet failures. The validation card's value is (a) catching *implementation* divergence (regression guards like the poll-interval finding are exactly this) and (b) demonstrating the alert timeline (lead time before failure) under controlled trajectories.
+
+## 8.7 End-to-end data flow (who reads what, in order)
+
+```mermaid
+flowchart LR
+  subgraph Vehicle["vehicle-simulator (sample-clients/vehicle-client)"]
+    DRV[driveCycleStep:<br/>velocity · brake energy · route]
+    BAT[BatteryAt / TirePressureAt /<br/>TireTempAt curves]
+    GT[groundTruth:<br/>wear + days_to_failure]
+  end
+  DRV --> PAY[buildPayloads]
+  BAT --> PAY
+  PAY -->|"telemetry.{VIN} · telemetry-generic.{VIN}.{sensor}"| NATS[(NATS)]
+  NATS -->|auth-callout JWT perms| CONN[nats-bigtable-connector]
+  CONN --> BT[(Bigtable telemetry<br/>row {VIN}#{RFC3339Nano})]
+  BT --> API[data-api gRPC<br/>server-streaming]
+  API -->|"poll 30-day window"| PM[predictive-maintenance<br/>Processor.run]
+  PM --> DET[detectors.py:<br/>detect_battery · detect_brake · detect_tires]
+  DET --> PUB{publish pm.{VIN}.{component}}
+  PUB -->|"pm.>"| NATS
+  NATS -->|"SSE /api/pm/stream"| WEB[data-web-client<br/>/demo gauges · /pm console]
+  GT -->|"status reply"| WEB
+  DRV -.->|"control subject commands.{VIN}.demo"| CTL[controlState:<br/>start/stop/speed/reset/degradation]
+  CTL -.-> DRV
+  PUB -.->|"labels JSONL"| EVAL[scripts/evaluate_detectors.py<br/>precision/recall/lead-time]
+  GT -.-> EVAL
+```
+
+The two paths worth tracing: **detection** (left-to-right, vehicle → Bigtable → data-api → detector → NATS → SSE → web) and **control** (bottom, the web's start/stop/speed/reset/degradation commands on `commands.{VIN}.demo` go straight to the simulator and mutate the curves the next tick walks). Ground truth flows on a side channel (status reply + labels file) so the detector never sees the answer key.
+
+## 8.8 Fast demo mode — how the clock bends
+
+The 1×/5×/20× toggle on /demo and /pm sends a `speed` control action; the simulator stores the multiplier (`controlState.speedMultiplier`, `main.go(speedMultiplier)`). What it scales, and — the load-bearing invariant — what it does **not**:
+
+| Quantity | Effect at speed ×N | Why |
+|---|---|---|
+| Battery age | `ageDays += dt·speed·degradationAccel` per tick (`main.go(publishOnce)`) | the degradation curves are functions of *simulated* age; ×N ages the vehicle N× faster |
+| Trip distance / laps | `tripDist += v·dt·speed` (`main.go(driveCycleStep)`) | the route/lap counter is distance-driven |
+| Brake energy | `brakeEnergyJ += speed·m·\|Δv\|·v_avg` (`main.go(driveCycleStep)`) | wear accrues with distance, so it must scale with the fast-forward too |
+| Published velocity, voltages, pressures, temps | **unscaled** — normal 1× values | the dashboard must show physically plausible numbers at all speeds; the detector's math (EWMA, OLS, thresholds) never sees a ×N artifact |
+
+So "fast demo" means *time flows N× faster for everything that integrates over time*, while every instant value stays honest. That is exactly why the fast-forward multiplier appears only inside the accumulators (`ageDays`, `tripDist`, `brakeEnergyJ`) and never in the payload builders — a property the comments in both files state and the tests lock (brake energy test asserts the `speed`-scaled trapezoid).
+
+Net effect at 20×: one wall-clock minute ages the vehicle 20 simulated minutes, a lap accrues every few seconds, and the battery/tire trajectories — whose horizons are 60–120 *simulated* days — stay slow enough to watch. `DEGRADATION_ACCEL` is a second, compose-level multiplier (default 1200 in the demo stack) that stretches the same curves further, letting a 1–3 minute showcase traverse the full advisory → action → death arc (§6.3).
+
+## 8.9 Reset, clear alerts, and what each actually clears
+
+Two distinct "reset" concepts exist, and the demo wires both:
+
+| Control | Where | What it resets |
+|---|---|---|
+| `reset` action → `controlState.resetSimulation` (`main.go(resetSimulation)`) | simulator | battery age → 0, fresh drive cycle, brake accumulator → 0, published counter → 0, degradation horizons → preset defaults. Speed multiplier is **kept** (resetting the story shouldn't slow the demo). The reply carries the fresh state so the UI updates immediately. |
+| Clear alerts (demo/pm pages) | web client | the accumulated `pm.*` list: `usePmMessages.clearAlerts()` empties the in-memory list and removes the `pmMessages` sessionStorage key atomically, so a reload after clearing starts empty instead of resurrecting stale alerts. The SSE stream keeps running — the detector publishes on severity change/band crossing, so after a clear the list stays empty until a component genuinely re-crosses a band. |
+
+The /pm **Reset demo** button fires both: the simulator `reset` command, then `clearAlerts()` — so the vehicle and its alert history return to a consistent "healthy vehicle, empty feed" state. Without the alert clear, resetting the sim would leave the dead-battery alerts from before the reset on screen, which reads as a bug even though the underlying state is correct.
+
+---
+
 
 ### 8.2 M2 cranking detector is dormant
 
