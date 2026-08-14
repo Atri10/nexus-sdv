@@ -100,7 +100,7 @@ func TestBrakeEnergyMatchesProcessor(t *testing.T) {
 	s.phaseLeft = 10
 	s.velocity = 20
 	s.brakePct = 40
-	driveCycleStep(&s, 2.0)
+	driveCycleStep(&s, 2.0, 1.0)
 	want := 1500.0 * 3.0 * 17.0 * 2.0
 	if s.brakeEnergyJ != want {
 		t.Fatalf("brakeEnergyJ = %v, want %v (processor-identical)", s.brakeEnergyJ, want)
@@ -117,7 +117,7 @@ func TestBrakeEnergyZeroWhenIdle(t *testing.T) {
 	s.phaseLeft = 10
 	s.velocity = 5
 	s.brakePct = 0
-	driveCycleStep(&s, 2.0)
+	driveCycleStep(&s, 2.0, 1.0)
 	if s.brakeEnergyJ != 0 {
 		t.Fatalf("brake energy accumulated during idle: %v", s.brakeEnergyJ)
 	}

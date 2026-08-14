@@ -38,4 +38,4 @@ REG_CA_CERT=/certificates/ca.crt.pem
 REG_CA_KEY=/certificates/ca.key.pem
 FACTORY_CA_CERT=/certificates/factory-ca.crt.pem
 REG_CLIENT_NATS_URL=nats://localhost:4222
-REG_CLIENT_KEYCLOAK_URL=http://localhost:8080
+REG_CLIENT_KEYCLOAK_URL=http://localhost:8088

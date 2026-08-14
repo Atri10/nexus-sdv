@@ -1,7 +1,7 @@
 import { getNatsScoringConnection } from '@/lib/nats';
 import { StringCodec } from 'nats';
 
-export type DemoAction = 'start' | 'stop' | 'status';
+export type DemoAction = 'start' | 'stop' | 'status' | 'speed' | 'reset';
 
 /** One publishable signal of a component (unit empty when plain). */
 export interface SignalInfo {
@@ -19,12 +19,26 @@ export interface ComponentStatus {
   sensors: SignalInfo[];
 }
 
+/** Route state carried by the simulator's status reply: loop length, current
+ * lap number and fractional progress through it. */
+export interface RouteStatus {
+  total_m: number;
+  lap: { number: number; progress: number };
+  progress?: number;
+}
+
 export interface DemoControlReply {
   vin: string;
   running: boolean;
   published: number;
   messageType: string;
   components?: ComponentStatus[];
+  /** Demo-speed multiplier (1 = real-time, 5 = fast, 20 = showcase). */
+  speed?: number;
+  /** Route/lap state (present when the simulator walks the trip loop). */
+  route?: RouteStatus;
+  /** Live ground truth (battery wear, brake wear, tire pressure). */
+  ground_truth?: Record<string, Record<string, unknown>>;
   error?: string;
 }
 
@@ -37,14 +51,25 @@ export class DemoSimulatorOfflineError extends Error {
 
 const sc = StringCodec();
 
-export async function demoControl(action: DemoAction, vin: string, component?: string): Promise<DemoControlReply> {
+export async function demoControl(
+  action: DemoAction,
+  vin: string,
+  component?: string,
+  preset?: string
+): Promise<DemoControlReply> {
   const nc = await getNatsScoringConnection();
   let reply;
   try {
     // nats.js rejects on timeout (NatsTimeoutError) — map to a clear error.
+    const body: Record<string, string> = { action };
+    if (component) body.component = component;
+    // The "speed" action carries the multiplier in the preset field
+    // ({"action":"speed","preset":"5"}); "degradation" uses it for the
+    // preset name.
+    if (preset) body.preset = preset;
     reply = await nc.request(
       `commands.${vin}.demo`,
-      sc.encode(JSON.stringify(component ? { action, component } : { action })),
+      sc.encode(JSON.stringify(body)),
       { timeout: 3000 }
     );
   } catch {

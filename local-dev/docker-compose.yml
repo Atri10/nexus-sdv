@@ -160,12 +160,15 @@ services:
         TELEMETRY_SERVICE_URL: http://telemetry-chart-service:8080
         NEXT_PUBLIC_TELEMETRY_SERVICE_URL: http://localhost:8081
     container_name: nexus-data-web-client
+    extra_hosts:
+      - "localhost:host-gateway"   # container's localhost -> host, so KEYCLOAK_ISSUER (localhost:8088) is reachable from inside the container
     environment:
       - NEXTAUTH_SECRET=local-dev-secret-change-in-production
       - NEXTAUTH_URL=http://localhost:3000
+      - DEMO_MODE=true
       - KEYCLOAK_CLIENT_ID=nexus-web-client
       - KEYCLOAK_CLIENT_SECRET=local-dev-secret
-      - KEYCLOAK_ISSUER=http://localhost:8080/realms/nexus-sdv
+      - KEYCLOAK_ISSUER=http://localhost:8088/realms/nexus-sdv
       - BIGTABLE_PROJECT_ID=test-project
       - BIGTABLE_INSTANCE_ID=test-instance
       - BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086
@@ -192,6 +195,10 @@ services:
     environment:
       - VIN_POOL=${VIN_POOL}
       - INTERVAL=2
+      - BACKFILL_DAYS=60
+      - DEGRADATION_PRESET=degrading
+      - DEMO_SPEED=5
+      - DEGRADATION_ACCEL=1200
       - REGISTRATION_URL=https://registration:8443
       - KEYCLOAK_REALM=nexus-sdv
       - NATS_URL=nats://nats:4222

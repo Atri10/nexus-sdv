@@ -90,7 +90,7 @@ snapshot stays valid (see README §Known gaps & gotchas).
   `connector`, `app-user`, `auth-callout-service`. Anonymous access is **denied**.
 - Storage: in-memory (no persistence).
 
-### 2. Keycloak (localhost:8080)
+### 2. Keycloak (localhost:8088)
 
 - Mode: `start-dev --import-realm`; realm `nexus-sdv`; admin admin/admin.
 - Clients: `vehicle-client` plus **per-VIN confidential clients** (`VIN123`,

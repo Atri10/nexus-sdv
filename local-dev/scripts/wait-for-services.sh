@@ -28,7 +28,7 @@ wait_for() {
 }
 
 wait_for "NATS" 30 2 curl -f http://localhost:8222/healthz || failed=1
-wait_for "Keycloak" 30 2 curl -f http://localhost:8080/realms/nexus-sdv || failed=1
+wait_for "Keycloak" 30 2 curl -f http://localhost:8088/realms/nexus-sdv || failed=1
 wait_for "Bigtable Emulator" 30 2 nc -z localhost 8086 || failed=1
 wait_for "Mosquitto" 30 2 nc -z localhost 1883 || failed=1
 
