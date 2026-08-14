@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FadeIn } from '@/components/motion/fade-in';
 import { RoutePanel } from '@/components/pm/route-panel';
 import { usePmMessages } from '@/hooks/usePmMessages';
+import { useSimulatorState } from '@/hooks/use-simulator-state';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
 import type { PmSample } from '@/components/pm/pm-charts';
 import { DEMO_ROUTE_TOTAL_M } from '@/lib/pm-route';
@@ -39,15 +40,6 @@ type Vehicle = {
   columns: Record<string, string>;
 };
 
-type SimStatus = {
-  running: boolean;
-  published: number;
-  speed?: number;
-  route?: { total_m: number; lap: { number: number; progress: number } };
-  ground_truth?: Record<string, Record<string, unknown>>;
-  live?: Record<string, unknown>;
-};
-
 const SPEED_OPTIONS = [1, 5, 20];
 const CHART_WINDOW_MS = 10 * 60 * 1000; // 10-minute rolling window
 const MAX_SAMPLES = 600; // hard cap on top of the window (10 min @ ~1/s)
@@ -65,15 +57,19 @@ export default function PmPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehiclesLoading, setVehiclesLoading] = useState(true);
   const [selectedVin, setSelectedVin] = useState<string | null>(null);
-  // The running simulator's VIN (auto-discovered). The page commands THIS
-  // VIN for start/stop/reset/speed — never the user's selection, which may
-  // be a vehicle with no simulator behind it.
-  const [simVin, setSimVin] = useState<string | null>(null);
-  const [sim, setSim] = useState<SimStatus | null>(null);
   const [samples, setSamples] = useState<PmSample[]>([]);
   const [busy, setBusy] = useState(false);
   const lastSamples = useRef<PmSample[]>([]);
   const userPicked = useRef(false);
+  // Shared simulator state — one poll loop, every page agrees.
+  const simState = useSimulatorState();
+  const simVin = simState.vin;
+  const sim = simState.sim;
+
+  // Follow the discovered sim for the default selection (user pick wins).
+  useEffect(() => {
+    if (simVin && !userPicked.current) setSelectedVin(simVin);
+  }, [simVin]);
 
   // Latest pm message per component for the selected VIN (newest-first input).
   const selectedMessages = useMemo(
@@ -111,54 +107,10 @@ export default function PmPage() {
     return () => window.clearInterval(id);
   }, [loadVehicles]);
 
-  // The simulator runs ONE VIN (control subject commands.<VIN>.demo).
-  // Discovery is the authority for the default selection: when the user
-  // hasn't explicitly picked, follow the discovered sim VIN. The user's
-  // manual pick always wins.
-  useEffect(() => {
-    let ignore = false;
-    const discover = () =>
-      fetch('/api/demo/discover', { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => {
-          const vin = d?.vin as string | null | undefined;
-          if (ignore || !vin) return;
-          setSimVin(vin);
-          if (!userPicked.current) setSelectedVin(vin);
-        })
-        .catch(() => {});
-    discover();
-    const id = window.setInterval(discover, 5000);
-    return () => {
-      ignore = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  // ---- Simulator status (route/lap/speed/ground truth) --------------------
-  // Poll the DISCOVERED sim VIN (not the selection): the live values shown
-  // are the simulator's, and a non-sim selection must not 503 every poll.
-  const loadSimStatus = useCallback(() => {
-    if (!simVin) return;
-    fetch('/api/demo/vehicle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'status', vin: simVin }),
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((s: SimStatus) => setSim(s))
-      .catch(() => setSim(null));
-  }, [simVin]);
-
-  useEffect(() => {
-    loadSimStatus();
-    const id = window.setInterval(loadSimStatus, 2000);
-    return () => window.clearInterval(id);
-  }, [loadSimStatus]);
-
   // ---- Simulator control (start/stop) --------------------------------------
   // Explicit user actions only — the page NEVER auto-starts a simulator the
-  // user (or /demo) stopped. Commands target the discovered sim VIN.
+  // user (or /demo) stopped. Commands go through the shared hook so every
+  // page sees the new state immediately.
   const runAction = useCallback(
     async (action: 'start' | 'stop') => {
       if (!simVin) {
@@ -167,17 +119,11 @@ export default function PmPage() {
       }
       setBusy(true);
       try {
-        const res = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, vin: simVin }),
-        });
-        const reply = (await res.json().catch(() => null)) as (SimStatus & { error?: string }) | null;
-        if (!res.ok || reply?.error) {
-          toast.error(reply?.error ?? `HTTP ${res.status}`);
+        const reply = await simState.command(action);
+        if (!reply || reply.error) {
+          toast.error(reply?.error ?? 'Simulator did not respond');
           return;
         }
-        setSim(reply);
         if (action === 'start' && !userPicked.current) setSelectedVin(simVin);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to control simulator');
@@ -185,7 +131,7 @@ export default function PmPage() {
         setBusy(false);
       }
     },
-    [simVin]
+    [simVin, simState]
   );
 
   // ---- Demo speed + reset ---------------------------------------------------
@@ -194,24 +140,18 @@ export default function PmPage() {
       if (!simVin) return;
       setBusy(true);
       try {
-        const res = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'speed', vin: simVin, preset: String(mult) }),
-        });
-        const reply = (await res.json().catch(() => null)) as (SimStatus & { error?: string }) | null;
-        if (!res.ok || reply?.error) {
-          toast.error(reply?.error ?? `HTTP ${res.status}`);
+        const reply = await simState.command('speed', String(mult));
+        if (!reply || reply.error) {
+          toast.error(reply?.error ?? 'Simulator did not respond');
           return;
         }
-        setSim((prev) => (prev ? { ...prev, speed: mult } : prev));
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to set demo speed');
       } finally {
         setBusy(false);
       }
     },
-    [simVin]
+    [simVin, simState]
   );
 
   const resetDemo = useCallback(async () => {
@@ -221,17 +161,11 @@ export default function PmPage() {
     }
     setBusy(true);
     try {
-      const res = await fetch('/api/demo/vehicle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reset', vin: simVin }),
-      });
-      const reply = (await res.json().catch(() => null)) as (SimStatus & { error?: string }) | null;
-      if (!res.ok || reply?.error) {
-        toast.error(reply?.error ?? `HTTP ${res.status}`);
+      const reply = await simState.command('reset');
+      if (!reply || reply.error) {
+        toast.error(reply?.error ?? 'Simulator did not respond');
         return;
       }
-      setSim(reply);
       lastSamples.current = [];
       setSamples([]);
     } catch (e) {
@@ -239,7 +173,7 @@ export default function PmPage() {
     } finally {
       setBusy(false);
     }
-  }, [simVin]);
+  }, [simVin, simState]);
 
   // ---- Live sample buffer (charts) ----------------------------------------
   // Append a sample every poll from the freshest available source. When the

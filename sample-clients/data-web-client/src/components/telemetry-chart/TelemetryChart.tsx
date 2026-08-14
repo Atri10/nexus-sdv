@@ -48,14 +48,25 @@ function timeTickLabel(this: Scale, tickValue: string | number): string {
   return (crossesDay ? crossDayFormat : withinDayFormat).format(new Date(ts));
 }
 
+/**
+ * Strip a trailing 8-digit-alpha from a #RRGGBBAA color so alpha suffixes
+ * compose: series colors from FAMILY_SHADES are already #RRGGBBAA, and
+ * appending another alpha (color + '4D') produced #RRGGBBAA4D — an invalid
+ * 10-digit color that crashed addColorStop when switching a chart to 'area'.
+ */
+function baseHex(color: string): string {
+  return /^#[0-9a-fA-F]{8}$/.test(color) ? color.slice(0, 7) : color;
+}
+
 /** Vertical fade for area fills: series color at ~30% opacity fading to 0. */
 function areaFill(ctx: ScriptableContext<'line'>, color: string): string | CanvasGradient {
+  const base = baseHex(color);
   const { chart } = ctx;
-  if (!chart.chartArea) return color + '33'; // pre-layout pass: solid translucent
+  if (!chart.chartArea) return base + '33'; // pre-layout pass: solid translucent
   const { ctx: canvas, chartArea } = chart;
   const gradient = canvas.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-  gradient.addColorStop(0, color + '4D');
-  gradient.addColorStop(1, color + '00');
+  gradient.addColorStop(0, base + '4D');
+  gradient.addColorStop(1, base + '00');
   return gradient;
 }
 

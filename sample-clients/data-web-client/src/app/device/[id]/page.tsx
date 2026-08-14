@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { FadeIn } from '@/components/motion/fade-in';
 import { COMPONENT_ZONES, seriesForComponent } from '@/lib/vehicle-components';
+import { useSimulatorState } from '@/hooks/use-simulator-state';
 
 // Heavy client-only components (Google Maps, three.js, Chart.js + zoom all
 // touch browser APIs at module scope; SSR must never evaluate them).
@@ -72,9 +73,11 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
   const [mapsConfig, setMapsConfig] = useState<{ apiKey: string; mapId: string } | null>(null);
   // 'all' keeps the chart unfiltered; a zone click or chip selects a component.
   const [componentId, setComponentId] = useState<string>('all');
-  // Simulator identity: this vehicle may or may not be the running sim.
-  const [simVin, setSimVin] = useState<string | null>(null);
-  const [simRunning, setSimRunning] = useState(false);
+  // Shared simulator state — live across all pages (no stale one-shots).
+  const sim = useSimulatorState();
+  const simVin = sim.vin;
+  const simRunning = sim.running;
+  const isSim = simVin === id;
 
   const theme = useChartTheme();
   const { series, loading, error, refetch } = useTelemetryData({ vin: id, range, compareVins });
@@ -85,35 +88,6 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
       .then(setMapsConfig)
       .catch(() => { /* maps config unavailable */ });
   }, []);
-
-  // Discover the running simulator; if this vehicle IS the sim, poll its
-  // running state for the header badge.
-  useEffect(() => {
-    fetch('/api/demo/discover', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        const vin = d?.vin as string | null | undefined;
-        if (vin) setSimVin(vin);
-      })
-      .catch(() => {});
-  }, []);
-
-  const isSim = simVin === id;
-  useEffect(() => {
-    if (!isSim) return;
-    const poll = () =>
-      fetch('/api/demo/vehicle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'status', vin: id }),
-      })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((s: { running?: boolean } | null) => setSimRunning(s?.running ?? false))
-        .catch(() => setSimRunning(false));
-    poll();
-    const t = window.setInterval(poll, 5000);
-    return () => window.clearInterval(t);
-  }, [isSim, id]);
 
   const toggle = (key: string) =>
     setHidden((prev) => {
