@@ -108,7 +108,7 @@ export function RoutePanel({ progress, lap, totalM, speed }: RoutePanelProps) {
 
       {/* Lap overlay */}
       <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-md border border-border/70 bg-background/90 px-2.5 py-1.5 backdrop-blur">
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Lap
         </span>
         <span className="font-mono text-lg font-bold leading-none text-foreground">
@@ -125,14 +125,14 @@ export function RoutePanel({ progress, lap, totalM, speed }: RoutePanelProps) {
               style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }}
             />
           </div>
-          <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className="font-mono text-xs tabular-nums text-muted-foreground">
             {Math.round(progress * 100)}%
           </span>
-          <span className="font-mono text-[10px] tabular-nums text-blue-400">
+          <span className="font-mono text-xs tabular-nums text-blue-400">
             {totalM > 0 ? `${(totalM / 1000).toFixed(1)} km` : '—'}
           </span>
           {speed > 1 && (
-            <span className="rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-500">
+            <span className="rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 font-mono text-xs font-semibold text-amber-500">
               ⚡ {speed}×
             </span>
           )}

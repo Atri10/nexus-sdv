@@ -1,12 +1,11 @@
 'use client';
 import { use, useEffect, useState } from 'react';
+import nextDynamic from 'next/dynamic';
 import AppLayout from '@/components/app-layout';
 import DataTable from '@/components/data-table';
 import TimeRangeSelector from '@/components/time-range-selector';
 import type { TimeRange } from '@/types/telemetry';
 import { extractGpsPoints } from '@/lib/gps';
-import GpsTrackMap from '@/components/gps-track-map';
-import TelemetryChart from '@/components/telemetry-chart';
 import { ChartControls } from '@/components/chart-controls';
 import { LatestStats } from '@/components/latest-stats';
 import { StateView } from '@/components/state-view';
@@ -19,8 +18,39 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { FadeIn } from '@/components/motion/fade-in';
-import DeviceScene from '@/components/scene/device-scene';
 import { COMPONENT_ZONES, seriesForComponent } from '@/lib/vehicle-components';
+import { useSimulatorState } from '@/hooks/use-simulator-state';
+
+// Heavy client-only components (Google Maps, three.js, Chart.js + zoom all
+// touch browser APIs at module scope; SSR must never evaluate them).
+const GpsTrackMap = nextDynamic(() => import('@/components/gps-track-map'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[400px] w-full items-center justify-center rounded border border-border">
+      <p className="text-sm text-muted-foreground">Loading map…</p>
+    </div>
+  ),
+});
+const DeviceScene = nextDynamic(() => import('@/components/scene/device-scene'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[380px] w-full items-center justify-center">
+      <p className="text-sm text-muted-foreground">Loading scene…</p>
+    </div>
+  ),
+});
+const TelemetryChart = nextDynamic(() => import('@/components/telemetry-chart'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[400px] w-full items-center justify-center">
+      <p className="text-sm text-muted-foreground">Loading chart…</p>
+    </div>
+  ),
+});
+
+// Live vehicle detail: never statically prerender (live telemetry +
+// demo-mode session bypass must resolve at request time, not build time).
+export const dynamic = 'force-dynamic';
 
 // Concrete hex for the scene's body paint — matches the shell --primary cyan
 // (dark mode); three.js materials need a literal color, not the CSS variable.
@@ -43,6 +73,11 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
   const [mapsConfig, setMapsConfig] = useState<{ apiKey: string; mapId: string } | null>(null);
   // 'all' keeps the chart unfiltered; a zone click or chip selects a component.
   const [componentId, setComponentId] = useState<string>('all');
+  // Shared simulator state — live across all pages (no stale one-shots).
+  const sim = useSimulatorState();
+  const simVin = sim.vin;
+  const simRunning = sim.running;
+  const isSim = simVin === id;
 
   const theme = useChartTheme();
   const { series, loading, error, refetch } = useTelemetryData({ vin: id, range, compareVins });
@@ -112,7 +147,7 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
   return (
     <AppLayout>
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-semibold">Vehicle {id}</h1>
             <Badge variant={error ? 'destructive' : 'default'} className="gap-1.5">
@@ -122,8 +157,22 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
                 )}
                 <span className={`relative inline-flex h-2 w-2 rounded-full ${error ? 'bg-destructive' : loading ? 'bg-amber-400' : 'bg-emerald-400'}`} />
               </span>
-              {error ? 'Error' : loading ? 'Loading' : 'Live'}
+              {error ? 'Error' : loading ? 'Loading' : 'Data'}
             </Badge>
+            {isSim && (
+              <Badge
+                variant={simRunning ? 'default' : 'outline'}
+                className="gap-1.5 border-cyan-500/40 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400"
+              >
+                <span className={`h-2 w-2 rounded-full ${simRunning ? 'animate-pulse bg-emerald-500' : 'bg-amber-500'}`} />
+                {simRunning ? 'SIM RUNNING' : 'SIM STOPPED'}
+              </Badge>
+            )}
+            {!isSim && simVin && (
+              <span className="font-mono text-xs text-muted-foreground">
+                sim is {simVin}
+              </span>
+            )}
           </div>
           <TimeRangeSelector value={range} onChange={setRange} />
         </div>
@@ -145,12 +194,12 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
 
         {/* 3D scene: click a zone (or chip) to filter the chart by component. */}
         <FadeIn>
-          <section className="hud-panel overflow-hidden rounded-lg">
+          <section className="overflow-hidden rounded-lg border border-border/60">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
-              <h2 className="font-display text-sm font-bold tracking-[0.3em] text-cyan-700 glow-text dark:text-cyan-400">
-                VEHICLE SCENE
+              <h2 className="text-base font-semibold tracking-wide text-foreground">
+                Vehicle scene
               </h2>
-              <span className="font-mono text-[11px] tracking-wider text-muted-foreground">
+              <span className="font-mono text-xs text-muted-foreground">
                 DRAG TO ORBIT · SCROLL TO ZOOM · CLICK A ZONE TO FILTER
               </span>
             </div>
