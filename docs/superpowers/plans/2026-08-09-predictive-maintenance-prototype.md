@@ -219,7 +219,7 @@ Expected: FAIL with import error.
 """Deterministic predictive-maintenance detectors (no ML, no LLM).
 
 Thresholds are the values locked in by docs/superpowers/research/
-2026-08-05-predictive-maintenance-algorithms.md and the design spec.
+2026-08-14-pm-algorithms-implementation.md and the design spec.
 Temperature reference is India-calibrated: 30 °C (spec §3).
 """
 from dataclasses import dataclass, field

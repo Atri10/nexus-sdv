@@ -8,21 +8,52 @@ Key documents: `README.md` (pitch/quickstart), `local-dev/ARCHITECTURE.md` (auth
 
 ## Architecture & Data Flow
 
-```
-Vehicle/devices (Go/Python/ESP32 clients) + vehicle-simulator (local demo)
-  │  mTLS: factory cert → registration → operational cert → Keycloak JWT
-  ▼
-NATS (telemetry.{VIN}, telemetry-generic.{VIN}.{sensor}, pm.{VIN}.{component})
-  │  auth-callout validates Keycloak JWT ($SYS.REQ.USER.AUTH) → per-VIN NATS perms
-  ▼
-nats-bigtable-connector (Go locally, wombat/Benthos on GCP)
-  ▼
-Bigtable table `telemetry` — row key {device_id}#{RFC3339Nano}, families static/dynamic
-  ▼
-data-api (gRPC, server-streaming) → consumers: data-api-sampler (REST),
-  trip_analyzer (FastAPI scoring, republishes scoring.{VIN}),
-  predictive-maintenance (FastAPI detectors, publishes pm.{VIN}.{component}),
-  telemetry-chart-service (REST + WebSocket), data-web-client (Next.js, SSE: demo + PM)
+```mermaid
+flowchart LR
+  subgraph ING["Ingress"]
+    direction TB
+    CLI["Vehicle/devices<br/>(Go / Python / ESP32 clients)"]
+    SIM["vehicle-simulator<br/>(local demo)"]
+    MQTT["Mosquitto :1883<br/>topic telemetry/+/sensors/#"]
+    CONV["data-converter<br/>(parses to TelemetryMessage)"]
+  end
+
+  subgraph TRN["Transport"]
+    direction TB
+    NATS["NATS<br/>telemetry.{VIN}<br/>telemetry-generic.{VIN}.{sensor}<br/>pm.{VIN}.{component}"]
+    AUTH["auth-callout<br/>validates Keycloak JWT ($SYS.REQ.USER.AUTH)<br/>→ per-VIN NATS perms"]
+  end
+
+  subgraph STO["Storage"]
+    direction TB
+    CONN["nats-bigtable-connector<br/>(Go locally, wombat/Benthos on GCP)"]
+    BT["Bigtable table telemetry<br/>row key {device_id}#{RFC3339Nano}<br/>families: static / dynamic"]
+  end
+
+  subgraph SRV["Serving"]
+    direction TB
+    API["data-api<br/>(gRPC, server-streaming)"]
+    SAMPLER["data-api-sampler<br/>(REST)"]
+    TRIP["trip_analyzer<br/>(FastAPI scoring)<br/>republishes scoring.{VIN}"]
+    PM["predictive-maintenance<br/>(FastAPI detectors)<br/>publishes pm.{VIN}.{component}"]
+    CHART["telemetry-chart-service<br/>(REST + WebSocket)"]
+    WEB["data-web-client<br/>(Next.js)<br/>SSE: demo + PM"]
+  end
+
+  CLI -- "mTLS: factory cert → registration → operational cert → Keycloak JWT" --> NATS
+  SIM -- "mTLS + commands.{VIN}.demo control" --> NATS
+  MQTT -- "telemetry/+/sensors/#" --> CONV
+  CONV -- "republishes to telemetry-generic.*" --> NATS
+  NATS --> AUTH
+  AUTH -- "per-VIN NATS permissions" --> NATS
+  NATS -- "telemetry.{VIN} / telemetry-generic.{VIN}.{sensor} / pm.{VIN}.{component}" --> CONN
+  CONN -- "row key {device_id}#{RFC3339Nano}" --> BT
+  BT --> API
+  API -- "gRPC server-streaming" --> SAMPLER
+  API --> TRIP
+  API --> PM
+  API --> CHART
+  API --> WEB
 ```
 - **Ingress paths**: (1) clients publish protobuf directly to NATS — `telemetry.{VIN}` carries `MetricsReport` wrapping `com.android.sdv.telemetry.VehicleTelemetryData`, `telemetry-generic.{VIN}.{sensor}` carries `telemetry.TelemetryMessage`; (2) MQTT path: Mosquitto `:1883` topic `telemetry/+/sensors/#` → `data-converter` (parses to `TelemetryMessage`, republishes to `telemetry-generic.*`); (3) local demo: `vehicle-simulator` (the Go vehicle-client in NATS control mode) publishes both message types and is controlled over `commands.{VIN}.demo`.
 - **Auth**: 4-stage lifecycle — Registration (factory cert → operational cert via CSR signing over mTLS) → Keycloak JWT (RS256) → NATS connect token → auth-callout maps roles (`edge-device`, `telemetry-client`, `telemetry-collector`) to per-VIN NATS permissions. PKI is dual-mode: `local` (self-signed openssl CAs) vs `remote` (GCP Certificate Authority Service).

@@ -466,9 +466,14 @@ func (v *VehicleClient) groundTruth(battery batteryState, drive driveState) map[
 	if battery.deg != nil {
 		vRest, _, _ := battery.deg.BatteryAt(battery.ageDays)
 		// Wear = distance along the V_rest decline from healthy (12.63 V)
-		// to fully degraded (12.0 V); healthy VINs stay ~0.
-		wear := (12.63 - vRest) / 0.63
-		daysToFailure := (1 - battery.deg.norm(battery.ageDays)) * float64(battery.deg.HorizonDays)
+		// to fully degraded (12.0 V); healthy VINs stay ~0. Past the
+		// horizon the death collapse drives V_rest below 12.0 V, so clamp
+		// the fraction to 1.0 — a dead battery is 100 % worn, never 123 %.
+		wear := clamp((12.63-vRest)/0.63, 0, 1)
+		daysToFailure := (1 - battery.deg.norm(battery.ageDays)) * float64(battery.deg.horizonDays())
+		if battery.ageDays >= float64(battery.deg.horizonDays()) {
+			daysToFailure = 0 // death collapse: the battery is already dead
+		}
 		gt["battery"] = map[string]any{
 			"wear_fraction":   math.Round(wear*1000) / 1000,
 			"days_to_failure": int(math.Round(daysToFailure)),

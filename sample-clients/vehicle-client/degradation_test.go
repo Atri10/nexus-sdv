@@ -18,6 +18,63 @@ func TestBatteryDegradesOverHorizon(t *testing.T) {
 	}
 }
 
+// TestBatteryDeathCollapse: past the horizon a degrading/critical battery
+// falls off the plateau — V_rest dives below 11.5 V and internal resistance
+// spikes — while a healthy battery holds the plateau forever.
+func TestBatteryDeathCollapse(t *testing.T) {
+	deg := &DegradationConfig{Component: "battery", Preset: "degrading", HorizonDays: 120}
+	_, endR, _ := deg.BatteryAt(120)
+	vAtHorizon, _, _ := deg.BatteryAt(120)
+	vDead, _, rDead := deg.BatteryAt(140) // 20 days past horizon
+	if vDead > vAtHorizon {
+		t.Fatalf("death collapse did not drop V_rest: %v → %v", vAtHorizon, vDead)
+	}
+	if vDead > 11.5 {
+		t.Fatalf("dead battery still above 11.5 V: %v", vDead)
+	}
+	if rDead <= endR {
+		t.Fatalf("death collapse did not raise R_int: %v → %v", endR, rDead)
+	}
+	if rDead > 40 {
+		t.Fatalf("R_int implausible: %v mΩ", rDead)
+	}
+	healthy := &DegradationConfig{Component: "battery", Preset: "healthy", HorizonDays: 120}
+	vH0, _, _ := healthy.BatteryAt(0)
+	vH200, _, _ := healthy.BatteryAt(200)
+	if math.Abs(vH0-vH200) > 0.05 {
+		t.Fatalf("healthy battery drifted into death: %v → %v", vH0, vH200)
+	}
+}
+
+// TestTireDeathCascade: the tire leaks slowly, then — past the 1.9 bar flex
+// threshold — the leak accelerates, and past the 1.2 bar structural floor the
+// pressure collapses toward the ~1.0 bar flat asymptote. Healthy stays 2.3.
+func TestTireDeathCascade(t *testing.T) {
+	deg := &DegradationConfig{Component: "tires", Preset: "degrading", HorizonDays: 120}
+	// The slow-leak phase alone (0.2 bar/month) would reach ~1.5 bar at the
+	// horizon; the cascade must go well below that.
+	pHorizon := deg.TirePressureAt(120)
+	pLate := deg.TirePressureAt(240) // 2× the horizon — long past collapse
+	if pHorizon >= 1.9 {
+		t.Fatalf("tire not leaking at horizon: %.2f bar", pHorizon)
+	}
+	if pLate > 1.1 {
+		t.Fatalf("tire not flat: %.2f bar at 2× horizon", pLate)
+	}
+	if pLate <= 0.6 {
+		t.Fatalf("tire implausibly below the flat asymptote: %.2f bar", pLate)
+	}
+	// Flex heat: an underinflated tire runs hot (above the 28 °C mean).
+	if deg.TireTempAt(200) < 30 {
+		t.Fatalf("flat tire not running hot: %.1f °C", deg.TireTempAt(200))
+	}
+	// The healthy preset publishes nothing — must stay at 2.3 bar even late.
+	healthy := &DegradationConfig{Component: "tires", Preset: "healthy", HorizonDays: 120}
+	if p := healthy.TirePressureAt(400); math.Abs(p-2.3) > 0.01 {
+		t.Fatalf("healthy tire drifted: %.2f bar", p)
+	}
+}
+
 func TestHealthyBatteryStable(t *testing.T) {
 	d := &DegradationConfig{Component: "battery", Preset: "healthy", HorizonDays: 120}
 	_, v, _ := d.BatteryAt(0)
