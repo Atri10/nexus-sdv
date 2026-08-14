@@ -9,12 +9,21 @@ const VIN_POOL = (process.env.VIN_POOL ?? '')
 
 /**
  * Find the running simulator's VIN by probing the pool over NATS (server-side
- * only — the nats client must never enter the browser bundle).
+ * only — the nats client must never enter the browser bundle). Returns the
+ * VIN and its running state so consumers (fleet/device badges) never show a
+ * stale one-shot.
  */
 export async function GET() {
   try {
     const vin = await discoverSimulator(VIN_POOL);
-    return NextResponse.json({ vin });
+    if (!vin) return NextResponse.json({ vin: null, running: false });
+    // Confirm liveness + running state with a status round-trip.
+    const { demoControl } = await import('@/lib/demo-control');
+    const reply = await demoControl('status', vin).catch(() => null);
+    return NextResponse.json({
+      vin,
+      running: reply?.running === true,
+    });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : 'simulator discovery failed' },

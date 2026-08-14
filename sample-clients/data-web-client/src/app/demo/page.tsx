@@ -6,6 +6,7 @@ import TimeRangeSelector from '@/components/time-range-selector';
 import { LatestStats } from '@/components/latest-stats';
 import { useTelemetryData } from '@/hooks/use-telemetry-data';
 import { useChartTheme } from '@/hooks/use-chart-theme';
+import { useSimulatorState } from '@/hooks/use-simulator-state';
 import { qualifierOf, stableComponents, unitForSignal } from '@/lib/telemetry-discovery';
 import { DataPath } from '@/components/demo/data-path';
 import { ComponentPanel } from '@/components/demo/component-panel';
@@ -39,134 +40,58 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
   const [componentId, setComponentId] = useState<string>('battery');
   const [range, setRange] = useState<TimeRange>('1h');
   const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const [status, setStatus] = useState<DemoStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [simulatorVin, setSimulatorVin] = useState<string | null>(null);
   const [components, setComponents] = useState<ComponentStatus[] | null>(null);
   const userPicked = useRef(false);
+  // Shared simulator state — one poll loop, every page agrees.
+  const simState = useSimulatorState();
+  const simulatorVin = simState.vin;
+  const status: DemoStatus | null = simState.sim
+    ? { running: simState.sim.running, published: simState.sim.published }
+    : null;
 
   const theme = useChartTheme();
   const { series } = useTelemetryData({ vin, range });
 
+  // Follow the discovered sim for the default vehicle (user pick wins).
+  useEffect(() => {
+    if (simulatorVin && !userPicked.current) setVin(simulatorVin);
+  }, [simulatorVin]);
+
   // No ?vin= given: randomize the default vehicle client-side (after the
   // deterministic first paint so SSR and hydration agree).
+  // Component registry comes from the shared status reply.
   useEffect(() => {
-    if (urlVin) return;
-    const t = window.setTimeout(() => setVin((prev) => randomVin(prev)), 0);
-    return () => window.clearTimeout(t);
-  }, [urlVin]);
-
-  // Find the running simulator (its entrypoint randomizes the VIN) so the
-  // Start button targets it on first press. Discovery runs server-side (the
-  // nats client must not enter the browser bundle). Set state only in .then
-  // callbacks (lint: react-hooks/set-state-in-effect); never clobber a manual
-  // pick.
-  useEffect(() => {
-    let ignore = false;
-    fetch('/api/demo/discover', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : Promise.resolve(null)))
-      .then((data: { vin?: string | null } | null) => {
-        if (ignore || !data?.vin) return;
-        setSimulatorVin(data.vin);
-        if (!userPicked.current) setVin(data.vin);
-      })
-      .catch(() => {});
-    return () => {
-      ignore = true;
-    };
-  }, []);
-
-  // Initial status check + refresh whenever the simulator changes, plus a
-  // light poll so component toggles made elsewhere (or a simulator restart)
-  // are reflected without reloading. Components come from the status reply —
-  // the dashboard's discovery endpoint. The poll targets the DISCOVERED sim
-  // VIN (not the user's selection): the running state and component registry
-  // belong to the simulator, while the selected VIN's telemetry comes from
-  // the data pipeline regardless.
-  const refreshStatus = useCallback(() => {
-    let ignore = false;
-    const target = simulatorVin ?? vin;
-    fetch('/api/demo/vehicle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'status', vin: target }),
-    })
-      .then((res) => res.json().catch(() => null))
-      .then((reply: (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null) => {
-        if (ignore) return;
-        const ok = reply && !reply.error;
-        setStatus(ok ? { running: reply.running, published: reply.published } : null);
-        setComponents(ok && reply.components ? stableComponents(reply.components) : null);
-        // The simulator re-randomizes its VIN on container restarts — when
-        // the current target goes silent, re-discover so the panel recovers
-        // without a reload.
-        if (!ok) {
-          fetch('/api/demo/discover', { cache: 'no-store' })
-            .then((res) => (res.ok ? res.json() : Promise.resolve(null)))
-            .then((data: { vin?: string | null } | null) => {
-              if (ignore || !data?.vin) return;
-              setSimulatorVin(data.vin);
-              if (!userPicked.current) setVin(data.vin);
-            })
-            .catch(() => {});
-        }
-      })
-      .catch(() => {
-        if (!ignore) {
-          setStatus(null);
-          setComponents(null);
-        }
-      });
-    return () => {
-      ignore = true;
-    };
-  }, [vin, simulatorVin]);
-
-  useEffect(() => {
-    const interval = window.setInterval(refreshStatus, 5000);
-    return () => window.clearInterval(interval);
-  }, [refreshStatus]);
+    setComponents(
+      simState.sim?.components ? stableComponents(simState.sim.components) : null
+    );
+  }, [simState.sim]);
 
   const runAction = useCallback(
     async (action: 'start' | 'stop') => {
       setBusy(true);
       try {
-        // Command the live simulator, not the selected vehicle: the pool
-        // picker offers VINs without a simulator, and the simulator
-        // re-randomizes its VIN on container restart, so (re)discover before
-        // every start/stop. The user's vehicle selection is NEVER changed by
-        // Start/Stop — telemetry display and simulator control are decoupled.
-        const res = await fetch('/api/demo/discover', { cache: 'no-store' });
-        const data = (await res.json().catch(() => null)) as { vin?: string | null } | null;
-        const target = data?.vin ?? null;
+        // Command the live simulator via the shared hook — the user's
+        // vehicle selection is NEVER changed by Start/Stop (telemetry
+        // display and simulator control are decoupled).
+        const target = simState.vin;
         if (!target) {
           toast.error('No simulator detected — is the local stack running? Try `make demo` in local-dev/.');
-          setStatus(null);
           return;
         }
-        setSimulatorVin(target);
-        const ctl = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, vin: target }),
-        });
-        const reply = (await ctl.json().catch(() => null)) as (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null;
-        if (!ctl.ok || !reply || reply.error) {
-          toast.error(reply?.error ?? `HTTP ${ctl.status}`);
-          setStatus(null);
-          setComponents(null);
+        const reply = await simState.command(action);
+        if (!reply || reply.error) {
+          toast.error(reply?.error ?? `Simulator did not respond`);
           return;
         }
-        setStatus({ running: reply.running, published: reply.published });
         setComponents(reply.components ? stableComponents(reply.components) : null);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to reach demo control');
-        setStatus(null);
       } finally {
         setBusy(false);
       }
     },
-    []
+    [simState]
   );
 
   const component = components?.find((c) => c.id === componentId) ?? null;
@@ -178,17 +103,11 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     async (componentId: string, enable: boolean) => {
       setBusy(true);
       try {
-        const res = await fetch('/api/demo/vehicle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: enable ? 'start' : 'stop', component: componentId, vin }),
-        });
-        const reply = (await res.json().catch(() => null)) as (DemoStatus & { error?: string; components?: ComponentStatus[] }) | null;
-        if (!res.ok || !reply || reply.error) {
-          toast.error(reply?.error ?? `HTTP ${res.status}`);
+        const reply = await simState.command(enable ? 'start' : 'stop', undefined, componentId);
+        if (!reply || reply.error) {
+          toast.error(reply?.error ?? 'Simulator did not respond');
           return;
         }
-        setStatus({ running: reply.running, published: reply.published });
         if (reply.components) setComponents(stableComponents(reply.components));
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to toggle component');
@@ -196,7 +115,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
         setBusy(false);
       }
     },
-    [vin]
+    [simState]
   );
   const componentSeries = useMemo(
     () =>

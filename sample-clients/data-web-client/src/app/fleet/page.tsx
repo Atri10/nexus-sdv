@@ -12,6 +12,7 @@ import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import FleetScene from '@/components/scene/fleet-scene';
 import type { FleetVehicle } from '@/components/scene/fleet-scene';
 import type { DevicesResponse, DeviceRow } from '@/types/telemetry';
+import { useSimulatorState } from '@/hooks/use-simulator-state';
 
 // Live fleet board: never statically prerender (live data + demo-mode
 // session bypass must resolve at request time, not build time).
@@ -68,19 +69,10 @@ export default function FleetPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedVin, setSelectedVin] = useState<string | null>(null);
-  // The running simulator's VIN — shown as a badge so the fleet→demo story
-  // is clear (only ONE VIN has a live simulator at a time).
-  const [simVin, setSimVin] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch('/api/demo/discover', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        const vin = d?.vin as string | null | undefined;
-        if (vin) setSimVin(vin);
-      })
-      .catch(() => {});
-  }, []);
+  // Shared simulator state — live across all pages (no stale one-shots).
+  const sim = useSimulatorState();
+  const simVin = sim.vin;
+  const simRunning = sim.running;
 
   // State is only set in async callbacks (fetch resolution), never
   // synchronously in the effect body — react-hooks/set-state-in-effect.
@@ -130,7 +122,9 @@ export default function FleetPage() {
   const tableData = devices.map((d) => ({
     deviceId: d.deviceId,
     lastSeen: formatLastSeen(d.lastSeen),
-    ...(d.deviceId === simVin ? { simulator: '● SIM' } : {}),
+    ...(d.deviceId === simVin
+      ? { simulator: simRunning ? '● RUNNING' : '○ STOPPED' }
+      : {}),
     ...d.columns,
   }));
 
@@ -154,8 +148,15 @@ export default function FleetPage() {
                     LIVE <span className="text-emerald-500">{liveVins.size}</span>
                   </span>
                   {simVin && (
-                    <span className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-cyan-600 dark:text-cyan-400">
+                    <span
+                      className={`rounded border px-2 py-1 font-mono ${
+                        simRunning
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600'
+                          : 'border-amber-500/40 bg-amber-500/10 text-amber-600'
+                      }`}
+                    >
                       SIMULATOR <span className="font-semibold">{simVin}</span>
+                      <span className="ml-1">{simRunning ? '● RUNNING' : '○ STOPPED'}</span>
                     </span>
                   )}
                   <span className="rounded border border-border/70 bg-card/50 px-2 py-1 text-muted-foreground">
