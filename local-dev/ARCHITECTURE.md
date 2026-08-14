@@ -50,24 +50,40 @@ the host wrapper `make vehicle-client` remains a manual publish path into
 ### Control flow (demo mode)
 
 The `vehicle-simulator` compose service comes up with the stack but stays
-**idle**: its entrypoint mints a factory cert for a random pool VIN
-(`VIN1001`–`VIN1010`), registers, obtains the per-VIN Keycloak JWT, and
-subscribes to `commands.<VIN>.demo` — publishing nothing until commanded.
-The web frontend's `/demo` page drives it through the web control route
-`POST /api/demo/vehicle` (`{action: start|stop|status, vin}`), which publishes
-a NATS request on `commands.<VIN>.demo` using the connector account (the
-generated `config/nats.conf` grants it `commands.>` publish). The simulator
-replies with its running state and published counter; `start` begins the
-publish ticker (TelemetryMessage on `telemetry-generic.<VIN>.battery`,
-MetricsReport on `telemetry.<VIN>`), `stop`
-pauses it while keeping the NATS connection. Every message lands in Bigtable
-via the connector, which persists `dynamic:*` and `static:*` readings — the
-connector now also writes `dynamic:STEERING_ANGLE_DEG`, `dynamic:ACCELERATOR_PEDAL_PCT`
-and `dynamic:BRAKE_PEDAL_PCT` — so the /demo schematic and chart render live
-values. The web frontend renders the Command Deck HUD theme with lazy-loaded
-three.js scenes (fleet map, vehicle zones, demo pipeline) that fall back to
-static SVG content (demo), a notice plus the table (fleet), or the underlying
-charts/tables (device) without WebGL, and honor `prefers-reduced-motion`.
+**idle** until commanded over NATS:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant SIM as vehicle-simulator
+  participant REG as Registration + Keycloak
+  participant NATS as NATS
+  participant CONN as nats-bigtable-connector
+  participant BT as Bigtable
+  participant WEB as web frontend /demo
+
+  SIM->>REG: factory cert for random pool VIN (VIN1001–VIN1010) + register
+  REG-->>SIM: operational cert + per-VIN Keycloak JWT
+  SIM->>NATS: "subscribe commands.{VIN}.demo (idle, publishes nothing)"
+  WEB->>NATS: "POST /api/demo/vehicle {action: start|stop|status, vin}"
+  NATS->>SIM: "commands.{VIN}.demo request (connector account, commands.> perms)"
+  SIM-->>WEB: reply {running, published}
+  loop publish ticker (start)
+    SIM->>NATS: "telemetry-generic.{VIN}.battery (TelemetryMessage)<br/>telemetry.{VIN} (MetricsReport)"
+    NATS->>CONN: "telemetry.> / telemetry-generic.>"
+    CONN->>BT: "rows dynamic:* + static:*<br/>(incl. STEERING_ANGLE_DEG, ACCELERATOR_PEDAL_PCT, BRAKE_PEDAL_PCT)"
+  end
+```
+
+Notes:
+- `stop` pauses the ticker while keeping the NATS connection alive.
+- The connector persists the dynamics so the /demo schematic and charts render
+  live values.
+- The web frontend renders the Command Deck HUD theme with lazy-loaded
+  three.js scenes (fleet map, vehicle zones, demo pipeline) that fall back to
+  static SVG content (demo), a notice plus the table (fleet), or the
+  underlying charts/tables (device) without WebGL, and honor
+  `prefers-reduced-motion`.
 
 ### Query path
 
@@ -78,7 +94,7 @@ sequenceDiagram
   participant BT as Bigtable
 
   C->>API: gRPC GetTelemetry
-  API->>BT: key range scan &lt;VIN&gt;#&lt;start&gt; .. &lt;VIN&gt;#&lt;end&gt;
+  API->>BT: "key range scan: VIN#start to VIN#end"
   BT-->>API: matching rows
   API-->>C: telemetry rows
 ```
@@ -92,7 +108,7 @@ flowchart LR
   OC -->|"client-secret auth<br/>(per-VIN client, e.g. VIN123)"| KC["Keycloak :8080"]
   KC --> JWT["JWT (RS256)"]
   JWT --> N["NATS"]
-  N --> AC["Auth Callout verifies JWT `kid`<br/>against its JWKS snapshot"]
+  N --> AC["Auth Callout verifies JWT kid<br/>against its JWKS snapshot"]
   AC -->|"maps realm roles → per-VIN NATS permissions"| PERM["telemetry.&lt;VIN&gt;.>, commands.&lt;VIN&gt;.>"]
 ```
 
@@ -155,17 +171,37 @@ snapshot stays valid (see README §Known gaps & gotchas).
 
 ## Service Deployment Model
 
+```mermaid
+flowchart TB
+  subgraph NET["Single Docker network: nexus-local"]
+    subgraph INFRA["Infrastructure (docker-compose.infra.yml)"]
+      NATS["NATS :4222"]
+      KC["Keycloak :8088"]
+      BT["Bigtable Emulator :8086"]
+      MQTT["Mosquitto :1883"]
+    end
+    subgraph APP["Application (docker-compose.yml)"]
+      API["Data API :9090 (gRPC)"]
+      AUTH["Auth Callout"]
+      CONV["Data Converter"]
+      REG["Registration :8444"]
+      CONN["nats-bigtable-connector"]
+      CHART["chart service :8081"]
+      WEB["web frontend :3000"]
+      SAMPLER["data-api-sampler"]
+      TRIP["trip-analyzer"]
+      SIM["vehicle-simulator<br/>(idle until commanded)"]
+    end
+  end
+  VOL[(Volumes: keycloak-data, mosquitto-data)]
+  INFRA -.-> VOL
+  APP -.-> INFRA
 ```
-Single Docker network (nexus-local)
-   Infrastructure (docker-compose.infra.yml)   Application (docker-compose.yml)
-   • NATS, Keycloak, Bigtable, Mosquitto       • Data API, Auth Callout, Data Converter,
-                                                 Registration, nats-bigtable-connector,
-                                                 chart service, web frontend,
-                                                 data-api-sampler, trip-analyzer,
-                                                 vehicle-simulator (idle until commanded)
-   Volumes: keycloak-data, mosquitto-data
-   PKI: generated certs in certs/ (gitignored), JWKS snapshot at setup
-```
+
+The network carries all inter-service traffic; infra comes up first
+(`docker-compose.infra.yml` creates `nexus-local` and labels it), and the app
+compose declares it `external: true`. PKI: generated certs in `certs/`
+(gitignored); a JWKS snapshot is taken at setup and injected into auth-callout.
 
 Key decisions:
 
