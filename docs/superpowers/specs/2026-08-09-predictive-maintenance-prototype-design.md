@@ -22,27 +22,20 @@ Purpose: Turn the predictive-maintenance research (2026-08-03 feasibility, 2026-
 
 ## 2. Architecture & data flow
 
-```
-vehicle-simulator (Go, upgraded)
-  · battery: degradation curves (V_rest↓, R_int↑), PyBaMM-informed shapes
-  · brake: wear accumulator from driving behavior
-  · tires: TIRE_TEMP + real pressure with per-VIN leak rate
-  · trip data: velocity/GPS/brake patterns per VIN
-        │  NATS: telemetry-generic.{VIN}.battery, telemetry.{VIN}, commands.{VIN}.demo
-        ▼
-nats-bigtable-connector → Bigtable telemetry (existing)
-        │  data-api (gRPC) / telemetry-chart-service (REST) — existing
-        ▼
-predictive-maintenance (NEW Python service, mirrors trip_analyzer)
-  · polls data-api per VIN (battery/brake/tire signals)
-  · runs M1/M2 battery, brake-energy, temp-compensated tire detectors
-  · publishes pm.{VIN}.{component} alerts on NATS (deterministic)
-        │  NATS: pm.{VIN}.battery|brake|tires
-        ▼
-data-web-client (extended)
-  · /demo: health gauges + alert chips + ticker on the live pipeline
-  · /pm (NEW): fleet health matrix, alert feed, drill-down w/ math
-  · SSE: /api/pm/stream (mirrors /api/scoring/stream)
+```mermaid
+flowchart LR
+  subgraph Sim["vehicle-simulator (Go, upgraded)"]
+    BATT["battery: degradation curves<br/>V_rest↓ · R_int↑ (PyBaMM-informed)"]
+    BRAKE["brake: wear accumulator<br/>from driving behavior"]
+    TIRE["tires: TIRE_TEMP + real pressure<br/>per-VIN leak rate"]
+    TRIP["trip data: velocity/GPS/brake<br/>patterns per VIN"]
+  end
+  Sim -->|"telemetry-generic.{VIN}.battery<br/>telemetry.{VIN} · commands.{VIN}.demo"| CONN["nats-bigtable-connector →<br/>Bigtable telemetry (existing)"]
+  CONN -->|"data-api (gRPC) /<br/>telemetry-chart-service (REST)"| PM["predictive-maintenance<br/>(NEW Python service)"]
+  PM -->|"pm.{VIN}.battery|brake|tires"| WEB["data-web-client (extended)"]
+  WEB --> D1["/demo: health gauges +<br/>alert chips + ticker"]
+  WEB --> D2["/pm (NEW): fleet health matrix,<br/>alert feed, drill-down w/ math"]
+  WEB --> D3["SSE: /api/pm/stream<br/>(mirrors /api/scoring/stream)"]
 ```
 
 Key decisions:

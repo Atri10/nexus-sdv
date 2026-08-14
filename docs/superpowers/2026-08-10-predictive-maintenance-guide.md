@@ -17,19 +17,26 @@ It watches each monitored VIN's slow signals (12 V battery, brake wear, tire
 pressure), runs **deterministic** detectors (no ML, no LLM), and publishes
 `pm.{VIN}.{component}` alerts on NATS that the web dashboard renders.
 
+```mermaid
+flowchart LR
+  subgraph Vehicle["vehicle-simulator"]
+    SIM["degradation curves<br/>battery · tires · brake energy"]
+  end
+  SIM -->|"telemetry.{VIN} / telemetry-generic.{VIN}.{sensor}"| NATS[(NATS)]
+  NATS --> CONN["nats-bigtable-connector"]
+  CONN --> BT[("Bigtable<br/>telemetry")]
+  BT --> API["data-api gRPC"]
+  API -->|"poll 30-day window"| PM["predictive-maintenance"]
+  PM --> DET["detectors<br/>battery M1/M2 · brake energy · tire pressure"]
+  DET -->|"pm.{VIN}.{component}"| NATS
+  NATS -->|"SSE /api/pm/stream"| WEB["web client<br/>/demo gauges + ticker · /pm console"]
+  SIM -.->|"commands.{VIN}.demo<br/>start/stop/speed/reset"| CTL["control"]
+  CTL -.-> SIM
 ```
-vehicle-simulator ──► NATS ──► Bigtable ──► data-api
-                                              │ (gRPC poll)
-                                              ▼
-                              predictive-maintenance service
-                              · battery M1/M2, brake energy, tire pressure
-                              · publishes pm.{VIN}.{component} on change
-                                              │ (NATS pm.>)
-                                              ▼
-                              web client (/api/pm/stream SSE)
-                              · /demo gauges + chips + ticker
-                              · /pm fleet matrix, alert feed, drill-down
-```
+
+End-to-end detail (control channel, ground-truth side channel, evaluator
+input) is diagrammed in `research/2026-08-14-pm-algorithms-implementation.md`
+§8.7.
 
 Everything in this guide runs in the local docker-compose stack — no GCP
 needed. Target market context (India calibration) is in the research docs.
@@ -87,9 +94,10 @@ vehicle's physical zones).
   not every poll. **Healthy VINs publish nothing**.
 - **No LLM**: the `explanation` is a deterministic template from the
   evidence. This keeps alerts auditable and the demo key-free.
-- All thresholds live in `core/detectors.py` as constants; the research docs
-  (`docs/superpowers/research/2026-08-05-predictive-maintenance-algorithms.md`,
-  `...-explained.md`) derive them.
+- All thresholds live in `core/detectors.py` as constants; the code→math
+  reference (`docs/superpowers/research/2026-08-14-pm-algorithms-implementation.md`)
+  and the first-principles companions (`2026-08-14-pm-algorithms-{battery,brake,tires}-first-principles.md`)
+  derive them.
 
 ## 5. Configuration
 
@@ -246,10 +254,10 @@ path:
 
 - Design spec: `docs/superpowers/specs/2026-08-09-predictive-maintenance-prototype-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-08-09-predictive-maintenance-prototype.md`
-- Research: `docs/superpowers/research/2026-08-03-predictive-maintenance-feasibility.md`,
-  `2026-08-05-predictive-maintenance-algorithms.md`,
-  `2026-08-05-predictive-maintenance-explained.md`,
-  `2026-08-09-battery-open-algorithms.md`,
-  `2026-08-14-pm-algorithms-implementation.md` (code→math map, e2e flow, fast demo, reset/clear semantics)
+- Research: `docs/superpowers/research/2026-08-14-pm-algorithms-implementation.md`
+  (code→math map, e2e flow, fast demo, reset/clear semantics),
+  `docs/superpowers/research/2026-08-14-pm-algorithms-battery-first-principles.md`,
+  `docs/superpowers/research/2026-08-14-pm-algorithms-brake-first-principles.md`,
+  `docs/superpowers/research/2026-08-14-pm-algorithms-tires-first-principles.md`
 - Service: `sample-services/predictive-maintenance/README.md` (+ `example.env`)
 - Local dev operator guide: `local-dev/README.md` (§9 Predictive-maintenance demo)

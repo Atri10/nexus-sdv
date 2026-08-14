@@ -45,18 +45,29 @@ The chart system provides real-time and historical telemetry visualization for v
 - **`useChartTheme()`** (`src/hooks/use-chart-theme.ts`) — Resolves Chart.js colors from `next-themes` (light/dark)
 
 ## Data Flow
-```
-Device Page
-  └─ useTelemetryData({ vin, range, compareVins })
-       ├─ Historical: GET /api/telemetry/[vin]?start&end
-       ├─ Live WS:    ws://host:8081/api/v1/vehicles/{vin}/telemetry/live
-       └─ compareVins: historical only (GET per VIN)
-            ↓
-       series: ChartSeries[]
-            ↓
-       ChartControls (type, hidden, axisMode, compare) ───→ TelemetryChart
-       StateView (loading/empty/error/ready)              ↓
-                                                          TelemetryChart
+```mermaid
+flowchart TD
+    DevicePage["Device Page"]
+    Hook["useTelemetryData({ vin, range, compareVins })"]
+    Historical["Historical: GET /api/telemetry/[vin]?start&end"]
+    Live["Live WS: ws://host:8081/api/v1/vehicles/{vin}/telemetry/live"]
+    Compare["compareVins: historical only (GET per VIN)"]
+    Series["series: ChartSeries[]"]
+    Controls["ChartControls (type, hidden, axisMode, compare)"]
+    State["StateView (loading/empty/error/ready)"]
+    Chart["TelemetryChart"]
+
+    DevicePage --> Hook
+    Hook --> Historical
+    Hook --> Live
+    Hook --> Compare
+    Historical --> Series
+    Live --> Series
+    Compare --> Series
+    Series --> Controls
+    Series --> State
+    Controls --> Chart
+    State --> Chart
 ```
 
 ## Adding a New Telemetry Column
