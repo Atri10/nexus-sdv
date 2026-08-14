@@ -17,19 +17,26 @@ It watches each monitored VIN's slow signals (12 V battery, brake wear, tire
 pressure), runs **deterministic** detectors (no ML, no LLM), and publishes
 `pm.{VIN}.{component}` alerts on NATS that the web dashboard renders.
 
+```mermaid
+flowchart LR
+  subgraph Vehicle["vehicle-simulator"]
+    SIM["degradation curves<br/>battery · tires · brake energy"]
+  end
+  SIM -->|"telemetry.{VIN} / telemetry-generic.{VIN}.{sensor}"| NATS[(NATS)]
+  NATS --> CONN["nats-bigtable-connector"]
+  CONN --> BT[("Bigtable<br/>telemetry")]
+  BT --> API["data-api gRPC"]
+  API -->|"poll 30-day window"| PM["predictive-maintenance"]
+  PM --> DET["detectors<br/>battery M1/M2 · brake energy · tire pressure"]
+  DET -->|"pm.{VIN}.{component}"| NATS
+  NATS -->|"SSE /api/pm/stream"| WEB["web client<br/>/demo gauges + ticker · /pm console"]
+  SIM -.->|"commands.{VIN}.demo<br/>start/stop/speed/reset"| CTL["control"]
+  CTL -.-> SIM
 ```
-vehicle-simulator ──► NATS ──► Bigtable ──► data-api
-                                              │ (gRPC poll)
-                                              ▼
-                              predictive-maintenance service
-                              · battery M1/M2, brake energy, tire pressure
-                              · publishes pm.{VIN}.{component} on change
-                                              │ (NATS pm.>)
-                                              ▼
-                              web client (/api/pm/stream SSE)
-                              · /demo gauges + chips + ticker
-                              · /pm fleet matrix, alert feed, drill-down
-```
+
+End-to-end detail (control channel, ground-truth side channel, evaluator
+input) is diagrammed in `research/2026-08-14-pm-algorithms-implementation.md`
+§8.7.
 
 Everything in this guide runs in the local docker-compose stack — no GCP
 needed. Target market context (India calibration) is in the research docs.
@@ -49,29 +56,30 @@ is idempotent — re-running it is a no-op when everything is already up.
 
 ## 3. What you see
 
-### /pm — fleet health page
+### /pm — single-vehicle live console
 
-- **Overview cards** — per-component (battery / brake / tires) counts by
-  severity band, from the live `pm.*` NATS stream.
-- **Validation card** — precision / recall / mean lead time from the last
-  offline evaluator run. Shows placeholder values until a soak is scored
-  (section 8).
-- **Fleet health matrix** — latest health score per VIN × component; click a
-  cell to drill down.
-- **Alert feed** — newest-first detector alerts (capped at 50), each with the
-  computed evidence (ewma voltage, slope, threshold…) and a plain-language
-  explanation.
-- **Drill-down** — 7-day degradation trend, the detector math from the
-  alert's evidence, and predicted-vs-actual against the simulator's live
-  ground truth (labeled; where the simulator models no ground truth for a
-  component it says so rather than inventing a number).
+- **Vehicle picker** — choose any VIN (defaults to the discovered simulator);
+  the console shows that vehicle's live KPIs (speed, battery voltage/health,
+  brake wear, tire pressure), the route panel (lap × progress on the demo
+  loop), and the component badges.
+- **Demo speed** — 1×/5×/20× toggle (fast-forward the degradation story).
+- **Start/Stop/Reset demo** — explicit simulator control. **Reset demo**
+  restores the vehicle to healthy *and clears the accumulated alert feed*
+  (see §8 for what each clears).
+- **Live charts** — a 10-minute rolling window of health, voltage, brake wear
+  and tire pressure, so the death arc (§5) is visible as it happens.
+- **PM events** — newest-first alert feed with severity, component and the
+  detector's plain-language explanation. A **Clear alerts** button wipes the
+  feed (in-memory + sessionStorage); new alerts re-appear only when a
+  component actually crosses a severity band again.
 
 ### /demo — live pipeline
 
-The existing demo page gains per-component **health gauges**, **alert chips**
-on the vehicle schematic (pulsing when a component is alerting), and a
-**PM ALERTS ticker**. Only `battery` maps to a schematic node; brake/tires
-alerts live on /pm (the demo schematic shows the vehicle's physical zones).
+The demo page gains per-component **health gauges**, **alert chips** on the
+vehicle schematic (pulsing when a component is alerting), and a **PM ALERTS
+ticker** with its own **Clear alerts** button. Only `battery` maps to a
+schematic node; brake/tires alerts live on /pm (the demo schematic shows the
+vehicle's physical zones).
 
 ## 4. How detection works (the math)
 
@@ -86,9 +94,10 @@ alerts live on /pm (the demo schematic shows the vehicle's physical zones).
   not every poll. **Healthy VINs publish nothing**.
 - **No LLM**: the `explanation` is a deterministic template from the
   evidence. This keeps alerts auditable and the demo key-free.
-- All thresholds live in `core/detectors.py` as constants; the research docs
-  (`docs/superpowers/research/2026-08-05-predictive-maintenance-algorithms.md`,
-  `...-explained.md`) derive them.
+- All thresholds live in `core/detectors.py` as constants; the code→math
+  reference (`docs/superpowers/research/2026-08-14-pm-algorithms-implementation.md`)
+  and the first-principles companions (`2026-08-14-pm-algorithms-{battery,brake,tires}-first-principles.md`)
+  derive them.
 
 ## 5. Configuration
 
@@ -115,12 +124,29 @@ VIN, controlled by the `degradation` control action or the
 - `critical` — full decline to 12.0 V / 15.3 mΩ, deterministic alerts.
 - `demo` (default) — pool's first VIN critical, rest mixed.
 
-**Timing note**: aging is exactly real-time (1 sim day per 24 h wall at 2 s
-ticks). A `critical` battery reaches the 12.0 V failure floor after ~60 wall
-days; the first advisory appears once the detector has ~5+ resting samples (a
-few minutes). For a deterministic alert on every VIN, run with
-`DEGRADATION_PRESET=critical`. To demo a failure arc in a session, you need an
-accelerated soak (see section 8).
+**The death arc** (degrading/critical only): a real component doesn't stop at
+the horizon — it dies. Past its horizon the battery enters a death collapse
+(V_rest dives 12.0 → ~10.5 V, internal resistance spikes to ~30 mΩ — the
+car won't start), and the tire goes flat in three phases (slow puncture →
+flex-heated self-accelerating leak → structural collapse to ~1.0 bar, running
+up to +14 °C hot). So a long demo ends with every component permanently
+critical — "vehicle is scrap" — and **Reset demo** is the way back.
+
+### Fast demo (speed multiplier)
+
+The 1×/5×/20× toggle on /demo and /pm sends a `speed` control action. It
+accelerates **time** for everything that integrates over time (battery age,
+route distance/laps, brake energy), while every *instant* published value
+(velocity, voltages, pressures) stays at normal 1× scale — so charts and
+detector math never see a ×N artifact. `DEGRADATION_ACCEL` (compose env) is a
+second multiplier; the demo stack sets it so the whole advisory → action →
+death arc fits in a 1–3 minute showcase.
+
+**Timing note**: aging is `dt · speed · DEGRADATION_ACCEL` per tick. At 1×
+with accel 1 a `critical` battery reaches 12.0 V after ~60 wall days; at 20×
+with the demo stack's accel the same arc takes minutes. The backfill seeds
+~30 days of history at startup (`BACKFILL_DAYS`), so the slope rules fire
+within a minute of live time.
 
 ## 6. Data flow & subjects
 
@@ -221,14 +247,17 @@ path:
 | Validation card placeholder | By design until section 8's soak is scored |
 | Battery alerts look wrong in summer/winter | Temperature compensation assumes the 30 °C reference (India calibration); if your fleet's temps are far from it, check `BATTERY_V_REF`/`BATTERY_BETA` |
 | `make proto` after adding a proto package | The relocation path assumes the `pm` package; extend the Makefile move for new packages |
+| Alerts still on screen after Reset demo | Reset clears simulator state; the feed clear is separate — use **Clear alerts** (or Reset demo on /pm, which does both). Stale alerts pre-date the reset and don't mean the vehicle is still failing |
+| Alert feed stays empty after Clear alerts | Expected: the detector publishes on severity change/band crossing — a healthy vehicle publishes nothing, so the feed stays empty until a component re-crosses a band |
 
 ## 11. Source docs
 
 - Design spec: `docs/superpowers/specs/2026-08-09-predictive-maintenance-prototype-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-08-09-predictive-maintenance-prototype.md`
-- Research: `docs/superpowers/research/2026-08-03-predictive-maintenance-feasibility.md`,
-  `2026-08-05-predictive-maintenance-algorithms.md`,
-  `2026-08-05-predictive-maintenance-explained.md`,
-  `2026-08-09-battery-open-algorithms.md`
+- Research: `docs/superpowers/research/2026-08-14-pm-algorithms-implementation.md`
+  (code→math map, e2e flow, fast demo, reset/clear semantics),
+  `docs/superpowers/research/2026-08-14-pm-algorithms-battery-first-principles.md`,
+  `docs/superpowers/research/2026-08-14-pm-algorithms-brake-first-principles.md`,
+  `docs/superpowers/research/2026-08-14-pm-algorithms-tires-first-principles.md`
 - Service: `sample-services/predictive-maintenance/README.md` (+ `example.env`)
 - Local dev operator guide: `local-dev/README.md` (§9 Predictive-maintenance demo)

@@ -14,14 +14,10 @@ protocol that browsers cannot speak directly. The solution is to let the
 **server** subscribe to NATS and forward messages to the browser over an HTTP
 streaming response (SSE).
 
-```
-NATS Server
-    │  (TCP, protobuf)
-    ▼
-Next.js API Route           ← server-side only
-    │  (HTTP chunked / SSE)
-    ▼
-Browser (EventSource)       ← client-side
+```mermaid
+flowchart LR
+    NATS["NATS Server"] -->|"TCP, protobuf"| Route["Next.js API Route<br/>server-side only"]
+    Route -->|"HTTP chunked / SSE"| Browser["Browser (EventSource)<br/>client-side"]
 ```
 
 Each browser tab opens one `EventSource` connection to the API route. The

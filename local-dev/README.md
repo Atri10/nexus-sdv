@@ -60,14 +60,38 @@ Everything shares the `nexus-local` Docker bridge network.
 
 ### Data flow
 
-```
-Vehicle client ──mTLS──► Registration (:8444) ──► operational cert
-MQTT :1883 ──► data-converter ──► NATS telemetry-generic.>   ┐
-vehicle-client ──► NATS telemetry.{VIN} (MetricsReport)      ├─► nats-bigtable-connector
-Keycloak JWT ──► NATS auth-callout grants per-VIN perms      ┘   (Go service) ──► Bigtable
-                                                                                     │
-Data API :9090 (gRPC) ◄── Bigtable rows ◄────────────────────────────────────────────┘
-chart service :8081 (REST + WS) ◄── Bigtable ──► web frontend :3000
+```mermaid
+flowchart LR
+  subgraph INGRESS["Ingress"]
+    MQTT["MQTT :1883"] --> DC["data-converter"]
+    VC["vehicle-client"] --> REG["Registration :8444"]
+    REG -->|"operational cert"| VC
+    KC["Keycloak JWT"] -->|"grants per-VIN perms"| CALLOUT["NATS auth-callout"]
+  end
+
+  subgraph TRANSPORT["Transport"]
+    N["NATS"]
+  end
+
+  subgraph STORAGE["Storage"]
+    CONN["nats-bigtable-connector<br/>(Go service)"]
+    BT["Bigtable"]
+  end
+
+  subgraph SERVING["Serving"]
+    API["Data API :9090 (gRPC)"]
+    CS["chart service :8081 (REST + WS)"]
+    WEB["web frontend :3000"]
+  end
+
+  DC -->|"telemetry-generic.>"| N
+  VC -->|"telemetry.{VIN} (MetricsReport)"| N
+  CALLOUT -->|"permissions"| N
+  N --> CONN
+  CONN -->|"decoded rows"| BT
+  BT -->|"Bigtable rows"| API
+  BT --> CS
+  CS --> WEB
 ```
 
 Both ingress paths (MQTT and direct NATS publish) land in Bigtable via the
@@ -75,10 +99,15 @@ connector — see [Working with data](#5-working-with-data).
 
 ### Authentication chain
 
-```
-factory cert ──mTLS──► Registration ──► operational cert
-operational cert ──► Keycloak (client-secret, per-VIN client) ──► JWT
-JWT ──► NATS ──► Auth Callout verifies JWT against Keycloak's JWKS snapshot ──► NATS permissions
+```mermaid
+flowchart LR
+  FC["factory cert"] -->|"mTLS"| REG["Registration"]
+  REG --> OC["operational cert"]
+  OC -->|"client-secret, per-VIN client"| KC["Keycloak"]
+  KC --> JWT["JWT"]
+  JWT --> N["NATS"]
+  N --> AC["Auth Callout verifies JWT<br/>against Keycloak's JWKS snapshot"]
+  AC --> P["NATS permissions"]
 ```
 
 Auth Callout trusts a **snapshot** of Keycloak's public keys taken at setup —
