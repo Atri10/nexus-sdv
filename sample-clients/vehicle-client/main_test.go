@@ -352,7 +352,7 @@ func TestTripAdvancement(t *testing.T) {
 	startDist := drive.tripDist
 
 	drive.velocity = 10 // m/s
-	driveCycleStep(&drive, 2)
+	driveCycleStep(&drive, 2, 1.0)
 
 	if drive.tripDist <= startDist {
 		t.Errorf("tripDist did not advance: %v -> %v", startDist, drive.tripDist)

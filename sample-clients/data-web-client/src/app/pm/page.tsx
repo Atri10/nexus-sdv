@@ -1,12 +1,36 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import nextDynamic from 'next/dynamic';
 import AppLayout from '@/components/app-layout';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FadeIn } from '@/components/motion/fade-in';
+import { RoutePanel } from '@/components/pm/route-panel';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
+import type { PmSample } from '@/components/pm/pm-charts';
+import { DEMO_ROUTE_TOTAL_M } from '@/lib/pm-route';
+import { RotateCcw, Zap } from 'lucide-react';
+
+// Live-data console: never statically prerender (the page streams live
+// telemetry + PM events; SSR evaluation of the chart stack is unnecessary
+// and touches browser-only APIs at module scope).
+export const dynamic = 'force-dynamic';
+
+// Charts are loaded on the client only (Chart.js + zoom touch browser APIs
+// at module scope; SSR must never evaluate them).
+const PmCharts = nextDynamic(() => import('@/components/pm/pm-charts').then((m) => m.PmCharts), {
+  ssr: false,
+  loading: () => (
+    <div className="grid gap-4 md:grid-cols-2">
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="h-44 animate-pulse rounded-lg border border-border/60 bg-card/40" />
+      ))}
+    </div>
+  ),
+});
 
 type Vehicle = {
   deviceId: string;
@@ -14,90 +38,396 @@ type Vehicle = {
   columns: Record<string, string>;
 };
 
+type SimStatus = {
+  running: boolean;
+  published: number;
+  speed?: number;
+  route?: { total_m: number; lap: { number: number; progress: number } };
+  ground_truth?: Record<string, Record<string, unknown>>;
+  live?: Record<string, unknown>;
+};
+
+const SPEED_OPTIONS = [1, 5, 20];
+const CHART_WINDOW_MS = 10 * 60 * 1000; // 10-minute rolling window
+const MAX_SAMPLES = 600; // hard cap on top of the window (10 min @ ~1/s)
+
 /**
- * Simple live Predictive-Maintenance board.
+ * Predictive-Maintenance live showcase — single vehicle.
  *
- * One table of vehicles (VIN, status, speed, battery voltage, health score,
- * last alert) that updates every few seconds from the telemetry API, plus a
- * live alert ticker on top fed by the pm.* NATS stream. No drill-down, no
- * matrix, no validation card — just "is my vehicle progressing and is PM
- * firing".
+ * Pick one vehicle → watch it drive the predefined route repeatedly → watch
+ * the same components degrade as laps accumulate → see the metrics, charts
+ * and PM alerts change live. No fleet matrix, no drill-down: one screen that
+ * tells the "same route, repeated laps, accumulating degradation" story.
  */
 export default function PmPage() {
   const messages = usePmMessages();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [vehiclesLoading, setVehiclesLoading] = useState(true);
+  const [selectedVin, setSelectedVin] = useState<string | null>(null);
+  const [sim, setSim] = useState<SimStatus | null>(null);
+  const [samples, setSamples] = useState<PmSample[]>([]);
+  const [busy, setBusy] = useState(false);
+  const lastSamples = useRef<PmSample[]>([]);
+  const autoStartedRef = useRef(false);
 
+  // Latest pm message per component for the selected VIN (newest-first input).
+  const selectedMessages = useMemo(
+    () => (selectedVin ? messages.filter((m) => m.vin === selectedVin) : []),
+    [messages, selectedVin]
+  );
+
+  const latestPerComponent = useMemo(() => {
+    const map = new Map<string, PmMessage>();
+    for (const m of selectedMessages) {
+      if (!map.has(m.component)) map.set(m.component, m);
+    }
+    return map;
+  }, [selectedMessages]);
+
+  // ---- Vehicle list + selection -------------------------------------------
   const loadVehicles = useCallback(() => {
     fetch('/api/devices')
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<{ devices: Vehicle[] }>;
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        const list = (d.devices ?? []) as Vehicle[];
+        setVehicles(list);
+        setSelectedVin((prev) => prev ?? list[0]?.deviceId ?? null);
       })
-      .then((d) => setVehicles(d.devices))
       .catch((e: unknown) => console.error('load vehicles', e))
-      .finally(() => setLoading(false));
+      .finally(() => setVehiclesLoading(false));
   }, []);
 
-  // Refresh the vehicle list every 5s so speed/voltage/health stay live.
   useEffect(() => {
     loadVehicles();
-    const id = setInterval(loadVehicles, 5000);
-    return () => clearInterval(id);
+    const id = window.setInterval(loadVehicles, 5000);
+    return () => window.clearInterval(id);
   }, [loadVehicles]);
 
-  // Latest pm message per VIN (newest-first input).
-  const latestByVin = useMemo(() => {
-    const m = new Map<string, PmMessage>();
-    for (const msg of messages) if (!m.has(msg.vin)) m.set(msg.vin, msg);
-    return m;
-  }, [messages]);
+  // The simulator runs ONE VIN (control subject commands.<VIN>.demo). If the
+  // user hasn't picked yet, jump to the running simulator's VIN so the page
+  // shows live data immediately.
+  useEffect(() => {
+    if (selectedVin) return;
+    fetch('/api/demo/discover', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const vin = d?.vin as string | null | undefined;
+        if (vin) setSelectedVin(vin);
+      })
+      .catch(() => {});
+  }, [selectedVin]);
 
-  const alertCount = messages.length;
-  const criticalCount = messages.filter((m) => m.severity === 'critical').length;
+  // ---- Simulator status (route/lap/speed/ground truth) --------------------
+  const loadSimStatus = useCallback(() => {
+    if (!selectedVin) return;
+    fetch('/api/demo/vehicle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'status', vin: selectedVin }),
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((s: SimStatus) => {
+        setSim(s);
+        // The simulator starts in control mode (awaiting a start command).
+        // Auto-start once so the showcase just works when the page opens.
+        if (!s.running && !autoStartedRef.current) {
+          autoStartedRef.current = true;
+          fetch('/api/demo/vehicle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'start', vin: selectedVin }),
+          }).catch((e: unknown) => console.error('auto-start sim', e));
+        }
+      })
+      .catch(() => setSim(null));
+  }, [selectedVin]);
+
+  useEffect(() => {
+    loadSimStatus();
+    const id = window.setInterval(loadSimStatus, 2000);
+    return () => window.clearInterval(id);
+  }, [loadSimStatus]);
+
+  // ---- Live sample buffer (charts) ----------------------------------------
+  // Append a sample every poll from the freshest available source: pm
+  // health scores, device columns (voltage/tire pressure), sim ground truth
+  // (brake wear). Dedup identical timestamps; bounded to the window + cap.
+  const recordSample = useCallback(() => {
+    const t = Date.now();
+    const gt = sim?.ground_truth ?? {};
+    const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
+    const prev = lastSamples.current;
+    if (prev.length && t - prev[prev.length - 1].t < 500) return;
+    const health = latestPerComponent.get('battery')?.health_score ?? null;
+    const voltage = Number(liveVals.battery_voltage ?? NaN);
+    const brakeWear =
+      (gt.brake as Record<string, unknown> | undefined)?.wear_fraction !== undefined
+        ? Number((gt.brake as Record<string, unknown>).wear_fraction)
+        : null;
+    const tirePressure = Number(liveVals.tire_pressure_bar ?? NaN);
+    const next: PmSample = {
+      t,
+      health,
+      voltage: Number.isFinite(voltage) ? voltage : null,
+      brakeWear,
+      tirePressure: Number.isFinite(tirePressure) ? tirePressure : null,
+    };
+    lastSamples.current = [...prev, next].slice(-MAX_SAMPLES);
+    setSamples(lastSamples.current);
+  }, [sim, latestPerComponent]);
+
+  useEffect(() => {
+    recordSample();
+    const id = window.setInterval(recordSample, 2000);
+    return () => window.clearInterval(id);
+  }, [recordSample]);
+
+  // Trim the buffer to the rolling window (kept separate so the charts only
+  // re-render when a sample actually ages out).
+  const windowedSamples = useMemo(() => {
+    const cutoff = Date.now() - CHART_WINDOW_MS;
+    const trimmed = samples.filter((s) => s.t >= cutoff);
+    return trimmed.length === samples.length ? samples : trimmed;
+  }, [samples]);
+
+  // ---- Demo speed + reset ---------------------------------------------------
+  const setSpeed = useCallback(
+    async (mult: number) => {
+      if (!selectedVin) return;
+      setBusy(true);
+      try {
+        const res = await fetch('/api/demo/vehicle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'speed', vin: selectedVin, preset: String(mult) }),
+        });
+        const reply = (await res.json().catch(() => null)) as (SimStatus & { error?: string }) | null;
+        if (!res.ok || reply?.error) {
+          console.error('set speed', reply?.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        setSim((prev) => (prev ? { ...prev, speed: mult } : prev));
+      } catch (e) {
+        console.error('set speed', e);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [selectedVin]
+  );
+
+  const resetDemo = useCallback(async () => {
+    if (!selectedVin) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/demo/vehicle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset', vin: selectedVin }),
+      });
+      const reply = (await res.json().catch(() => null)) as (SimStatus & { error?: string }) | null;
+      if (!res.ok || reply?.error) {
+        console.error('reset demo', reply?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setSim(reply);
+      lastSamples.current = [];
+      setSamples([]);
+    } catch (e) {
+      console.error('reset demo', e);
+    } finally {
+      setBusy(false);
+    }
+  }, [selectedVin]);
+
+  // ---- Derived display values ----------------------------------------------
+  const vehicle = vehicles.find((v) => v.deviceId === selectedVin);
+  const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
+  const speedMs = Number(liveVals.velocity_m_s ?? NaN);
+  const speedKmh = Number.isFinite(speedMs) ? speedMs * 3.6 : NaN;
+  const batteryV = Number(liveVals.battery_voltage ?? NaN);
+  const tireBar = Number(liveVals.tire_pressure_bar ?? NaN);
+  const batteryMsg = latestPerComponent.get('battery');
+  const brakeMsg = latestPerComponent.get('brake');
+  const tiresMsg = latestPerComponent.get('tires');
+  const route = sim?.route;
+  const lapInfo = route?.lap as { number?: number; progress?: number } | undefined;
+  const lap = lapInfo?.number ?? 0;
+  const progress = lapInfo?.progress ?? 0;
+  const speedMult = sim?.speed ?? 1;
+  const gtBrake = sim?.ground_truth?.brake as Record<string, unknown> | undefined;
+  const brakeWearFrac = gtBrake?.wear_fraction !== undefined ? Number(gtBrake.wear_fraction) : 0;
+
+  const live = sim?.running === true && Number(liveVals.velocity_m_s) !== undefined;
 
   return (
     <AppLayout>
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h1 className="text-xl font-semibold">Predictive Maintenance — Live</h1>
-          <div className="flex items-center gap-2 font-mono text-[11px] tracking-wider text-muted-foreground">
-            <span className="rounded border border-border/70 bg-card/50 px-2 py-1">
-              VEHICLES <span className="text-foreground">{vehicles.length}</span>
+        {/* Header: vehicle selector + demo controls */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold">Predictive Maintenance</h1>
+            <span className="rounded border border-border/70 bg-card/50 px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              Same route · repeated laps · accelerated wear
             </span>
-            <span className="rounded border border-border/70 bg-card/50 px-2 py-1">
-              ALERTS <span className="text-foreground">{alertCount}</span>
-            </span>
-            <span className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-red-600">
-              CRITICAL <span className="font-semibold">{criticalCount}</span>
-            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {vehicles.length > 0 ? (
+              <select
+                value={selectedVin ?? ''}
+                onChange={(e) => {
+                  setSelectedVin(e.target.value);
+                  lastSamples.current = [];
+                  setSamples([]);
+                }}
+                aria-label="Select vehicle"
+                className="rounded-md border border-border bg-card px-2.5 py-1.5 font-mono text-sm text-foreground outline-none focus:border-blue-500"
+              >
+                {vehicles.map((v) => (
+                  <option key={v.deviceId} value={v.deviceId}>
+                    {v.deviceId}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                {vehiclesLoading ? 'Loading vehicles…' : 'No vehicles yet'}
+              </span>
+            )}
+
+            {/* Demo speed */}
+            <div className="flex items-center gap-1 rounded-md border border-border/70 bg-card/50 p-1">
+              <span className="px-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Demo
+              </span>
+              {SPEED_OPTIONS.map((mult) => (
+                <button
+                  key={mult}
+                  onClick={() => setSpeed(mult)}
+                  disabled={busy}
+                  aria-pressed={speedMult === mult}
+                  className={`rounded px-2 py-1 font-mono text-xs transition-colors ${
+                    speedMult === mult
+                      ? 'bg-blue-500/15 text-blue-500'
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                  }`}
+                >
+                  {mult}×
+                </button>
+              ))}
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={resetDemo}
+              disabled={busy}
+              className="gap-1.5"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reset demo
+            </Button>
           </div>
         </div>
 
-        {/* Live alert ticker */}
+        {/* Live indicator */}
+        <div className="flex items-center gap-2 font-mono text-[11px] tracking-wider">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 ${
+              live
+                ? 'border-green-500/40 bg-green-500/10 text-green-600'
+                : 'border-amber-500/40 bg-amber-500/10 text-amber-600'
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${live ? 'animate-pulse bg-green-500' : 'bg-amber-500'}`} />
+            {live ? 'LIVE' : 'WAITING FOR DATA'}
+          </span>
+          {speedMult > 1 && (
+            <span className="inline-flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-amber-500">
+              <Zap className="h-3 w-3" />
+              FAST DEMO · {speedMult}×
+            </span>
+          )}
+        </div>
+
+        {/* Route + lap */}
+        <FadeIn>
+          <RoutePanel
+            progress={progress}
+            lap={lap}
+            totalM={route?.total_m ?? DEMO_ROUTE_TOTAL_M}
+            speed={speedMult}
+          />
+        </FadeIn>
+
+        {/* KPI row */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <Kpi label="Speed" value={Number.isFinite(speedKmh) ? `${speedKmh.toFixed(1)} km/h` : '—'} />
+          <Kpi
+            label="Battery voltage"
+            value={Number.isFinite(batteryV) ? `${batteryV.toFixed(2)} V` : '—'}
+            tone={batteryMsg ? severityColor(batteryMsg.severity) : undefined}
+          />
+          <Kpi
+            label="Battery health"
+            value={batteryMsg ? `${batteryMsg.health_score}%` : '—'}
+            tone={batteryMsg ? severityColor(batteryMsg.severity) : undefined}
+          />
+          <Kpi
+            label="Brake wear"
+            value={`${(brakeWearFrac * 100).toFixed(0)}%`}
+            tone={brakeMsg ? severityColor(brakeMsg.severity) : undefined}
+          />
+          <Kpi
+            label="Tire pressure"
+            value={Number.isFinite(tireBar) ? `${tireBar.toFixed(2)} bar` : '—'}
+            tone={tiresMsg ? severityColor(tiresMsg.severity) : undefined}
+          />
+        </div>
+
+        {/* Component severity badges */}
+        <div className="flex flex-wrap items-center gap-3">
+          <ComponentBadge label="BATTERY" msg={batteryMsg} />
+          <ComponentBadge label="BRAKES" msg={brakeMsg} />
+          <ComponentBadge label="TIRES" msg={tiresMsg} />
+        </div>
+
+        {/* Live charts */}
+        <FadeIn>
+          <PmCharts samples={windowedSamples} />
+        </FadeIn>
+
+        {/* PM event ticker */}
         <FadeIn>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Live alerts</CardTitle>
+              <CardTitle className="text-sm">PM events — {selectedVin ?? 'no vehicle'}</CardTitle>
             </CardHeader>
             <CardContent>
-              {messages.length === 0 ? (
+              {selectedMessages.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No alerts yet — the simulator is backfilling history and the detector will
-                  start firing within a minute.
+                  No PM events for this vehicle yet — with Fast Demo enabled, degradation
+                  accumulates and alerts fire within a minute or two.
                 </p>
               ) : (
-                <div className="max-h-40 space-y-1.5 overflow-y-auto">
-                  {messages.slice(0, 15).map((m, i) => (
-                    <div key={`${m.timestamp}-${m.vin}-${i}`} className="flex items-start gap-2 text-sm">
+                <div className="max-h-44 space-y-1.5 overflow-y-auto">
+                  {selectedMessages.slice(0, 20).map((m, i) => (
+                    <div key={`${m.timestamp}-${m.component}-${i}`} className="flex items-start gap-2 text-sm">
+                      <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+                        {new Date(m.timestamp).toLocaleTimeString()}
+                      </span>
                       <Badge
-                        className="shrink-0 font-mono text-[10px] uppercase tracking-wider"
-                        style={{ backgroundColor: `${severityColor(m.severity)}26`, color: severityColor(m.severity) }}
+                        className={`shrink-0 font-mono text-[10px] uppercase tracking-wider ${
+                          m.severity === 'healthy' ? 'opacity-60' : ''
+                        }`}
+                        style={{
+                          backgroundColor: `${severityColor(m.severity)}26`,
+                          color: severityColor(m.severity),
+                        }}
                       >
                         {m.severity}
                       </Badge>
-                      <span className="font-mono text-xs text-foreground/90">{m.vin}</span>
-                      <span className="font-mono text-xs text-muted-foreground">{m.component}</span>
+                      <span className="font-mono text-xs uppercase text-foreground/90">{m.component}</span>
                       <span className="text-foreground/85">{m.explanation}</span>
                     </div>
                   ))}
@@ -106,82 +436,45 @@ export default function PmPage() {
             </CardContent>
           </Card>
         </FadeIn>
-
-        {/* Live vehicle table */}
-        <FadeIn>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Fleet status</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {loading ? (
-                <p className="py-6 text-center text-sm text-muted-foreground">Loading fleet…</p>
-              ) : vehicles.length === 0 ? (
-                <p className="py-6 text-center text-sm text-muted-foreground">
-                  No vehicles with telemetry yet — the simulator publishes once the stack is up.
-                </p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b text-[11px] uppercase tracking-wider text-muted-foreground">
-                        <th className="py-2 pr-3">Vehicle</th>
-                        <th className="py-2 pr-3">Status</th>
-                        <th className="py-2 pr-3">Speed</th>
-                        <th className="py-2 pr-3">Battery</th>
-                        <th className="py-2 pr-3">Health</th>
-                        <th className="py-2">Last alert</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {vehicles.map((v) => {
-                        const pm = latestByVin.get(v.deviceId);
-                        const speed = parseFloat(v.columns['dynamic:VELOCITY'] ?? '0');
-                        const batteryV = parseFloat(v.columns['dynamic:battery.voltage'] ?? '0');
-                        const lastSeen = v.lastSeen ? new Date(v.lastSeen).toLocaleTimeString() : '—';
-                        return (
-                          <tr key={v.deviceId} className="border-b border-border/40">
-                            <td className="py-2 pr-3 font-mono text-xs">{v.deviceId}</td>
-                            <td className="py-2 pr-3">
-                              <span
-                                className="inline-block h-2 w-2 rounded-full"
-                                style={{ backgroundColor: pm ? severityColor(pm.severity) : '#22C55E' }}
-                              />
-                            </td>
-                            <td className="py-2 pr-3 font-mono text-xs">{speed.toFixed(1)} km/h</td>
-                            <td className="py-2 pr-3 font-mono text-xs">{batteryV ? batteryV.toFixed(2) : '—'} V</td>
-                            <td className="py-2 pr-3">
-                              {pm ? (
-                                <span className="font-mono text-xs" style={{ color: severityColor(pm.severity) }}>
-                                  {pm.health_score}
-                                </span>
-                              ) : (
-                                <span className="text-muted-foreground">—</span>
-                              )}
-                            </td>
-                            <td className="py-2 text-xs text-muted-foreground">
-                              {pm ? (
-                                <>
-                                  <span className="font-mono" style={{ color: severityColor(pm.severity) }}>
-                                    {pm.severity}
-                                  </span>{' '}
-                                  · {pm.component} · {lastSeen}
-                                </>
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </FadeIn>
       </div>
     </AppLayout>
+  );
+}
+
+function Kpi({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-card/50 px-3 py-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div
+        className="mt-0.5 font-mono text-lg font-semibold tabular-nums"
+        style={tone ? { color: tone } : undefined}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function ComponentBadge({ label, msg }: { label: string; msg?: PmMessage }) {
+  const sev = msg?.severity ?? 'healthy';
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5">
+      <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{label}</span>
+      <span
+        className="inline-flex items-center gap-1.5 font-mono text-xs font-semibold uppercase"
+        style={{ color: severityColor(sev) }}
+      >
+        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: severityColor(sev) }} />
+        {sev}
+      </span>
+    </div>
   );
 }

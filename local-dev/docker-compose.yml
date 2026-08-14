@@ -197,6 +197,8 @@ services:
       - INTERVAL=2
       - BACKFILL_DAYS=60
       - DEGRADATION_PRESET=degrading
+      - DEMO_SPEED=5
+      - DEGRADATION_ACCEL=1200
       - REGISTRATION_URL=https://registration:8443
       - KEYCLOAK_REALM=nexus-sdv
       - NATS_URL=nats://nats:4222
