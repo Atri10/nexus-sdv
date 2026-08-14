@@ -2,7 +2,7 @@
 
 Date: 2026-08-14
 Status: **Implementation reference — current code as of 2026-08-14 (repo mid-change; anchor to the files and functions named, not to line numbers or operational cadence)**
-Purpose: The exact mapping from the algorithm specs (`2026-08-05-predictive-maintenance-algorithms.md`, `2026-08-05-predictive-maintenance-explained.md`) and design (`2026-08-09-predictive-maintenance-prototype-design.md`) into the code that actually runs today: the `predictive-maintenance` detectors, the `Processor` that feeds them, the `vehicle-client` degradation simulator that produces ground truth, and the offline evaluator that scores them. Every formula, constant, and claim below is grounded in a `File(fn)` / `File.py(fn)` citation (file name + function name — stable against future line edits); every worked example is reproducible by hand. This is an algorithms-only document: the one-line pipeline framing is that degraded telemetry flows vehicle → storage → data-api → `Processor` → detectors → `pm.{VIN}.{component}` messages, and nothing else about that plumbing is described here.
+Purpose: The exact mapping from the algorithm first-principles companions (`2026-08-14-pm-algorithms-{battery,brake,tires}-first-principles.md`) and design (`2026-08-09-predictive-maintenance-prototype-design.md`) into the code that actually runs today: the `predictive-maintenance` detectors, the `Processor` that feeds them, the `vehicle-client` degradation simulator that produces ground truth, and the offline evaluator that scores them. Every formula, constant, and claim below is grounded in a `File(fn)` / `File.py(fn)` citation (file name + function name — stable against future line edits); every worked example is reproducible by hand. This is an algorithms-only document: the one-line pipeline framing is that degraded telemetry flows vehicle → storage → data-api → `Processor` → detectors → `pm.{VIN}.{component}` messages, and nothing else about that plumbing is described here.
 
 Citation convention: `File.py(fn)` = function `fn` in the Python file; `File.go(fn)` = function `fn` in the Go file; `(top)` = module-level constant/field in that file (e.g. `detectors.py(top)` for `BATTERY_EWMA_ALPHA`). All file paths are relative to the repo root as shown in §8.
 
@@ -534,7 +534,7 @@ The /pm **Reset demo** button fires both: the simulator `reset` command, then `c
 
 ### 8.3 SOC drift (15 % weight) unimplemented
 
-The spec's composite health score weights were "60 % resting-voltage trend, 25 % cranking signature, 15 % SOC drift" (`2026-08-05-predictive-maintenance-algorithms.md` §3.3). The implementation has **no SOC term at all**: `detect_battery` computes EWMA + slope + cranking only; the processor deliberately does not even request `dynamic:battery.soc` (comment in `processor.py(run)`; locked by `test_processor_requests_only_existing_qualifiers`, which asserts `dynamic:battery.soc` is not in the request). The score is a min-of-caps composition, not a weighted sum — the 60/25/15 weights were never transcribed into code. The simulator does emit SoC (`main.go(publishOnce)`) but it is dead data for the PM pipeline.
+The spec's composite health score weights were "60 % resting-voltage trend, 25 % cranking signature, 15 % SOC drift" (`2026-08-14-pm-algorithms-battery-first-principles.md` §3.3). The implementation has **no SOC term at all**: `detect_battery` computes EWMA + slope + cranking only; the processor deliberately does not even request `dynamic:battery.soc` (comment in `processor.py(run)`; locked by `test_processor_requests_only_existing_qualifiers`, which asserts `dynamic:battery.soc` is not in the request). The score is a min-of-caps composition, not a weighted sum — the 60/25/15 weights were never transcribed into code. The simulator does emit SoC (`main.go(publishOnce)`) but it is dead data for the PM pipeline.
 
 ### 8.4 Tire steady-driving filter unimplemented
 
@@ -564,7 +564,7 @@ Described in §3.9: when resting data exists, the explanation is always the fixe
 - `sample-services/predictive-maintenance/scripts/evaluate_detectors.py` — mirrored constants (`(top)`), `run_detectors_for_vin` (poll loop + compensation), `_first_alert_epoch`, `collect_ground_truth`, `compute_metrics`, `write_validation_json`, `main`
 - `sample-services/predictive-maintenance/tests/test_detectors.py`, `tests/test_processor.py`, `tests/test_processor_cadence.py`, `tests/test_evaluate.py` — locked contracts cited inline above
 - Protobuf schema: `proto/vehicle_telemetry.proto` (all `VehicleTelemetryData` fields incl. `CarlaVehicleDynamics`), `proto/telemetry.proto` (`TelemetryMessage`/`SensorReading`), `proto/pm-message.proto` (`PmMessage`)
-- Design/spec anchors: `docs/superpowers/specs/2026-08-09-predictive-maintenance-prototype-design.md`, `docs/superpowers/research/2026-08-05-predictive-maintenance-algorithms.md`, `docs/superpowers/research/2026-08-05-predictive-maintenance-explained.md`
+- Design/spec anchors: `docs/superpowers/specs/2026-08-09-predictive-maintenance-prototype-design.md`, `docs/superpowers/research/2026-08-14-pm-algorithms-battery-first-principles.md`, `docs/superpowers/research/2026-08-14-pm-algorithms-brake-first-principles.md`, `docs/superpowers/research/2026-08-14-pm-algorithms-tires-first-principles.md`
 
 ---
 

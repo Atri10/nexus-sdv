@@ -4,48 +4,28 @@ This Go client demonstrates the complete vehicle authentication and telemetry fl
 
 ## Certificate Flow
 
-```
-┌─────────────┐
-│   Vehicle   │
-│  (Client)   │
-└──────┬──────┘
-       │
-       │ 1. Present Factory Certificate (mTLS)
-       │    + Send CSR (Certificate Signing Request)
-       ↓
-┌──────────────────────┐
-│ Registration Server  │
-│                      │
-│ • Validates Factory  │
-│   Certificate        │
-│ • Signs CSR          │
-│ • Returns:           │
-│   - Operational Cert │
-│   - Keycloak URL     │
-│   - NATS URL         │
-└──────┬───────────────┘
-       │
-       │ 2. Present Operational Certificate (mTLS)
-       │    + Request JWT Token
-       ↓
-┌──────────────────────┐
-│     Keycloak         │
-│                      │
-│ • Validates Cert     │
-│ • Checks Roles       │
-│ • Returns JWT        │
-└──────┬───────────────┘
-       │
-       │ 3. Connect with JWT
-       │    + Publish Telemetry
-       ↓
-┌──────────────────────┐
-│       NATS           │
-│                      │
-│ • Validates JWT via  │
-│   Auth Callout       │
-│ • Grants Permissions │
-└──────────────────────┘
+```mermaid
+sequenceDiagram
+    participant V as Vehicle (Client)
+    participant R as Registration Server
+    participant K as Keycloak
+    participant N as NATS
+
+    Note over V,R: Step 1 - Registration (mTLS)
+    V->>R: 1. Present Factory Certificate (mTLS) + Send CSR (Certificate Signing Request)
+    Note right of R: Validates Factory Certificate<br/>Signs CSR<br/>Returns: Operational Cert,<br/>Keycloak URL, NATS URL
+    R-->>V: Operational Certificate + Keycloak URL + NATS URL
+
+    Note over V,K: Step 2 - Authentication (mTLS)
+    V->>K: 2. Present Operational Certificate (mTLS) + Request JWT Token
+    Note right of K: Validates Cert<br/>Checks Roles<br/>Returns JWT
+    K-->>V: JWT Token
+
+    Note over V,N: Step 3 - Telemetry
+    V->>N: 3. Connect with JWT + Publish Telemetry
+    N->>N: Validates JWT via Auth Callout
+    Note right of N: Grants Permissions
+    N-->>V: Connected - Telemetry accepted
 ```
 
 ## Prerequisites

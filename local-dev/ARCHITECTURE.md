@@ -8,23 +8,39 @@
 
 ### Telemetry ingestion
 
-```
-MQTT publish (telemetry/<VIN>/sensors/*)          vehicle-simulator (compose; idle until commanded)
-        │                                                      │  start → publishes to NATS
-        ▼                                                      ▼
-   Mosquitto (:1883)                                    NATS telemetry-generic.{VIN}.battery
-        │  data-converter subscribes telemetry/#                │  (TelemetryMessage) + telemetry.{VIN} (MetricsReport)
-        ▼                                                       │
-   Data Converter ──NATS telemetry-generic.>────────────────────┤
-        │                                                       │
-        ▼                                                       │
-   NATS (:4222) ◄───────────────────────────────────────────────┘
-        │  nats-bigtable-connector (Go) subscribes telemetry.> + telemetry-generic.>
-        ▼  decodes protobuf → row key <VIN>#<timestamp>; families dynamic/static
-   Bigtable emulator (:8086) ◄── dynamics are persisted (incl. steering/accelerator/brake)
-        │
-        ▼
-   Data API (:9090, gRPC) ──► chart service (:8081, REST + WS) ──► web frontend (:3000)
+```mermaid
+flowchart LR
+  subgraph INGRESS["Ingress"]
+    MQ["MQTT publish<br/>telemetry/&lt;VIN&gt;/sensors/*"]
+    MOSQ["Mosquitto :1883"]
+    SIM["vehicle-simulator<br/>(compose; idle until commanded)"]
+    DC["Data Converter"]
+  end
+
+  subgraph TRANSPORT["Transport"]
+    N["NATS :4222"]
+  end
+
+  subgraph STORAGE["Storage"]
+    CONN["nats-bigtable-connector (Go)<br/>subscribes telemetry.> + telemetry-generic.>"]
+    BT["Bigtable emulator :8086"]
+  end
+
+  subgraph SERVING["Serving"]
+    API["Data API :9090 (gRPC)"]
+    CS["chart service :8081 (REST + WS)"]
+    WEB["web frontend :3000"]
+  end
+
+  MQ -->|"telemetry/&lt;VIN&gt;/sensors/*"| MOSQ
+  MOSQ -->|"subscribes telemetry/#"| DC
+  DC -->|"NATS telemetry-generic.>"| N
+  SIM -->|"start → publishes telemetry-generic.{VIN}.battery<br/>(TelemetryMessage) + telemetry.{VIN} (MetricsReport)"| N
+  N --> CONN
+  CONN -->|"decodes protobuf → row key &lt;VIN&gt;#&lt;timestamp&gt;;<br/>families dynamic/static"| BT
+  BT -->|"dynamics are persisted<br/>(incl. steering/accelerator/brake)"| API
+  API --> CS
+  CS --> WEB
 ```
 
 `make ingest` remains available as a manual write path that bypasses NATS, and
@@ -55,18 +71,29 @@ charts/tables (device) without WebGL, and honor `prefers-reduced-motion`.
 
 ### Query path
 
-```
-Client ──gRPC GetTelemetry──► Data API (:9090) ──► Bigtable key range <VIN>#<start>..<VIN>#<end>
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant API as Data API (:9090)
+  participant BT as Bigtable
+
+  C->>API: gRPC GetTelemetry
+  API->>BT: key range scan &lt;VIN&gt;#&lt;start&gt; .. &lt;VIN&gt;#&lt;end&gt;
+  BT-->>API: matching rows
+  API-->>C: telemetry rows
 ```
 
 ### Authentication flow (vehicle client)
 
-```
-factory cert ──mTLS──► Registration (:8444): validate factory CA → sign CSR
-        ──► operational cert (+ Keycloak/NATS URLs echoed back)
-        ──► Keycloak (:8080): client-secret auth (per-VIN client, e.g. VIN123) → JWT (RS256)
-        ──► NATS: Auth Callout verifies JWT `kid` against its JWKS snapshot,
-             maps realm roles → per-VIN NATS permissions (telemetry.<VIN>.>, commands.<VIN>.>)
+```mermaid
+flowchart LR
+  FC["factory cert"] -->|"mTLS"| REG["Registration :8444<br/>validate factory CA → sign CSR"]
+  REG --> OC["operational cert<br/>(+ Keycloak/NATS URLs echoed back)"]
+  OC -->|"client-secret auth<br/>(per-VIN client, e.g. VIN123)"| KC["Keycloak :8080"]
+  KC --> JWT["JWT (RS256)"]
+  JWT --> N["NATS"]
+  N --> AC["Auth Callout verifies JWT `kid`<br/>against its JWKS snapshot"]
+  AC -->|"maps realm roles → per-VIN NATS permissions"| PERM["telemetry.&lt;VIN&gt;.>, commands.&lt;VIN&gt;.>"]
 ```
 
 The JWKS snapshot is taken once at setup and never refetched. Keycloak's

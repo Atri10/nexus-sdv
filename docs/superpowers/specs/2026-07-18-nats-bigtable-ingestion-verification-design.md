@@ -26,38 +26,30 @@ The local development environment has an architectural gap: telemetry data publi
 
 ## 2. Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         TELEMETRY DATA FLOW (LOCAL)                         │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph Ingress["Ingress (local)"]
+    MQTT["MQTT publisher<br/>telemetry/VIN123/sensors/temp"]
+    MQTT -->|"telemetry/+/sensors/#"| DC["data-converter<br/>(MQTT → TelemetryMessage)"]
+    DC -->|"telemetry-generic.VIN123.temp"| NATS[(NATS :4222)]
+  end
 
-   MQTT Publish          data-converter           NATS              Go Connector
-   ─────────────────►   (telemetry/+/sensors/#)  ─────────►        (telemetry-generic.>)
-        │                     │                     │                    │
-        │  telemetry/         │  TelemetryMessage   │  telemetry-        │
-        │  VIN123/            │  (protobuf)         │  generic.          │
-        │  sensors/temp       ▼                     ▼  VIN123.temp       ▼
-        │                  NATS Broker         ┌─────────────────┐
-        │                  :4222               │ Bigtable        │
-        │                                      │ Emulator        │
-        │                                      │ :8086           │
-        │                                      │ Row: VIN123#    │
-        │                                      │ 2026-07-18T...  │
-        │                                      │ Col: dynamic:   │
-        │                                      │ temp=25.5       │
-        │                                      └────────┬────────┘
-        │                                               │
-        │                              Java Service     │     Frontend
-        │                              ──────────────►  │     ──────────
-        │                              REST/WS Query    │     Chart.js
-        │                              :8081            │     :3000
-        │                                               ▼
-        │                                      ┌─────────────────┐
-        │                                      │ TypeScript      │
-        │                                      │ data-web-client │
-        │                                      │ Live Charts     │
-        │                                      └─────────────────┘
+  subgraph Storage["Storage"]
+    CONN["nats-bigtable-connector<br/>(Go, telemetry-generic.>)"]
+    NATS --> CONN
+    CONN -->|"row VIN123#2026-07-18T...<br/>col dynamic:temp=25.5"| BT[("Bigtable Emulator :8086")]
+  end
+
+  subgraph Display["Display"]
+    JAVA["telemetry-chart-service<br/>(Java :8081)"]
+    BT -->|"REST / WS query"| JAVA
+    WEB["data-web-client<br/>(TypeScript :3000)"]
+    JAVA -->|"REST / WebSocket"| WEB
+    WEB --> CHART["Chart.js live charts"]
+  end
 ```
+
+**Service Responsibilities (clear separation):**
 
 **Service Responsibilities (clear separation):**
 
@@ -196,35 +188,40 @@ RowRange rowRange = RowRange.of(startKey, true, endKey, false);
 
 ### 5.2 Integration Flow
 
-```
-Frontend (localhost:3000)
-    │
-    ▼ GET /api/telemetry/VIN123?start=...&end=...&limit=100
-Next.js API Route (server-side)
-    │
-    ▼ GET http://localhost:8081/api/v1/vehicles/VIN123/telemetry?...
-Java Service (localhost:8081)
-    │
-    ▼ Bigtable scan
-Bigtable Emulator (localhost:8086)
-    │
-    ◄─── Returns rows
-    │
-    ▼ JSON response
-Frontend → Chart.js renders live data
+```mermaid
+sequenceDiagram
+  autonumber
+  participant FE as Frontend :3000
+  participant R as Next.js API Route
+  participant J as Java Service :8081
+  participant BT as Bigtable Emulator :8086
+
+  FE->>R: GET /api/telemetry/VIN123?start=...&end=...&limit=100
+  R->>J: GET /api/v1/vehicles/VIN123/telemetry?...
+  J->>BT: Bigtable scan
+  BT-->>J: rows
+  J-->>R: JSON response
+  R-->>FE: telemetry series
+  FE->>FE: Chart.js renders live data
 ```
 
 ### 5.3 WebSocket Live Updates
 
-```
-Frontend WebSocket → ws://localhost:8081/ws/telemetry?vin=VIN123&columns=dynamic:temp
-    │
-    ▼ Java TelemetryWebSocketHandler
-    │  - Subscribes session to vehicle+columns
-    │  - Polls getLatestTelemetry every 1s
-    │  - Broadcasts to session
-    ▼
-Frontend receives { timestamp, values } → Chart.js appends point
+```mermaid
+sequenceDiagram
+  autonumber
+  participant FE as Frontend
+  participant WS as TelemetryWebSocketHandler :8081
+  participant BT as Bigtable
+
+  FE->>WS: WebSocket /ws/telemetry?vin=VIN123&columns=dynamic:temp
+  WS->>WS: subscribe session to vehicle + columns
+  loop every 1 s
+    WS->>BT: getLatestTelemetry
+    BT-->>WS: rows
+    WS-->>FE: broadcast { timestamp, values }
+  end
+  FE->>FE: Chart.js appends point
 ```
 
 ### 5.4 Acceptance Criteria (Phase 3)

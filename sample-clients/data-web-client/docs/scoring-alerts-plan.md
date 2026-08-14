@@ -11,12 +11,10 @@ with the existing username/password auth scheme.
 **The natural fit: Next.js API Route (server-side) + Server-Sent Events (SSE).**
 This is the standard pattern for this exact use case in Next.js:
 
-```
-Browser  ──EventSource──▶  /api/scoring/stream  (Next.js route handler, Node.js)
-                                    │
-                              nats npm package
-                                    │  TCP :4222
-                             NATS server — scoring.*
+```mermaid
+flowchart LR
+    Browser["Browser"] -->|"EventSource"| Route["/api/scoring/stream<br/>(Next.js route handler, Node.js)"]
+    Route -->|"nats npm package"| NATS["NATS server — scoring.*<br/>TCP :4222"]
 ```
 
 - The route handler runs in Node.js, connects to NATS over TCP using existing `NATS_USER` /

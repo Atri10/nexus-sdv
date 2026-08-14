@@ -126,21 +126,16 @@ grid/axis/legend/text colors so the canvas matches light/dark and updates on tog
 
 ## 4. Data Flow
 
-```
-range / vin / compareVins
-        │
-        ▼
-useTelemetryData ──fetch──▶ /api/telemetry/[vin]?start&end&columns  (historical)
-        │
-        ├─▶ builds series[] (x:Date, values)
-        │
-        └─▶ WebSocket(primary vin) ──append live points──▶ series[] (real-time)
-                        │
-                        ▼
-              TelemetryChart (time x-axis, toggles, zoom, dual-axis, compare)
-                        │
-                        ▼
-              ChartControls (user mutates view state only)
+```mermaid
+flowchart TD
+  INPUT["range / vin / compareVins"] --> HOOK["useTelemetryData"]
+  HOOK -->|"fetch (historical)"| API["/api/telemetry/[vin]?start&end&columns"]
+  API --> BUILD["builds series[] (x: Date, values)"]
+  HOOK -->|"WebSocket (primary vin)"| WS["live points appended"]
+  WS --> BUILD
+  BUILD --> CHART["TelemetryChart<br/>time x-axis · toggles · zoom · dual-axis · compare"]
+  CHART --> CTRL["ChartControls<br/>(user mutates view state only)"]
+  CTRL -.->|"same range"| INPUT
 ```
 
 The time-range selector and the chart now read the **same** range → they agree.
