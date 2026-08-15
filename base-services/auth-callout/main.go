@@ -251,6 +251,23 @@ func createNATSUserJWT(name string, roles []any, accountKeyPair nkeys.KeyPair, a
 		}
 	}
 
+	// DEMO_MODE=true broadens the per-VIN grants to fleet-wide subjects so the
+	// demo simulator can publish/subscribe any VIN (runtime VIN switching)
+	// without new NATS claims per switch. Per-VIN grants above are retained.
+	if os.Getenv("DEMO_MODE") == "true" {
+		for _, subj := range []string{
+			"telemetry.>",
+			"telemetry-generic.>",
+			"commands.>",
+			"_INBOX.>",
+		} {
+			perms.Pub.Allow.Add(subj)
+			perms.Sub.Allow.Add(subj)
+			glog.Debugf("DEMO_MODE: allowing %s on pub and sub", subj)
+		}
+		glog.Warn("DEMO_MODE=true: granting fleet-wide NATS permissions (telemetry.>, telemetry-generic.>, commands.>, _INBOX.>)")
+	}
+
 	// Create the NATS user claims
 	userClaims := natsjwt.NewUserClaims(authReqClaims.UserNkey)
 	userClaims.Permissions = perms

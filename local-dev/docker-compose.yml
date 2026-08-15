@@ -17,6 +17,7 @@ services:
       - NATS_USER=auth-callout-service
       - NATS_PASSWORD=auth-callout-pass
       - LOG_LEVEL=DEBUG
+      - DEMO_MODE=true
     networks:
       - nexus-local
 
