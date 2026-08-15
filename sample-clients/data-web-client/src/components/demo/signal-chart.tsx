@@ -65,6 +65,19 @@ export const SignalChart = memo(function SignalChart({ series, unit, paused, the
   const latest = latestPoint(series);
   const raw = latestRaw(series);
   const yRange = useMemo(() => stableAxisRange(series.points), [series]);
+  // Window min/max summary (visible data range) so the current value reads
+  // in context without studying the axis.
+  const minMaxLabel = useMemo(() => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const p of series.points) {
+      if (p.y == null) continue;
+      if (p.y < min) min = p.y;
+      if (p.y > max) max = p.y;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return '';
+    return `${formatValue(min)}–${formatValue(max)}${unit ? ` ${unit}` : ''}`;
+  }, [series, unit]);
   return (
     <div
       className={`group relative flex flex-col rounded-lg border bg-card p-3 transition-colors hover:border-border ${
@@ -100,6 +113,11 @@ export const SignalChart = memo(function SignalChart({ series, unit, paused, the
           <span className="font-mono text-sm font-semibold tabular-nums">
             {latest != null ? `${formatValue(latest)}${unit ? ` ${unit}` : ''}` : '—'}
           </span>
+          {showChart && series.points.length > 1 && (
+            <span className="hidden rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground min-[420px]:inline">
+              {minMaxLabel}
+            </span>
+          )}
           <button
             type="button"
             aria-label={`Expand ${series.label} chart`}

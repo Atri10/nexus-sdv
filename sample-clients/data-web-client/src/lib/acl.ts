@@ -18,7 +18,10 @@ function getPool(): Pool {
 }
 
 export async function getAllowedVehicleIds(groups: string[]): Promise<string[] | undefined> {
-  if (!process.env.DB_NAME) return undefined;
+  // Fail CLOSED: without the vehicle-groups DB we can't authorize anyone, so
+  // return [] (deny all) rather than undefined (which consumers treat as
+  // allow-all). A misconfigured deployment must deny, never expose the fleet.
+  if (!process.env.DB_NAME) return [];
   if (!groups.length) return [];
   const result = await getPool().query<{ vehicle_id: string }>(
     'SELECT DISTINCT vehicle_id FROM vehicle_groups WHERE group_name = ANY($1)',

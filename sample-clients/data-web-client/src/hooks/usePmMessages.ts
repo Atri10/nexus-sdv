@@ -5,7 +5,10 @@ import { parsePmMessage, type PmMessage } from '@/lib/pm-types';
 
 const STORAGE_KEY = 'pmMessages';
 const STORAGE_GEN_KEY = 'pmMessages.gen';
-const MAX_MESSAGES = 100;
+// One hundred messages shared across all VINs can evict a selected VIN's
+// alerts (the detector publishes every poll for every scheduled VIN). 250
+// keeps a 10-VIN demo's recent alerts visible while staying small.
+const MAX_MESSAGES = 250;
 
 /** Identity of a PM message for dedup: the detector publishes continuously
  * in demo mode and EventSource auto-reconnects, so the same (vin, component,
@@ -50,12 +53,19 @@ export function usePmMessages() {
           // which stores raw strings. Accept both forms; parsePmMessage wraps
           // JSON.parse in try/catch, so corrupted entries map to null and are
           // filtered out below.
+          const seen = new Set<string>();
           setMessages(
             parsed
               .map((m) =>
                 parsePmMessage(typeof m === 'string' ? m : JSON.stringify(m)),
               )
-              .filter((m): m is PmMessage => m !== null)
+              .filter((m): m is PmMessage => {
+                if (m === null) return false;
+                const id = messageId(m);
+                if (seen.has(id)) return false;
+                seen.add(id);
+                return true;
+              })
               .slice(0, MAX_MESSAGES),
           );
         }
