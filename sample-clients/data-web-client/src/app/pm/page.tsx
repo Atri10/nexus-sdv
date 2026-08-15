@@ -11,6 +11,7 @@ import { RoutePanel } from '@/components/pm/route-panel';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { useSimulatorState } from '@/hooks/use-simulator-state';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
+import { coherentHealth, type CoherentHealth } from '@/lib/pm-health';
 import type { PmSample } from '@/components/pm/pm-charts';
 import { DEMO_ROUTE_TOTAL_M } from '@/lib/pm-route';
 import { RotateCcw, Square, Play, Zap } from 'lucide-react';
@@ -196,8 +197,15 @@ export default function PmPage() {
     const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
     const prev = lastSamples.current;
     if (prev.length && t - prev[prev.length - 1].t < 500) return;
-    const health = latestPerComponent.get('battery')?.health_score ?? null;
     const voltage = Number(liveVals.battery_voltage ?? NaN);
+    // Battery health series: authoritative PM score when available, otherwise
+    // the live-derived provisional score — so the health chart never sits
+    // empty while voltage shows the death arc.
+    const health =
+      latestPerComponent.get('battery')?.health_score ??
+      (Number.isFinite(voltage)
+        ? Math.round(Math.max(0, Math.min(100, ((voltage - 10.5) / (12.63 - 10.5)) * 100)))
+        : null);
     const brakeWear =
       (gt.brake as Record<string, unknown> | undefined)?.wear_fraction !== undefined
         ? Number((gt.brake as Record<string, unknown>).wear_fraction)
@@ -253,7 +261,30 @@ export default function PmPage() {
   const speedMult = sim?.speed ?? 1;
   const gtBrake = sim?.ground_truth?.brake as Record<string, unknown> | undefined;
   const brakeWearFrac = gtBrake?.wear_fraction !== undefined ? Number(gtBrake.wear_fraction) : 0;
-
+  // Coherent health: authoritative PM message when available, otherwise
+  // derived provisionally from the live values — so badges, KPIs and charts
+  // always agree (a battery at 11.0 V is never 'HEALTHY' just because the
+  // detector hasn't published yet).
+  const coherent = useMemo(
+    () => ({
+      battery: coherentHealth('battery', batteryMsg, {
+        batteryVoltage: Number.isFinite(batteryV) ? batteryV : null,
+        tirePressure: null,
+        brakeWearFrac: null,
+      }),
+      brake: coherentHealth('brake', brakeMsg, {
+        batteryVoltage: null,
+        tirePressure: null,
+        brakeWearFrac: brakeWearFrac,
+      }),
+      tires: coherentHealth('tires', tiresMsg, {
+        batteryVoltage: null,
+        tirePressure: Number.isFinite(tireBar) ? tireBar : null,
+        brakeWearFrac: null,
+      }),
+    }),
+    [batteryMsg, brakeMsg, tiresMsg, batteryV, tireBar, brakeWearFrac]
+  );
   // P3-2: 'live' must be false when the sim is stopped OR the selection isn't
   // the sim — the KPI row shows sim.live values, so it must not present them
   // as live when they're frozen or belong to a different vehicle. (The old
@@ -394,22 +425,22 @@ export default function PmPage() {
             <Kpi
               label="Battery voltage"
               value={Number.isFinite(batteryV) ? `${batteryV.toFixed(2)} V` : '—'}
-              tone={batteryMsg ? severityColor(batteryMsg.severity) : undefined}
+              tone={severityColor(coherent.battery.severity)}
             />
             <Kpi
               label="Battery health"
-              value={batteryMsg ? `${batteryMsg.health_score}%` : '—'}
-              tone={batteryMsg ? severityColor(batteryMsg.severity) : undefined}
+              value={coherent.battery.score !== null ? `${coherent.battery.score}%` : '—'}
+              tone={severityColor(coherent.battery.severity)}
             />
             <Kpi
               label="Brake wear"
               value={`${(brakeWearFrac * 100).toFixed(0)}%`}
-              tone={brakeMsg ? severityColor(brakeMsg.severity) : undefined}
+              tone={severityColor(coherent.brake.severity)}
             />
             <Kpi
               label="Tire pressure"
               value={Number.isFinite(tireBar) ? `${tireBar.toFixed(2)} bar` : '—'}
-              tone={tiresMsg ? severityColor(tiresMsg.severity) : undefined}
+              tone={severityColor(coherent.tires.severity)}
             />
           </div>
         </Section>
@@ -417,14 +448,14 @@ export default function PmPage() {
         {/* ============ SECTION: COMPONENT HEALTH ============ */}
         <Section title="Component health" meta={selectedVin ?? undefined}>
           <div className="flex flex-wrap items-center gap-3">
-            <ComponentBadge label="Battery" msg={batteryMsg} />
-            <ComponentBadge label="Brakes" msg={brakeMsg} />
-            <ComponentBadge label="Tires" msg={tiresMsg} />
+            <ComponentBadge label="Battery" health={coherent.battery} />
+            <ComponentBadge label="Brakes" health={coherent.brake} />
+            <ComponentBadge label="Tires" health={coherent.tires} />
           </div>
 
           {/* Live charts */}
           <FadeIn>
-            <PmCharts samples={windowedSamples} />
+            <PmCharts samples={windowedSamples} health={coherent} idle={!live} />
           </FadeIn>
         </Section>
 
@@ -537,17 +568,19 @@ function Kpi({
   );
 }
 
-function ComponentBadge({ label, msg }: { label: string; msg?: PmMessage }) {
-  const sev = msg?.severity ?? 'healthy';
+function ComponentBadge({ label, health }: { label: string; health: CoherentHealth }) {
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5">
+    <div
+      className="flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5"
+      title={health.reason}
+    >
       <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>
       <span
         className="inline-flex items-center gap-1.5 font-mono text-xs font-semibold uppercase"
-        style={{ color: severityColor(sev) }}
+        style={{ color: severityColor(health.severity) }}
       >
-        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: severityColor(sev) }} />
-        {sev}
+        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: severityColor(health.severity) }} />
+        {health.provisional ? `~${health.severity}` : health.severity}
       </span>
     </div>
   );
