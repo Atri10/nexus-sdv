@@ -9,6 +9,7 @@ services:
       context: ../base-services/auth-callout
       dockerfile: Dockerfile.local
     container_name: nexus-auth-callout
+    restart: unless-stopped  # self-heal: retry until infra (nats/keycloak) is ready
     environment:
       - JWT_ACC_SIGNING_KEY=${JWT_ACC_SIGNING_KEY}
       - KEYCLOAK_JWK_B64=${KEYCLOAK_JWK_B64}
@@ -24,6 +25,7 @@ services:
       context: ../
       dockerfile: base-services/data-api/Dockerfile.local
     container_name: nexus-data-api
+    restart: unless-stopped
     environment:
       - GRPC_ADDR=${GRPC_ADDR}
       - BIGTABLE_EMULATOR_HOST=${BIGTABLE_EMULATOR_HOST}
@@ -41,6 +43,7 @@ services:
       context: ../
       dockerfile: base-services/data-converter/Dockerfile.local
     container_name: nexus-data-converter
+    restart: unless-stopped  # self-heal until NATS/MQTT are reachable
     environment:
       - CONFIG_PATH=${CONFIG_PATH}
       - NATS_HOST=${NATS_HOST}
@@ -58,6 +61,7 @@ services:
       context: ../base-services/registration/server
       dockerfile: Dockerfile.local
     container_name: nexus-registration
+    restart: unless-stopped
     environment:
       - REG_SERVER_CERT=${REG_SERVER_CERT}
       - REG_SERVER_KEY=${REG_SERVER_KEY}
@@ -84,6 +88,7 @@ services:
       dockerfile: Dockerfile.local
       network: host  # Maven Central (Cloudflare) is unreachable on the BuildKit bridge net; host egress works
     container_name: nexus-data-api-sampler
+    restart: unless-stopped
     environment:
       - DATA_API_URL=${DATA_API_GRPC_ADDR}
     depends_on:
@@ -96,6 +101,7 @@ services:
       context: ../sample-services/trip_analyzer
       dockerfile: Dockerfile.local
     container_name: nexus-trip-analyzer
+    restart: unless-stopped
     environment:
       - DATA_API_GRPC_ADDR=${DATA_API_GRPC_ADDR}
     depends_on:
@@ -108,6 +114,7 @@ services:
       context: ../sample-services/predictive-maintenance
       dockerfile: Dockerfile.local
     container_name: nexus-predictive-maintenance
+    restart: unless-stopped  # self-heal until data-api/NATS are reachable
     environment:
       - DATA_API_GRPC_ADDR=${DATA_API_GRPC_ADDR}
       - NATS_HOST=nats
@@ -127,6 +134,7 @@ services:
       context: ../base-services/nats-bigtable-connector
       dockerfile: Dockerfile.local
     container_name: nexus-nats-bigtable-connector
+    restart: unless-stopped  # self-heal until NATS + Bigtable are ready
     environment:
       - NATS_URL=nats://connector:connector-pass@nats:4222
       - BIGTABLE_EMULATOR_HOST=bigtable-emulator:8086
@@ -142,6 +150,7 @@ services:
       dockerfile: Dockerfile.local
       network: host  # Maven Central (Cloudflare) is unreachable on the BuildKit bridge net; host egress works
     container_name: nexus-telemetry-chart-service
+    restart: unless-stopped
     environment:
       - BIGTABLE_PROJECT_ID=test-project
       - BIGTABLE_INSTANCE_ID=test-instance
@@ -160,6 +169,7 @@ services:
         TELEMETRY_SERVICE_URL: http://telemetry-chart-service:8080
         NEXT_PUBLIC_TELEMETRY_SERVICE_URL: http://localhost:8081
     container_name: nexus-data-web-client
+    restart: unless-stopped
     extra_hosts:
       - "localhost:host-gateway"   # container's localhost -> host, so KEYCLOAK_ISSUER (localhost:8088) is reachable from inside the container
     environment:
@@ -191,7 +201,7 @@ services:
       context: ../
       dockerfile: sample-clients/vehicle-client/Dockerfile.local
     container_name: nexus-vehicle-simulator
-    restart: on-failure  # cold-start race mitigation: keep the simulator up until commanded
+    restart: unless-stopped  # cold-start race mitigation: keep the simulator up until commanded
     environment:
       - VIN_POOL=${VIN_POOL}
       - INTERVAL=2
