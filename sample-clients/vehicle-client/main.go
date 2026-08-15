@@ -1797,8 +1797,11 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// commands.<selectedVIN>.demo, and the simulator adopts whichever
 		// pool VIN a start request names (see controlState.adopt) — so it
 		// must hear commands for every pool VIN, not just the boot VIN.
-		// DEMO_MODE=true on auth-callout grants commands.> for this.
-		sub, err := nc.Subscribe("commands.>.demo", func(msg *nats.Msg) {
+		// NATS '>' must be the FINAL token (commands.> would be an
+		// invalid subject and the connection would close), so subscribe to
+		// commands.> which matches commands.<VIN>.demo. DEMO_MODE=true on
+		// auth-callout grants commands.> for this.
+		sub, err := nc.Subscribe("commands.>", func(msg *nats.Msg) {
 			ctl.handle(msg)
 		})
 		if err != nil {
@@ -1834,7 +1837,12 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		jwtExpiry = time.Now().Add(time.Duration(expiresIn) * time.Second)
 		log.Printf("JWT refreshed, expires in %ds (refresh buffer %s)", expiresIn, refreshBuffer)
 
-		nc, err = nats.Connect(v.natsURL, nats.Token(jwt))
+		nc, err = nats.Connect(v.natsURL,
+			nats.Token(jwt),
+			nats.ClosedHandler(func(nc *nats.Conn) {
+				log.Printf("NATS connection closed (reason: %v)", nc.LastError())
+			}),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to connect to NATS: %w", err)
 		}
@@ -2034,12 +2042,22 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 				_ = controlSub.Unsubscribe()
 			}
 		}()
-		log.Printf("Awaiting start command on commands.>.demo")
+		log.Printf("Awaiting start command on commands.>")
 		for range ticker.C {
 			if ctl.isRunning() {
 				publishOnce() // one tick while running
 			}
-			if time.Until(jwtExpiry) < refreshBuffer {
+			// A dropped connection (e.g. the server closed it during
+			// backfill) leaves the control subscription dead: NATS subs are
+			// bound to the connection, so start/stop/status would 503 until
+			// the JWT refresh timer fires. Reconnect immediately when the
+			// connection is closed so control commands keep working.
+			if nc.IsClosed() {
+				log.Println("Connection closed — reconnecting to restore control subscription")
+				if err := refreshConnection(); err != nil {
+					log.Printf("Failed to reconnect: %v", err)
+				}
+			} else if time.Until(jwtExpiry) < refreshBuffer {
 				if err := refreshConnection(); err != nil { // keep JWT fresh while idle too
 					log.Printf("Failed to refresh connection: %v", err)
 				}
