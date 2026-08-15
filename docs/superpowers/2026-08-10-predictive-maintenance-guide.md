@@ -13,24 +13,25 @@ deploy it beyond the local stack.
 ## 1. What this is
 
 A telemetry-driven predictive-maintenance service on the Nexus SDV platform.
-It watches each monitored VIN's slow signals (12 V battery, brake wear, tire
-pressure), runs **deterministic** detectors (no ML, no LLM), and publishes
-`pm.{VIN}.{component}` alerts on NATS that the web dashboard renders.
+It watches each monitored VIN's slow signals (12 V battery, per-wheel tire
+pressure, per-pad brake wear), runs **deterministic** detectors (no ML, no
+LLM), and publishes `pm.{VIN}.{component}` alerts on NATS that the web
+dashboard renders.
 
 ```mermaid
 flowchart LR
   subgraph Vehicle["vehicle-simulator"]
-    SIM["degradation curves<br/>battery · tires · brake energy"]
+    SIM["degradation curves<br/>battery · tires ×4 wheels · brakes ×4 pads"]
   end
   SIM -->|"telemetry.{VIN} / telemetry-generic.{VIN}.{sensor}"| NATS[(NATS)]
   NATS --> CONN["nats-bigtable-connector"]
   CONN --> BT[("Bigtable<br/>telemetry")]
   BT --> API["data-api gRPC"]
   API -->|"poll 30-day window"| PM["predictive-maintenance"]
-  PM --> DET["detectors<br/>battery M1/M2 · brake energy · tire pressure"]
-  DET -->|"pm.{VIN}.{component}"| NATS
+  PM --> DET["detectors<br/>battery M1/M2 · brakes ×4 pads · tires ×4 wheels"]
+  DET -->|"pm.{VIN}.{component}<br/>(tires.{wheel} / brake.{pad})"| NATS
   NATS -->|"SSE /api/pm/stream"| WEB["web client<br/>/demo gauges + ticker · /pm console"]
-  SIM -.->|"commands.{VIN}.demo<br/>start/stop/speed/reset"| CTL["control"]
+  SIM -.->|"commands.> (wildcard)<br/>start/stop/speed/reset — adopts requested VIN"| CTL["control"]
   CTL -.-> SIM
 ```
 
@@ -58,10 +59,13 @@ is idempotent — re-running it is a no-op when everything is already up.
 
 ### /pm — single-vehicle live console
 
-- **Vehicle picker** — choose any VIN (defaults to the discovered simulator);
-  the console shows that vehicle's live KPIs (speed, battery voltage/health,
-  brake wear, tire pressure), the route panel (lap × progress on the demo
-  loop), and the component badges.
+- **Vehicle picker** — choose any pool VIN (defaults to the discovered
+  simulator); the console shows that vehicle's live KPIs (speed, battery
+  voltage/health, brake wear, tire pressure), the route panel (lap × progress
+  on the demo loop), and the component badges. The simulator subscribes the
+  `commands.>` wildcard, so picking a different VIN + **Start** makes it
+  adopt that VIN (identity, degradation curves and publish subjects repoint
+  to it).
 - **Demo speed** — 1×/5×/20× toggle (fast-forward the degradation story).
 - **Start/Stop/Reset demo** — explicit simulator control. **Reset demo**
   restores the vehicle to healthy *and clears the accumulated alert feed*
@@ -85,13 +89,23 @@ vehicle's physical zones).
 
 | Component | Method | Rules |
 |---|---|---|
-| **12V battery** | Resting voltage trend (EWMA + 30-day least-squares slope), temperature-compensated to a 30 °C reference (`V_comp = V − β·(T − 30)`, β ≈ −0.011 V/°C); cranking signature (`V_min`, `R_int = (V_rest − V_min)/I_crank`) | EWMA < 12.4 V or slope < −0.5 mV/day → advisory; < 12.2 V → action; `V_min` < 9.5 V or `R_int` > 1.5× baseline → action/critical |
-| **Brake pads** | Energy integral from driving data `W = Σ m·a·v·Δt` (1500 kg; 6 GJ pad budget); deceleration estimated from velocity deltas (the connector doesn't persist acceleration) | wear > 80 % → advisory; > 90 % → action |
-| **Tires** | Temperature-compensated pressure `P_comp = P·T_ref/T` (T_ref 20 °C), slope over steady-driving samples | slope < −0.15 bar/month → advisory; `P_comp` < 1.8 bar → action |
+| **12V battery** | Resting voltage trend (EWMA + 30-day least-squares slope), temperature-compensated to a 30 °C reference (`V_comp = V − β·(T − 30)`, β ≈ −0.011 V/°C); cranking signature (`V_min`, `R_int = (V_rest − V_min)/I_crank`) | EWMA < 12.4 V or slope < −0.5 mV/day → advisory; < 12.2 V → action; < 11.8 V → critical; `V_min` < 9.5 V or `R_int` > 1.5× baseline → action/critical |
+| **Brake pads** | Per-pad wear fraction (`BRAKE_WEAR.{FL,FR,RL,RR}` published by the sim); legacy fallback: energy integral from driving data `W = Σ m·a·v·Δt` (1500 kg; 6 GJ pad budget) | wear > 80 % → advisory; > 90 % → action |
+| **Tires** | Temperature-compensated pressure `P_comp = P·T_ref/T` (T_ref 20 °C) per wheel (`TIRE_PRESSURE.{FL,FR,RL,RR}` + `TIRE_TEMP.{FL,FR,RL,RR}`), slope over steady-driving samples | slope < −0.15 bar/month → advisory; `P_comp` < 1.8 bar → action; < 1.2 bar → critical |
+
+Tires and brakes are **per wheel / per pad**: the detector runs ×4 for each
+(battery stays single-channel) and publishes `pm.{VIN}.tires.{wheel}` /
+`pm.{VIN}.brake.{pad}`; the /pm console shows a worst-wheel summary with
+per-wheel detail in the expand dialog. **Health meters are continuous in the
+signal** (battery 12.63 V → 10.5 V = 100 → 0; tires 2.3 bar → 0.9 bar = 100
+→ 0), while severity comes from the threshold rules — a battery at 12.10 V
+scores ~75 yet still alerts as action.
 
 - **Publish cadence**: an alert is published when a component's severity
   changes or its health band crosses (green ≥ 70 / amber 50–69 / red < 50) —
-  not every poll. **Healthy VINs publish nothing**.
+  not every poll. **Healthy VINs publish nothing.** (The /pm demo console
+  additionally streams a per-poll state message so the board always reflects
+  live health.)
 - **No LLM**: the `explanation` is a deterministic template from the
   evidence. This keeps alerts auditable and the demo key-free.
 - All thresholds live in `core/detectors.py` as constants; the code→math
@@ -152,11 +166,16 @@ within a minute of live time.
 
 - **Ingest** (existing): simulator publishes battery JSON on
   `telemetry-generic.{VIN}.battery` and MetricsReport on `telemetry.{VIN}`
-  (VELOCITY, BRAKE_PEDAL_PCT, TIRE_PRESSURE, TIRE_TEMP, …) → connector →
+  (VELOCITY, BRAKE_PEDAL_PCT, TIRE_PRESSURE.{FL,FR,RL,RR},
+  TIRE_TEMP.{FL,FR,RL,RR}, BRAKE_WEAR.{FL,FR,RL,RR}, …) → connector →
   Bigtable → data-api.
 - **Detection**: the service polls data-api (`dynamic:battery.*`, `VELOCITY`,
-  `BRAKE_PEDAL_PCT`, `TIRE_PRESSURE`, `TIRE_TEMP`) per VIN per poll.
-- **Alerts**: `pm.{VIN}.{component}` on NATS. The web SSE route
+  `BRAKE_PEDAL_PCT`, per-wheel `TIRE_PRESSURE.*`, `TIRE_TEMP.*`,
+  `BRAKE_WEAR.*`) per VIN per poll, running `detect_tires` ×4 and
+  `detect_brake` ×4.
+- **Alerts**: `pm.{VIN}.{component}` on NATS — battery stays
+  `pm.{VIN}.battery`; tires/brakes publish one subject per wheel/pad
+  (`pm.{VIN}.tires.{wheel}` / `pm.{VIN}.brake.{pad}`). The web SSE route
   (`/api/pm/stream`) subscribes `pm.>` and streams to the dashboard.
 - **NATS permissions**: the local-dev `connector` account is granted
   `pm.>` pub/sub (see `local-dev/README.md` §4). If you add a new account or

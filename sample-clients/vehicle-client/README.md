@@ -161,15 +161,38 @@ The easiest way to run the vehicle client is using the provided run script, whic
 
 ### NATS Control Protocol (`-control-subject`)
 
-With `-control-subject=commands.<VIN>.demo`, the client listens for JSON
-control requests and replies on the request's reply subject:
+With `-control-subject=commands.>` the client subscribes a **wildcard**
+control subject and adopts whichever pool VIN a `start` request names. NATS
+`>` must be the **final** subject token, so `commands.>.demo` would be an
+invalid subject — the client subscribes `commands.>` which matches
+`commands.<VIN>.demo` requests for every pool VIN. (In the demo stack,
+`DEMO_MODE=true` on the auth-callout grants the client the fleet-wide
+`commands.>` permission needed for this; production keeps per-VIN
+`commands.<VIN>.>` grants.)
+
+Control requests are JSON on the control subject and replies go to the
+request's reply subject:
 
 ```
-Request:  {"action": "start"|"stop"|"status", "component": "<id>"}
+Request:  {"action": "start"|"stop"|"status"|"degradation"|"speed"|"reset",
+           "component": "<id>", "preset": "<preset>", "vin": "<pool VIN>"}
           component is optional — omitted = all components (legacy behavior).
-Reply:    {"vin","running","published","messageType",
-           "components":[{"id","label","enabled","sensors":[{"name","label","unit"}]}]}
+          preset selects a degradation trajectory (degradation/speed actions).
+          vin is honored on "start": a start for a DIFFERENT pool VIN makes
+          the client adopt that VIN first (see below).
+Reply:    {"vin": "<adopted>", "running", "published", "messageType",
+           "components": [{"id","label","enabled","sensors":[{"name","label","unit"}]}],
+           "ground_truth": {...}, "speed", "degradation_accel",
+           "route": {"total_m", "lap"}, "live": {...}}
 ```
+
+**Runtime VIN switching**: on `start` with a `vin` that differs from the
+currently active VIN, the client **adopts** that VIN before enabling
+components — it swaps the active VIN under lock, reseeds the degradation
+curves from the new VIN's fleet preset, clears ground-truth/live/route state
+and restarts the drive cycle clean (battery age 0, zeroed brake
+accumulator), exactly like a reset. Publish subjects read the active VIN
+dynamically, so telemetry repoints to the adopted VIN automatically.
 
 Components: `battery`, `cabin`, `powertrain`, `chassis` (see
 `newControlState` in `main.go`). `start`/`stop` with a `component` toggles

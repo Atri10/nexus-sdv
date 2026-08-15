@@ -25,6 +25,14 @@ label. When the per-wheel columns are absent (older simulator, mixed
 history) the processor falls back to the legacy single-channel subjects
 `pm.{VIN}.tires` / `pm.{VIN}.brake`.
 
+**Continuous health meters** — scores are continuous in the underlying
+signal, not step functions that floor once past a threshold: battery maps
+resting voltage 12.63 V → 10.5 V onto 100 → 0, tires map compensated
+pressure 2.3 bar → 0.9 bar onto 100 → 0. Severity stays driven by the
+threshold rules, which can escalate below the meter's reading: battery
+EWMA < 12.2 V → action, < 11.8 V → critical; tires P_comp < 1.8 bar →
+action, < 1.2 bar → critical.
+
 Detection is **deterministic and explainable** — every alert carries the
 evidence (ewma voltage, slope, threshold, wheel/pad…) and a plain-language
 explanation built from templates. Details in
