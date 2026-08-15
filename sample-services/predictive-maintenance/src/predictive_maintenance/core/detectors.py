@@ -61,11 +61,16 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
         num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, comp))
         den = sum((x - mean_x) ** 2 for x in xs)
         slope_mv_day = (num / den * 1000.0) if den else 0.0
+        # Continuous health: map the EWMA resting voltage onto a 0-100 scale
+        # (12.63 V healthy = 100, 10.5 V dead = 0). This makes the health
+        # meter track the actual death arc — a battery collapsing 11.3 → 10.5 V
+        # reads 30 → 0, not a frozen 25 — which is what a viewer expects from
+        # "battery dying". The threshold rules below then only ADD penalty
+        # (slope / cranking), they never override the voltage-derived score.
+        score = min(score, round(max(0, min(100, (ewma - 10.5) / (12.63 - 10.5) * 100))))
         if ewma < BATTERY_ACTION_V:
-            score = min(score, 25)
             reasons.append(f"EWMA {ewma:.2f} V < {BATTERY_ACTION_V} V (action)")
         elif ewma < BATTERY_ADVISORY_V:
-            score = min(score, 60)
             reasons.append(f"EWMA {ewma:.2f} V < {BATTERY_ADVISORY_V} V (advisory)")
         if slope_mv_day < BATTERY_SLOPE_MV:
             score = min(score, 55)
@@ -82,6 +87,21 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
                 score = min(score, 30)
                 reasons.append(f"R_int {r_int:.1f} mΩ > {CRANK_R_MULT:.1f}x baseline")
     score = max(0, score)
+    # Severity comes from the THRESHOLD rules (the alert signal), not the
+    # continuous meter: a battery at 12.10 V is below the 12.2 V action line
+    # and must alert as action even though its continuous score (~75) still
+    # reads high. The score is the degradation *meter*; the threshold rules
+    # are the *alerts*. Very low voltage (< 11.8 V) escalates to critical.
+    if ewma is not None and ewma < BATTERY_ACTION_V - 0.4:
+        severity = "critical"
+    elif ewma is not None and ewma < BATTERY_ACTION_V:
+        severity = "action"
+    elif ewma is not None and ewma < BATTERY_ADVISORY_V:
+        severity = "advisory"
+    elif any(vmin < CRANK_VMIN for _, vmin, _ in crank):
+        severity = "critical"
+    else:
+        severity = _band(score)
     if ewma is None:
         evidence = {"cranking_only": "true",
                     "threshold_advisory": f"{BATTERY_ADVISORY_V}", "threshold_action": f"{BATTERY_ACTION_V}"}
@@ -93,7 +113,7 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
             ewma, slope_mv_day, BATTERY_ADVISORY_V)) or ("; ".join(reasons) or "No anomaly.")
     return DetectorResult(
         health_score=score,
-        severity="critical" if score < 30 else _band(score),
+        severity=severity,
         evidence=evidence,
         explanation=explanation,
     )
@@ -131,14 +151,29 @@ def detect_tires(samples, recommended_bar=2.3):
     last_p = comp[-1][1]
     score = 100
     reasons = []
+    # Continuous health: map the compensated pressure onto 0-100
+    # (2.3 bar healthy = 100, 0.9 bar flat = 0). A tire collapsing 1.7 → 0.9 bar
+    # reads 60 → 0 instead of freezing at 20 — the flat-death arc stays
+    # visible, mirroring the battery's voltage-continuous health.
+    score = min(score, round(max(0, min(100, (last_p - 0.9) / (2.3 - 0.9) * 100))))
     if last_p < TIRE_FLOOR_BAR:
-        score = min(score, 20)
         reasons.append(f"P_comp {last_p:.2f} bar < {TIRE_FLOOR_BAR} bar (action)")
     if slope_bar_m < TIRE_SLOPE_BAR_M:
         score = min(score, 55)
         reasons.append(f"slope {slope_bar_m:.3f} bar/month < {TIRE_SLOPE_BAR_M} bar/month")
     score = max(0, score)
-    return DetectorResult(score, "action" if score < 30 else _band(score),
+    # Severity from thresholds, not the continuous meter: below the 1.8 bar
+    # floor is action regardless of score; a truly flat tire (< 1.2 bar)
+    # escalates to critical.
+    if last_p < 1.2:
+        severity = "critical"
+    elif last_p < TIRE_FLOOR_BAR:
+        severity = "action"
+    elif slope_bar_m < TIRE_SLOPE_BAR_M:
+        severity = "advisory"
+    else:
+        severity = _band(score)
+    return DetectorResult(score, severity,
                           {"p_comp_bar": f"{last_p:.3f}", "slope_bar_month": f"{slope_bar_m:.4f}",
                            "threshold_slope": f"{TIRE_SLOPE_BAR_M}", "floor_bar": f"{TIRE_FLOOR_BAR}"},
                           "; ".join(reasons) or "No tire anomaly detected.")
