@@ -10,6 +10,16 @@ Companion first-principles docs (same date):
 
 Signal definitions (what each raw telemetry parameter means, incl. `BRAKE_PEDAL_PCT`) are in the glossary section of `2026-08-14-pm-algorithms-implementation.md`.
 
+### Signal sourcing — where each raw parameter comes from
+
+| Quantity the detector consumes | Proto source | Bigtable qualifier | Emitted by (simulator) | Algorithm step |
+|---|---|---|---|---|
+| Resting voltage `V_rest` | `TelemetryMessage.SensorReading{sensor: "battery.voltage"}` (string value) | `dynamic:battery.voltage` | `buildBatteryTelemetry` from `BatteryAt(ageDays)` (`main.go(publishOnce)`) | Input to temp compensation → EWMA + slope |
+| Battery temperature `T` | `SensorReading{sensor: "battery.temp"}` | `dynamic:battery.temp` | `buildBatteryTelemetry` reusing `TireTempAt(ageDays)` | Compensation temperature (forward-filled last-known) |
+| Cranking `V_min` / `I_crank` (M2) | — (never published) | `dynamic:battery.current` exists but is dead data | `BatteryAt` computes them but `publishOnce` discards (`_ = vMin; _ = rInt`) | Dormant — see implementation doc §8.2 |
+
+The full chain (physics → proto → NATS → Bigtable → data-api → processor → detector) is traced in `2026-08-15-pm-use-case-end-to-end.md`.
+
 ---
 
 ## 1. Why resting OCV indicates health
