@@ -106,7 +106,11 @@ export async function discoverSimulator(pool: string[]): Promise<string | null> 
     if (result.status !== 'fulfilled') continue;
     try {
       const parsed = JSON.parse(sc.decode(result.value.reply.data)) as DemoControlReply;
-      if (!parsed.error) return result.value.vin;
+      // The simulator answers status for EVERY pool VIN (it subscribes
+      // commands.> and adopts the requested VIN on start), so the probed
+      // VIN is meaningless — the reply's OWN vin field is the sim's actual
+      // identity. Use that, not the subject we probed.
+      if (!parsed.error) return parsed.vin || result.value.vin;
     } catch {
       // Malformed reply — keep scanning the rest of the pool.
     }

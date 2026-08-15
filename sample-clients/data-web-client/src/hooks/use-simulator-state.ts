@@ -78,7 +78,13 @@ export function useSimulatorState() {
     if (reply && epochAtFetch === commandEpoch.current) {
       // Healthy reply — reset the failure counter.
       consecutiveFailures.current = 0;
-      setState({ vin, running: reply.running, sim: reply, lastUpdated: Date.now() });
+      // The sim may have ADOPTED a different VIN (runtime VIN switching —
+      // Start with another pool VIN runs a fresh vehicle). The reply's own
+      // vin is authoritative; adopt it so the page tracks the real sim
+      // identity instead of the stale probed VIN.
+      const actualVin = reply.vin || vin;
+      if (actualVin !== vin) vinRef.current = actualVin;
+      setState({ vin: actualVin, running: reply.running, sim: reply, lastUpdated: Date.now() });
     } else {
       // One dropped poll is a blip (NATS hiccup, 503); only after two
       // consecutive failures do we treat the sim as gone and clear, so the
