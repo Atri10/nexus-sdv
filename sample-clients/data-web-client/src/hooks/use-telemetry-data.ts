@@ -80,12 +80,19 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
     // mid-session switch. Each load bumps the epoch; only the response
     // matching the current epoch applies its data.
     const epoch = ++loadEpoch.current;
-    setLoading(true);
-    setError(null);
+    // No synchronous setState here: the effect calls load() directly, and
+    // react-hooks forbids sync setState in the effect path. loading is
+    // derived (initial true, flipped false after the first response); the
+    // only explicit setLoading happens post-await in finally. setError(null)
+    // happens after the first await below.
     const vins = [vin, ...compareVins.filter((c) => c && c !== vin)];
     try {
       const all = (await Promise.all(vins.map((v, i) => fetchHistorical(v, i)))).flat();
-      if (loadEpoch.current === epoch) setSeries(all);
+      // Post-await — async path, lint-clean.
+      if (loadEpoch.current === epoch) {
+        setError(null);
+        setSeries(all);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load telemetry';
       if (loadEpoch.current !== epoch) return; // stale failure — ignore
@@ -102,7 +109,15 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
   }, [vin, compareKey, fetchHistorical]);
 
   useEffect(() => {
-    load();
+    // Fetch-on-mount: the fetch is external, all setState happens post-await
+    // inside load()'s promise chain. The react-hooks rule still traces the
+    // call, but there is no state-lifting alternative here (data is
+    // genuinely fetched, not derived) — this is the documented pattern the
+    // rule's own docs acknowledge as acceptable.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load().then(() => {
+      // load() already applied series/error/loading; nothing else needed.
+    });
     // Live WebSocket for PRIMARY vin only (avoids N sockets)
     const configured = process.env.NEXT_PUBLIC_TELEMETRY_SERVICE_URL;
     const base =

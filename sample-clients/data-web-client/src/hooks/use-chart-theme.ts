@@ -42,39 +42,34 @@ function resolveFontFamily(): Promise<string> {
 
 export function useChartTheme(): ChartThemeColors {
   const { resolvedTheme } = useTheme();
-  const [colors, setColors] = useState<ChartThemeColors>({
-    grid: '#e5e7eb',
-    ticks: '#6b7280',
-    legend: '#374151',
-    title: '#111827',
-    fontFamily: cachedFontFamily ?? FALLBACK_FONT_FAMILY,
-    crosshair: '#22D3EE',
-  });
-
-  // Palette follows the resolved theme; fontFamily and crosshair are
-  // theme-stable accents.
-  useEffect(() => {
-    const dark = resolvedTheme === 'dark';
-    setColors((prev) => ({
-      ...prev,
-      grid: dark ? '#374151' : '#e5e7eb',
-      ticks: dark ? '#9ca3af' : '#6b7280',
-      legend: dark ? '#e5e7eb' : '#374151',
-      title: dark ? '#f9fafb' : '#111827',
-    }));
-  }, [resolvedTheme]);
+  const [fontFamily, setFontFamily] = useState<string>(
+    cachedFontFamily ?? FALLBACK_FONT_FAMILY,
+  );
 
   // Resolve the body font once per page load, then swap it into the theme.
+  // This is a genuine external side effect (fonts.ready + computed style),
+  // so the state update lives in a promise callback — not the effect body —
+  // which keeps the react-hooks linter happy.
   useEffect(() => {
     if (cachedFontFamily) return;
     let active = true;
     resolveFontFamily().then((family) => {
-      if (active) setColors((prev) => ({ ...prev, fontFamily: family }));
+      if (active) setFontFamily(family);
     });
     return () => {
       active = false;
     };
   }, []);
 
-  return colors;
+  // Palette follows the resolved theme — derived during render (no
+  // setState-in-effect), with fontFamily/crosshair theme-stable accents.
+  const dark = resolvedTheme === 'dark';
+  return {
+    grid: dark ? '#374151' : '#e5e7eb',
+    ticks: dark ? '#9ca3af' : '#6b7280',
+    legend: dark ? '#e5e7eb' : '#374151',
+    title: dark ? '#f9fafb' : '#111827',
+    fontFamily,
+    crosshair: '#22D3EE',
+  };
 }

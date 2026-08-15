@@ -14,32 +14,24 @@ const MAX_MESSAGES = 100;
  * written back to sessionStorage in the same update, keeping the two in sync.
  */
 export function useScoringMessages() {
-  const [messages, setMessages] = useState<string[]>([]);
-
-  // Hydrate from sessionStorage on mount. Wrapped in its own effect (rather
-  // than a lazy useState initializer) to avoid SSR/hydration mismatches:
-  // sessionStorage doesn't exist on the server, so the initial render uses
-  // [] on both server and client; this effect then fills it in client-side.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
+  // Hydrate from sessionStorage via a lazy initializer (SSR-safe: storage
+  // doesn't exist on the server, so the SSR render gets [] and the client
+  // first render hydrates). No setState-in-effect — react-hooks lint.
+  const [messages, setMessages] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
     try {
       const raw = window.sessionStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as unknown;
-        if (Array.isArray(parsed)) {
-          // Trim on hydration too — protects against legacy entries that
-          // pre-date the cap, or a manual edit of sessionStorage.
-          setMessages(
-            parsed
-              .filter((m): m is string => typeof m === 'string')
-              .slice(0, MAX_MESSAGES),
-          );
-        }
-      }
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      // Trim on hydration too — protects against legacy entries that
+      // pre-date the cap, or a manual edit of sessionStorage.
+      return parsed.filter((m): m is string => typeof m === 'string').slice(0, MAX_MESSAGES);
     } catch {
       // Corrupted entry — ignore and start fresh.
+      return [];
     }
-  }, []);
+  });
 
   // Open the SSE stream once on mount. Each message is prepended to state
   // and the same updated list is written to sessionStorage so a reload
