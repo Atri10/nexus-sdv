@@ -25,7 +25,12 @@ function getScoringMessageType(): protobuf.Type {
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
-  if (!session) {
+  // Local-demo bypass: DEMO_MODE=true (local stack) streams without a
+  // session (NextAuth 4 is incompatible with this repo's Next.js 16 runtime,
+  // so the demo doesn't depend on it). Production keeps DEMO_MODE unset.
+  // Mirrors /api/pm/stream — without this, the scoring panel 401s and its
+  // EventSource closes forever in the demo.
+  if (!session && process.env.DEMO_MODE !== 'true') {
     return new Response('Unauthorized', { status: 401 });
   }
 

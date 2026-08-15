@@ -97,7 +97,7 @@ export function DemoControlBar({ vin, onVinChange, simulatorVin, running, busy, 
           Stop
         </Button>
       ) : (
-        <Button size="sm" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={onStart} disabled={busy}>
+        <Button size="sm" className="transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]" onClick={onStart} disabled={busy || !simulatorVin} title={simulatorVin ? `Starts simulator ${simulatorVin}` : 'No simulator detected'}>
           <Play />
           Start
         </Button>
