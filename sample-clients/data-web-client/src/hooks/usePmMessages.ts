@@ -1,10 +1,18 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { parsePmMessage, type PmMessage } from '@/lib/pm-types';
 
 const STORAGE_KEY = 'pmMessages';
+const STORAGE_GEN_KEY = 'pmMessages.gen';
 const MAX_MESSAGES = 100;
+
+/** Identity of a PM message for dedup: the detector publishes continuously
+ * in demo mode and EventSource auto-reconnects, so the same (vin, component,
+ * timestamp) can arrive twice after a blip. Treat those as duplicates. */
+function messageId(m: PmMessage): string {
+  return `${m.vin}|${m.component}|${m.timestamp}`;
+}
 
 /**
  * Subscribe to the predictive-maintenance SSE stream and persist incoming
@@ -17,6 +25,10 @@ const MAX_MESSAGES = 100;
  */
 export function usePmMessages() {
   const [messages, setMessages] = useState<PmMessage[]>([]);
+  // Generation snapshot at mount: if another page clears alerts while this
+  // page is mounted, the generation moves and this page's writes are stale —
+  // skip the setItem so cleared alerts aren't resurrected.
+  const genRef = useRef<string | null>(null);
 
   // Hydrate from sessionStorage on mount. Wrapped in its own effect (rather
   // than a lazy useState initializer) to avoid SSR/hydration mismatches:
@@ -28,6 +40,7 @@ export function usePmMessages() {
       const raw = window.sessionStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as unknown;
+        genRef.current = window.sessionStorage.getItem(STORAGE_GEN_KEY);
         if (Array.isArray(parsed)) {
           // Trim on hydration too — protects against legacy entries that
           // pre-date the cap, or a manual edit of sessionStorage.
@@ -61,11 +74,26 @@ export function usePmMessages() {
       const message = parsePmMessage(e.data);
       if (message === null) return;
       setMessages((prev) => {
+        // Dedup on identity: the detector publishes every poll in demo mode
+        // and EventSource auto-reconnects, so the same (vin, component,
+        // timestamp) can arrive twice after a blip — don't stack duplicates.
+        if (prev.length > 0 && messageId(prev[0]) === messageId(message)) {
+          return prev;
+        }
         // Newest message goes to index 0; cap the total at MAX_MESSAGES so
         // the array (and sessionStorage payload) can't grow unboundedly.
         const next = [message, ...prev].slice(0, MAX_MESSAGES);
         try {
-          window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          const currentGen = window.sessionStorage.getItem(STORAGE_GEN_KEY);
+          // Stale-writer guard: if a clear happened on another page after we
+          // mounted, our in-memory list predates it — drop the write so the
+          // cleared alerts aren't resurrected.
+          if (genRef.current === null || currentGen === genRef.current) {
+            window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          }
+          // Always refresh our snapshot so subsequent writes are judged
+          // against the latest generation.
+          genRef.current = currentGen;
         } catch {
           // Quota exceeded or storage disabled — fall through; the in-memory
           // list still updates so the UI stays correct for this session.
@@ -87,6 +115,10 @@ export function usePmMessages() {
     setMessages([]);
     try {
       window.sessionStorage.removeItem(STORAGE_KEY);
+      // Bump the generation so another page's stale in-memory list (mounted
+      // before this clear) can detect its writes are obsolete and skip the
+      // setItem that would resurrect the cleared alerts.
+      window.sessionStorage.setItem(STORAGE_GEN_KEY, String(Date.now()));
     } catch {
       // Storage disabled — in-memory clear above is enough.
     }
