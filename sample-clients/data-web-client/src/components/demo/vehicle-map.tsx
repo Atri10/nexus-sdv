@@ -161,7 +161,7 @@ export function VehicleMap({ series, paused }: VehicleMapProps) {
     draw(0, 0);
 
     let raf = 0;
-    let start = performance.now();
+    const start = performance.now();
     const tick = (now: number) => {
       const t = (now - start) / 1000;
       draw(8 + 8 * (0.5 - 0.5 * Math.cos(t * Math.PI * 2)), 0.6 * (0.5 - 0.5 * Math.cos(t * Math.PI * 2)));

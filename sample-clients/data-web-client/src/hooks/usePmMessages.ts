@@ -27,51 +27,51 @@ function messageId(m: PmMessage): string {
  * written back to sessionStorage in the same update, keeping the two in sync.
  */
 export function usePmMessages() {
-  const [messages, setMessages] = useState<PmMessage[]>([]);
+  // Hydrate from sessionStorage via a lazy initializer: sessionStorage
+  // doesn't exist on the server, so the SSR render gets [] and the client
+  // first render hydrates from storage — no setState-in-effect needed.
+  // (react-hooks/set-state-in-effect — the old hydration effect failed CI.)
+  const [messages, setMessages] = useState<PmMessage[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.sessionStorage.getItem(STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      // Trim on hydration too — protects against legacy entries that
+      // pre-date the cap, or a manual edit of sessionStorage.
+      //
+      // Entries stored by the message effect are PmMessage OBJECTS
+      // (JSON.stringify of the parsed message), unlike useScoringMessages
+      // which stores raw strings. Accept both forms; parsePmMessage wraps
+      // JSON.parse in try/catch, so corrupted entries map to null and are
+      // filtered out below.
+      const seen = new Set<string>();
+      return parsed
+        .map((m) => (typeof m === 'string' ? parsePmMessage(m) : parsePmMessage(JSON.stringify(m))))
+        .filter((m): m is PmMessage => {
+          if (m === null) return false;
+          const id = messageId(m);
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        })
+        .slice(0, MAX_MESSAGES);
+    } catch {
+      // Corrupted entry — ignore and start fresh.
+      return [];
+    }
+  });
   // Generation snapshot at mount: if another page clears alerts while this
   // page is mounted, the generation moves and this page's writes are stale —
   // skip the setItem so cleared alerts aren't resurrected.
   const genRef = useRef<string | null>(null);
 
-  // Hydrate from sessionStorage on mount. Wrapped in its own effect (rather
-  // than a lazy useState initializer) to avoid SSR/hydration mismatches:
-  // sessionStorage doesn't exist on the server, so the initial render uses
-  // [] on both server and client; this effect then fills it in client-side.
+  // Snapshot the generation once, client-side (storage is not readable
+  // during SSR). The ref is deliberately populated here, not in state.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = window.sessionStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as unknown;
-        genRef.current = window.sessionStorage.getItem(STORAGE_GEN_KEY);
-        if (Array.isArray(parsed)) {
-          // Trim on hydration too — protects against legacy entries that
-          // pre-date the cap, or a manual edit of sessionStorage.
-          //
-          // Entries stored by the message effect are PmMessage OBJECTS
-          // (JSON.stringify of the parsed message), unlike useScoringMessages
-          // which stores raw strings. Accept both forms; parsePmMessage wraps
-          // JSON.parse in try/catch, so corrupted entries map to null and are
-          // filtered out below.
-          const seen = new Set<string>();
-          setMessages(
-            parsed
-              .map((m) =>
-                parsePmMessage(typeof m === 'string' ? m : JSON.stringify(m)),
-              )
-              .filter((m): m is PmMessage => {
-                if (m === null) return false;
-                const id = messageId(m);
-                if (seen.has(id)) return false;
-                seen.add(id);
-                return true;
-              })
-              .slice(0, MAX_MESSAGES),
-          );
-        }
-      }
-    } catch {
-      // Corrupted entry — ignore and start fresh.
+    if (typeof window !== 'undefined') {
+      genRef.current = window.sessionStorage.getItem(STORAGE_GEN_KEY);
     }
   }, []);
 

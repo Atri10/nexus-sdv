@@ -221,12 +221,20 @@ export default function PmPage() {
   }, [recordSample]);
 
   // Trim the buffer to the rolling window (kept separate so the charts only
-  // re-render when a sample actually ages out).
+  // re-render when a sample actually ages out). The cutoff is derived from a
+  // wall-clock state refreshed by the interval — the memo reads it, so the
+  // cutoff is a render-cycle value, not an impure Date.now() inside useMemo
+  // nor a ref read during render (both react-hooks violations).
+  const [wallClock, setWallClock] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setWallClock(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
   const windowedSamples = useMemo(() => {
-    const cutoff = Date.now() - CHART_WINDOW_MS;
+    const cutoff = wallClock - CHART_WINDOW_MS;
     const trimmed = samples.filter((s) => s.t >= cutoff);
     return trimmed.length === samples.length ? samples : trimmed;
-  }, [samples]);
+  }, [samples, wallClock]);
 
   // ---- Derived display values ----------------------------------------------
   const vehicle = vehicles.find((v) => v.deviceId === selectedVin);

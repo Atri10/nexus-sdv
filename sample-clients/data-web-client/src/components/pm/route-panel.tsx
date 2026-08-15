@@ -73,7 +73,7 @@ function projectRoute(): { d: string; markerAt: (f: number) => [number, number];
  * same vehicle, same route, repeated laps, accumulating degradation.
  */
 export function RoutePanel({ progress, lap, totalM, speed }: RoutePanelProps) {
-  const { d, markerAt, W, H } = useMemo(projectRoute, []);
+  const { d, markerAt, W, H } = useMemo(() => projectRoute(), []);
   const [mx, my] = useMemo(() => markerAt(progress), [markerAt, progress]);
 
   return (

@@ -63,12 +63,12 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
 
   // No ?vin= given: randomize the default vehicle client-side (after the
   // deterministic first paint so SSR and hydration agree).
-  // Component registry comes from the shared status reply.
-  useEffect(() => {
-    setComponents(
-      simState.sim?.components ? stableComponents(simState.sim.components) : null
-    );
-  }, [simState.sim]);
+  // Component registry comes from the shared status reply — derived during
+  // render (stableComponents memoizes), not via a setState effect, which the
+  // react-hooks linter forbids.
+  if (!components && simState.sim?.components) {
+    setComponents(stableComponents(simState.sim.components));
+  }
 
   const runAction = useCallback(
     async (action: 'start' | 'stop') => {
