@@ -34,13 +34,22 @@ def test_brake_wear_advisory_action():
     assert detect_brake(0.5).severity == "healthy"
 
 def test_tires_slow_leak_slope_advisory():
-    # 2.30 → 2.26 bar over 14 days ≈ -0.086 bar/month → below slope rule, no alert
-    # from slope; 2.3 → 1.75 over 30 days → crosses floor → action.
+    # 2.30 → 1.75 bar over 30 days: the continuous health meter maps pressure
+    # onto 0-100 (2.3 bar = 100, 0.9 bar = 0) so 1.75 bar ≈ 61, but the
+    # severity comes from the THRESHOLD rules — below the 1.8 bar floor is an
+    # action alert even at score 61. The old step rule froze the meter at 20;
+    # now the meter tracks the flat-death arc while alerts stay thresholded.
     import math
     days = 30
     samples = [(i * 86400.0, 2.30 - 0.55 * i / days, 303.15) for i in range(days)]
     r = detect_tires(samples, recommended_bar=2.3)
-    assert r.severity == "action"  # floor 1.75 < 1.8
+    assert r.severity == "action"  # 1.75 < 1.8 floor → action alert
+    assert 50 <= r.health_score < 70  # continuous meter ≈ 61
+    # A truly flat tire (1.0 bar) must score near zero and be critical.
+    flat = [(i * 86400.0, 2.30 - 1.3 * i / days, 303.15) for i in range(days)]
+    rf = detect_tires(flat, recommended_bar=2.3)
+    assert rf.health_score < 15
+    assert rf.severity == "critical"
 
 def test_tires_temp_compensation():
     # Same absolute pressure at hot temp must compensate to a higher P_comp.
