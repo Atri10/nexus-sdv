@@ -3,7 +3,9 @@ package main
 import (
 	"math"
 	mathrand "math/rand"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestBatteryDegradesOverHorizon(t *testing.T) {
@@ -232,6 +234,42 @@ func TestAdoptOnStartSwitchesVIN(t *testing.T) {
 	}
 	if ctl.vin != "VIN1002" {
 		t.Errorf("c.vin = %q, want unchanged VIN1002", ctl.vin)
+	}
+}
+
+// TestAdoptRepointsPublishSubjects: after the simulator adopts another VIN,
+// the next tick's payloads must be published under the NEW VIN — the publish
+// loop mirrors the adopted VIN from the control state onto the client before
+// building payloads (subjects read v.VIN, so they repoint automatically).
+func TestAdoptRepointsPublishSubjects(t *testing.T) {
+	ctl, _ := newTestControl("battery", "chassis")
+	ctl.resetFn = func() {} // wire the reset hook like PublishTelemetryContinuously
+
+	v := &VehicleClient{VIN: "VIN1009"}
+	if err := ctl.adopt("VIN1002"); err != nil {
+		t.Fatalf("adopt failed: %v", err)
+	}
+	// Simulate the publish loop's per-tick mirror (see publishOnce):
+	// adopted VIN + degradation configs flow onto the client.
+	v.VIN = ctl.vin
+	v.batteryAgeDays = 0
+	v.tiresDeg = ctl.degradationFor("tires")
+
+	msgs := v.buildPayloads(time.Now(), batteryState{deg: ctl.degradationFor("battery")}, driveState{}, "both", 0, func(string) bool { return true })
+	subjects := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		subjects = append(subjects, m.subject)
+	}
+	for _, s := range subjects {
+		if strings.Contains(s, "VIN1009") {
+			t.Errorf("subject %q still references old VIN after adopt", s)
+		}
+	}
+	if !contains(subjects, "telemetry-generic.VIN1002.battery") {
+		t.Errorf("expected telemetry-generic.VIN1002.battery in %v", subjects)
+	}
+	if !contains(subjects, "telemetry.VIN1002") {
+		t.Errorf("expected telemetry.VIN1002 metrics report in %v", subjects)
 	}
 }
 
