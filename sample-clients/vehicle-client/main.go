@@ -96,6 +96,7 @@ type driveState struct {
 	brakePct       float64
 	phase          int     // 0 accelerate, 1 cruise, 2 brake, 3 idle
 	phaseLeft      float64 // seconds remaining in current phase
+	cruiseTarget   float64 // m/s cruise target — city ~50 or highway ~90 km/h
 	tripDist       float64 // metres travelled along the trip route
 	lat            float64
 	lng            float64
@@ -150,6 +151,17 @@ func randomVinFromPool(pool []string) string {
 // poolIndex returns the index of vin in the VIN_POOL env pool, or -1 when
 // the VIN is not in the pool (no pool env / custom -vin). Used to give the
 // fleet a deterministic degradation spread in demo mode.
+// gauss returns a sample from a zero-mean normal distribution with the
+// given standard deviation (Box-Muller). Real vehicle sensors read Gaussian
+// noise — thermal jitter, ADC quantization, EM pickup — not uniform jitter;
+// a uniform spread reads as "synthetic" on a zoomed chart and over-smooths
+// the PM EWMA. Box-Muller keeps it dependency-free.
+func gauss(stddev float64) float64 {
+	u1 := 1.0 - mathrand.Float64()
+	u2 := mathrand.Float64()
+	return stddev * math.Sqrt(-2.0*math.Log(u1)) * math.Cos(2.0*math.Pi*u2)
+}
+
 func poolIndex(vin string) int {
 	pool := parseVINPool(os.Getenv("VIN_POOL"))
 	for i, v := range pool {
@@ -166,6 +178,7 @@ func newDriveState() driveState {
 		fuelLevel:     20 + mathrand.Float64()*60,
 		phase:         0,
 		phaseLeft:     5 + mathrand.Float64()*10,
+		cruiseTarget:  50.0 / 3.6,
 		tripDist:      0,
 		lat:           lat,
 		lng:           lng,
@@ -188,6 +201,12 @@ func driveCycleStep(s *driveState, dt, speed float64) {
 			s.phaseLeft = 6 + mathrand.Float64()*12 // accelerate
 		case 1:
 			s.phaseLeft = 8 + mathrand.Float64()*15 // cruise
+			// 55 % city (~50 km/h), 45 % highway (~90 km/h).
+			if mathrand.Float64() < 0.55 {
+				s.cruiseTarget = 50.0 / 3.6
+			} else {
+				s.cruiseTarget = 90.0 / 3.6
+			}
 		case 2:
 			s.phaseLeft = 4 + mathrand.Float64()*8 // brake
 		case 3:
@@ -204,6 +223,14 @@ func driveCycleStep(s *driveState, dt, speed float64) {
 		s.velocity += (mathrand.Float64() - 0.5) * 0.6 * dt
 		s.acceleratorPct = clamp(15+mathrand.Float64()*20, 0, 100)
 		s.brakePct = 0
+		// Realistic speed envelope: hold the cruise target (a mix of
+		// city ~50 and highway ~90 km/h, picked at phase start), not an
+		// unbounded climb toward 200. This keeps the profile looking like
+		// real driving on a zoomed speed chart.
+		if s.velocity > s.cruiseTarget {
+			s.velocity -= 0.8 * dt
+			s.acceleratorPct = 8 // light maintenance throttle
+		}
 	case 2: // brake
 		vStart := s.velocity
 		s.velocity -= 3.0 * dt
@@ -224,7 +251,7 @@ func driveCycleStep(s *driveState, dt, speed float64) {
 		s.acceleratorPct = 0
 		s.brakePct = 0
 	}
-	s.velocity = clamp(s.velocity, 0, 200)
+	s.velocity = clamp(s.velocity, 0, 130.0/3.6) // 130 km/h hard cap (autobahn-ish)
 	s.brakePct = clamp(s.brakePct, 0, 100)
 
 	// Derived engine state.
@@ -365,8 +392,8 @@ func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, 
 	ignitionState := drive.engineRPM > 0
 	gpsLat := float32(drive.lat)
 	gpsLon := float32(drive.lng)
-	tirePressure := 2.2 + (mathrand.Float64()-0.5)*0.1
-	tireTemp := 28.0 + (mathrand.Float64()-0.5)*0.5
+	tirePressure := 2.2 + gauss(0.02)
+	tireTemp := 28.0 + gauss(0.3)
 	if tires != nil {
 		tirePressure = tires.TirePressureAt("FL", ageDays)
 		tireTemp = tires.TireTempAt("FL", ageDays)
@@ -400,8 +427,8 @@ func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, 
 func buildChassisWheelTelemetry(vin string, drive driveState, tires *DegradationConfig, ageDays float64, now time.Time) ([]*pb.TelemetryMessage, error) {
 	var out []*pb.TelemetryMessage
 	for _, wheel := range wheels {
-		pressure := 2.2 + (mathrand.Float64()-0.5)*0.1
-		temp := 28.0 + (mathrand.Float64()-0.5)*0.5
+		pressure := 2.2 + gauss(0.02)
+		temp := 28.0 + gauss(0.3)
 		if tires != nil {
 			pressure = tires.TirePressureAt(wheel, ageDays)
 			temp = tires.TireTempAt(wheel, ageDays)
@@ -1906,16 +1933,17 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		speed := ctl.speedMultiplier()
 		battery.ageDays += float64(intervalSeconds) / 86400.0 * speed * ctl.degradationAccel
 		vRest, vMin, rInt := battery.deg.BatteryAt(battery.ageDays)
-		battery.voltage = vRest + (mathrand.Float64()-0.5)*0.025 // ±0.025 V noise
-		battery.soc = 85.5 - 30*((battery.deg.severityFactor()*battery.ageDays/120.0)/1.0)
-		battery.temp = battery.deg.TireTempAt("FL", battery.ageDays) // reuse temp cycle
+		// Realistic per-signal Gaussian noise: a resting voltage sensor reads
+		// ±10 mV std (thermal + ADC), SOC ±0.5%, temp ±0.3 °C. The PM
+		// detector's EWMA (alpha 0.1) then sees a clean physical trend under
+		// plausible sensor scatter instead of uniform jitter.
+		battery.voltage = vRest + gauss(0.010)
+		battery.soc = clamp(85.5-30*((battery.deg.severityFactor()*battery.ageDays/120.0)/1.0)+gauss(0.5), 5, 100)
+		battery.temp = battery.deg.BatteryTempAt(battery.ageDays) + gauss(0.3)
 		_ = vMin
 		_ = rInt
-		if battery.soc < 5 {
-			battery.soc = 5 // floor at the degraded minimum — no reset, aging is monotonic
-		}
 		battery.voltage = clamp(battery.voltage, 11.0, 14.5)
-		battery.current = clamp(battery.current, 0, 100)
+		battery.current = clamp(battery.current+gauss(0.4), 0, 100)
 
 		// Advance the randomized drive cycle (velocity, engine, GPS, dynamics).
 		driveCycleStep(&drive, float64(intervalSeconds), speed)
@@ -2015,7 +2043,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 			vRest, _, _ := battery.deg.BatteryAt(battery.ageDays)
 			battery.voltage = clamp(vRest+(mathrand.Float64()-0.5)*0.025, 11.0, 14.5)
 			battery.soc = clamp(85.5-30*(battery.deg.severityFactor()*battery.ageDays/120.0), 5, 100)
-			battery.temp = battery.deg.TireTempAt("FL", battery.ageDays)
+			battery.temp = battery.deg.BatteryTempAt(battery.ageDays)
 
 			now := time.Now().Add(-time.Duration(backfillDays-i) * 24 * time.Hour)
 			// Free-run: backfill history for every component regardless of
