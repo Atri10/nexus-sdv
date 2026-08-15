@@ -45,7 +45,8 @@ export async function GET(request: Request) {
   }
 
   const PmMessage = getPmMessageType();
-  // The detector publishes pm.{VIN}.{component} (3 tokens), so a single-token
+  // The detector publishes pm.{VIN}.{component} (battery, 3 tokens) and
+  // pm.{VIN}.{component}.{wheel} (tires/brake, 4 tokens), so a single-token
   // wildcard ('pm.*') would never match — '>' matches the full remainder.
   const sub = nc.subscribe('pm.>');
 
@@ -95,6 +96,13 @@ export async function GET(request: Request) {
             // protobufjs toJSON() maps proto fields to camelCase, so the SSE
             // payload carries healthScore (etc.) — parsePmMessage accepts it.
             const decoded = PmMessage.decode(msg.data).toJSON() as Record<string, unknown>;
+            // Tires/brake subjects carry a 4th token (pm.{VIN}.{component}.{wheel});
+            // battery stays 3-token. Attach it so the client can group per
+            // wheel/pad without re-parsing subjects.
+            const parts = (msg.subject ?? '').split('.');
+            if (parts.length >= 4 && !('wheel' in decoded)) {
+              decoded.wheel = parts[3];
+            }
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(decoded)}\n\n`));
           } catch (decodeErr: unknown) {
             console.error('[/api/pm/stream] Failed to decode message:', decodeErr);

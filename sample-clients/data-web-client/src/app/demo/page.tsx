@@ -76,13 +76,15 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
       try {
         // Command the live simulator via the shared hook — the user's
         // vehicle selection is NEVER changed by Start/Stop (telemetry
-        // display and simulator control are decoupled).
+        // display and simulator control are decoupled). On start, the
+        // selected VIN is the command target so the simulator adopts it
+        // (runtime VIN switching); stop targets the running sim.
         const target = simState.vin;
         if (!target) {
           toast.error('No simulator detected — is the local stack running? Try `make demo` in local-dev/.');
           return;
         }
-        const reply = await simState.command(action);
+        const reply = await simState.command(action, undefined, undefined, action === 'start' ? vin : target);
         if (!reply || reply.error) {
           toast.error(reply?.error ?? `Simulator did not respond`);
           return;
@@ -94,7 +96,7 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
         setBusy(false);
       }
     },
-    [simState]
+    [simState, vin]
   );
 
   const component = components?.find((c) => c.id === componentId) ?? null;
