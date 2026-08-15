@@ -10,6 +10,7 @@ import TelemetryChart from '@/components/telemetry-chart/TelemetryChart';
 import { useChartTheme } from '@/hooks/use-chart-theme';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
 import type { CoherentHealth } from '@/lib/pm-health';
+import type { PmMessage } from '@/lib/pm-types';
 
 /** One sample of the live values driving the PM charts. */
 export interface PmSample {
@@ -52,6 +53,10 @@ interface PmChartCardProps {
   idle: boolean;
   yRange: { min?: number; max?: number };
   color: string;
+  /** Per-wheel/pad rows for the expand dialog (worst-first). */
+  wheelEntries?: WheelHealthEntry[];
+  /** Worst-wheel label shown in the card summary (e.g. 'FL flat'). */
+  worstWheelLabel?: string;
 }
 
 /**
@@ -61,7 +66,7 @@ interface PmChartCardProps {
  * renders a "start to see live data" placeholder instead of a flat line —
  * a stopped sim must never auto-draw a flatline that reads as real data.
  */
-function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, color }: PmChartCardProps) {
+function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, color, wheelEntries, worstWheelLabel }: PmChartCardProps) {
   const theme = useChartTheme();
   const [expanded, setExpanded] = useState(false);
 
@@ -98,6 +103,11 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
         <CardHeader className="flex flex-row items-baseline justify-between gap-2 pb-1">
           <CardTitle className="text-base font-medium">{title}</CardTitle>
           <div className="flex items-baseline gap-2 font-mono text-sm">
+            {worstWheelLabel && (
+              <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider" style={{ backgroundColor: `${bandColor}22`, color: bandColor }}>
+                {worstWheelLabel}
+              </span>
+            )}
             <span
               className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
               style={{ backgroundColor: `${bandColor}22`, color: bandColor }}
@@ -204,10 +214,46 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
           {health.reason && (
             <p className="text-xs text-muted-foreground">{health.reason}</p>
           )}
+          {wheelEntries && wheelEntries.length > 0 && (
+            <div className="space-y-1.5 border-t border-border/60 pt-3">
+              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {unit === '%' ? 'Per-pad' : 'Per-wheel'}
+              </div>
+              {wheelEntries.map((e) => {
+                const c = HEALTH_BAND_COLOR[e.severity];
+                return (
+                  <div
+                    key={e.wheel}
+                    className="flex items-center gap-2 rounded-md border border-border/50 bg-card/40 px-2.5 py-1.5 text-sm"
+                  >
+                    <span className="font-mono text-xs font-semibold uppercase tracking-wider">
+                      {e.wheel}
+                    </span>
+                    <span
+                      className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
+                      style={{ backgroundColor: `${c}22`, color: c }}
+                    >
+                      {e.provisional ? `~${e.severity}` : e.severity} · {e.score}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{e.reason}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </>
   );
+}
+
+/** One per-wheel/pad PM entry shown in the expand dialog. */
+export interface WheelHealthEntry {
+  wheel: string;
+  score: number;
+  severity: PmMessage['severity'];
+  reason: string;
+  provisional: boolean;
 }
 
 export interface PmChartsProps {
@@ -216,6 +262,12 @@ export interface PmChartsProps {
   health: Record<string, CoherentHealth>;
   /** True when the simulator is stopped / not streaming. */
   idle: boolean;
+  /**
+   * Per-wheel/pad PM entries (worst-first), keyed by component. The expand
+   * dialog lists these rows; the tires/brake card summary shows the worst
+   * one. Optional — legacy callers render without per-wheel detail.
+   */
+  wheelHealth?: Partial<Record<'tires' | 'brake', WheelHealthEntry[]>>;
 }
 
 /**
@@ -225,7 +277,7 @@ export interface PmChartsProps {
  * placeholders instead of flatlines. Y-ranges are death-state aware so the
  * degradation climax stays on-plot.
  */
-export function PmCharts({ samples, health, idle }: PmChartsProps) {
+export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) {
   const series = useMemo<Record<string, ChartSeries>>(() => {
     const make = (
       key: string,
@@ -291,6 +343,12 @@ export function PmCharts({ samples, health, idle }: PmChartsProps) {
         idle={idle}
         yRange={{ min: 0, max: 100 }}
         color={COLORS.brake}
+        wheelEntries={wheelHealth?.brake}
+        worstWheelLabel={
+          wheelHealth?.brake?.[0]
+            ? `${wheelHealth.brake[0].wheel} · ${wheelHealth.brake[0].score}%`
+            : undefined
+        }
       />
       <PmChartCard
         title="Tire pressure"
@@ -301,6 +359,12 @@ export function PmCharts({ samples, health, idle }: PmChartsProps) {
         idle={idle}
         yRange={{ min: 0.9, max: 2.5 }}
         color={COLORS.tires}
+        wheelEntries={wheelHealth?.tires}
+        worstWheelLabel={
+          wheelHealth?.tires?.[0]
+            ? `${wheelHealth.tires[0].wheel} · ${wheelHealth.tires[0].score}%`
+            : undefined
+        }
       />
     </div>
   );

@@ -24,6 +24,57 @@ export interface CoherentHealth {
   reason: string;
 }
 
+/** Wheel/pad instances the detector models per component. */
+export const WHEELS = ['FL', 'FR', 'RL', 'RR'] as const;
+export type Wheel = (typeof WHEELS)[number];
+
+/**
+ * Parse a PM NATS subject into its identity parts. Tires/brake subjects are
+ * pm.{VIN}.{component}.{wheel} (4 tokens); battery stays pm.{VIN}.{component}
+ * (3 tokens) and yields no wheel. Unknown subjects return null.
+ */
+export function pmMessageFromSubject(subject: string): {
+  vin: string;
+  component: 'battery' | 'brake' | 'tires';
+  wheel?: string;
+} | null {
+  const parts = subject.split('.');
+  if (parts.length < 3 || parts[0] !== 'pm') return null;
+  const [, vin, component] = parts;
+  if (!vin || !['battery', 'brake', 'tires'].includes(component)) return null;
+  const wheel = parts.length >= 4 ? parts[3] : undefined;
+  return { vin, component: component as 'battery' | 'brake' | 'tires', wheel };
+}
+
+/** Pick the worst (lowest health score) entry; empty input -> null. */
+export function worstWheel<T extends { health_score: number }>(entries: readonly T[]): T | null {
+  let worst: T | null = null;
+  for (const e of entries) {
+    if (worst === null || e.health_score < worst.health_score) worst = e;
+  }
+  return worst;
+}
+
+/**
+ * Drop all PM-derived UI state for a past VIN when the simulator adopts a new
+ * one: the in-memory message list, the per-component health map, and the
+ * chart sample buffers. Callers pass their state setters; each is reset to
+ * its empty value so the next render shows only the new VIN's data.
+ *
+ * `setHealth` is optional: pages that derive their health map from the
+ * message list (cleared via `setMessages`) have no independent health state
+ * to reset.
+ */
+export function clearPmState<T>(state: {
+  setMessages: (messages: PmMessage[]) => void;
+  setSamples: (samples: T[]) => void;
+  setHealth?: (health: Record<string, CoherentHealth>) => void;
+}): void {
+  state.setMessages([]);
+  state.setSamples([]);
+  state.setHealth?.({});
+}
+
 /** Battery: 12.63 V healthy -> ~10.5 V dead. Mirrors detectors.py. */
 function batteryFromVoltage(v: number | null): CoherentHealth {
   if (v === null || !Number.isFinite(v)) {
@@ -85,6 +136,8 @@ function brakesFromWear(wearFrac: number | null): CoherentHealth {
 export interface LiveSignals {
   batteryVoltage: number | null;
   tirePressure: number | null;
+  /** Per-wheel pressures (bar); the tires aggregate uses the worst wheel. */
+  tirePressures?: Partial<Record<Wheel, number | null>>;
   brakeWearFrac: number | null;
 }
 
@@ -107,7 +160,18 @@ export function coherentHealth(
   }
   switch (component) {
     case 'battery': return batteryFromVoltage(live.batteryVoltage);
-    case 'tires': return tiresFromPressure(live.tirePressure);
+    case 'tires': {
+      // Aggregate from per-wheel pressures when available: the worst wheel
+      // drives the badge so a single flat tire is never masked by four
+      // healthy ones. Falls back to the legacy single-channel pressure.
+      const wheels = live.tirePressures ?? {};
+      const values = WHEELS.map((w) => wheels[w]).filter(
+        (p): p is number => p !== null && p !== undefined && Number.isFinite(p)
+      );
+      if (values.length === 0) return tiresFromPressure(live.tirePressure);
+      const worst = Math.min(...values);
+      return tiresFromPressure(worst);
+    }
     case 'brake': return brakesFromWear(live.brakeWearFrac);
   }
 }

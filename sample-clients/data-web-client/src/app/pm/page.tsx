@@ -11,7 +11,14 @@ import { RoutePanel } from '@/components/pm/route-panel';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { useSimulatorState } from '@/hooks/use-simulator-state';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
-import { coherentHealth, type CoherentHealth } from '@/lib/pm-health';
+import {
+  coherentHealth,
+  clearPmState,
+  worstWheel,
+  WHEELS,
+  type CoherentHealth,
+  type Wheel,
+} from '@/lib/pm-health';
 import type { PmSample } from '@/components/pm/pm-charts';
 import { DEMO_ROUTE_TOTAL_M } from '@/lib/pm-route';
 import { RotateCcw, Square, Play, Zap } from 'lucide-react';
@@ -72,19 +79,63 @@ export default function PmPage() {
     if (simVin && !userPicked.current) setSelectedVin(simVin);
   }, [simVin]);
 
+  // Clear-on-switch: when the simulator ADOPTS a new VIN (runtime VIN
+  // switching — Start with a different pool VIN runs a fresh vehicle), the
+  // previous VIN's data must not linger. Drop the PM message list (via
+  // clearAlerts so sessionStorage + generation stay consistent), the
+  // per-component health map (derived — resets with the messages) and the
+  // chart buffers so only the new VIN's data shows. Guarded so a stale
+  // first discovery doesn't wipe a fresh session on mount.
+  const prevSimVin = useRef<string | null>(null);
+  useEffect(() => {
+    if (simVin === null) return;
+    if (prevSimVin.current !== null && prevSimVin.current !== simVin) {
+      lastSamples.current = [];
+      clearPmState({ setMessages: clearAlerts, setSamples });
+      // The selection follows the new sim only if the user never picked a
+      // vehicle explicitly; otherwise keep viewing what the user chose.
+      if (!userPicked.current) setSelectedVin(simVin);
+    }
+    prevSimVin.current = simVin;
+  }, [simVin, clearAlerts, setSamples]);
+
   // Latest pm message per component for the selected VIN (newest-first input).
   const selectedMessages = useMemo(
     () => (selectedVin ? messages.filter((m) => m.vin === selectedVin) : []),
     [messages, selectedVin]
   );
 
+  // Latest pm message per component+wheel for the selected VIN (newest-first
+  // input). Wheeled subjects (tires/brake) key as '{component}.{wheel}';
+  // battery keys as 'battery'. The newest message per instance wins.
   const latestPerComponent = useMemo(() => {
     const map = new Map<string, PmMessage>();
     for (const m of selectedMessages) {
-      if (!map.has(m.component)) map.set(m.component, m);
+      const key = m.wheel ? `${m.component}.${m.wheel}` : m.component;
+      if (!map.has(key)) map.set(key, m);
     }
     return map;
   }, [selectedMessages]);
+
+  // Summary messages per component: the WORST wheel/pad instance drives the
+  // badge (min health_score) so a single flat tire is never masked by four
+  // healthy ones; battery has no wheel and uses its single message.
+  const componentSummary = useMemo(() => {
+    const battery = latestPerComponent.get('battery');
+    const brakeWheels = WHEELS.map((w) => latestPerComponent.get(`brake.${w}`)).filter(
+      (m): m is PmMessage => m !== undefined
+    );
+    const tireWheels = WHEELS.map((w) => latestPerComponent.get(`tires.${w}`)).filter(
+      (m): m is PmMessage => m !== undefined
+    );
+    return {
+      battery,
+      brake: worstWheel(brakeWheels) ?? undefined,
+      tires: worstWheel(tireWheels) ?? undefined,
+      brakeWheels,
+      tireWheels,
+    };
+  }, [latestPerComponent]);
 
   // ---- Vehicle list + selection -------------------------------------------
   const loadVehicles = useCallback(() => {
@@ -120,7 +171,12 @@ export default function PmPage() {
       }
       setBusy(true);
       try {
-        const reply = await simState.command(action);
+        // Runtime VIN switching: Start for a different pool VIN makes the
+        // simulator adopt it (select VIN1002 + Start actually runs a fresh
+        // VIN1002). Pass the SELECTED VIN as the command target so the body
+        // carries it for adopt; stop always targets the running sim.
+        const target = action === 'start' && selectedVin ? selectedVin : simVin;
+        const reply = await simState.command(action, undefined, undefined, target);
         if (!reply || reply.error) {
           toast.error(reply?.error ?? 'Simulator did not respond');
           return;
@@ -132,7 +188,7 @@ export default function PmPage() {
         setBusy(false);
       }
     },
-    [simVin, simState]
+    [simVin, selectedVin, simState]
   );
 
   // ---- Demo speed + reset ---------------------------------------------------
@@ -210,12 +266,31 @@ export default function PmPage() {
       (gt.brake as Record<string, unknown> | undefined)?.wear_fraction !== undefined
         ? Number((gt.brake as Record<string, unknown>).wear_fraction)
         : null;
-    const tirePressure = Number(liveVals.tire_pressure_bar ?? NaN);
+    // Per-pad ground truth (worst pad) drives the brake line when available.
+    const gtBrakes = (gt.brakes ?? {}) as Record<string, unknown>;
+    const padWears = WHEELS.map((w) => {
+      const padGt = gtBrakes[w] as Record<string, unknown> | undefined;
+      const f = padGt && typeof padGt === 'object' ? padGt.wear_fraction : undefined;
+      return typeof f === 'number' && Number.isFinite(f) ? f : NaN;
+    }).filter((f) => Number.isFinite(f));
+    const brakeWearSample = padWears.length > 0 ? Math.max(...padWears) : brakeWear;
+    // Per-wheel ground truth (worst wheel) drives the tires line when
+    // available; fall back to the legacy single-channel live value.
+    const gtTires = (gt.tires ?? {}) as Record<string, unknown>;
+    const wheelPressures = WHEELS.map((w) => {
+      const wheelGt = gtTires[w] as Record<string, unknown> | undefined;
+      const p = wheelGt && typeof wheelGt === 'object' ? wheelGt.pressure_bar : undefined;
+      return typeof p === 'number' && Number.isFinite(p) ? p : NaN;
+    }).filter((p) => Number.isFinite(p));
+    const tirePressure =
+      wheelPressures.length > 0
+        ? Math.min(...wheelPressures)
+        : Number(liveVals.tire_pressure_bar ?? NaN);
     const next: PmSample = {
       t,
       health,
       voltage: Number.isFinite(voltage) ? voltage : null,
-      brakeWear,
+      brakeWear: brakeWearSample,
       tirePressure: Number.isFinite(tirePressure) ? tirePressure : null,
     };
     lastSamples.current = [...prev, next].slice(-MAX_SAMPLES);
@@ -251,9 +326,9 @@ export default function PmPage() {
   const speedKmh = Number.isFinite(speedMs) ? speedMs * 3.6 : NaN;
   const batteryV = Number(liveVals.battery_voltage ?? NaN);
   const tireBar = Number(liveVals.tire_pressure_bar ?? NaN);
-  const batteryMsg = latestPerComponent.get('battery');
-  const brakeMsg = latestPerComponent.get('brake');
-  const tiresMsg = latestPerComponent.get('tires');
+  const batteryMsg = componentSummary.battery;
+  const brakeMsg = componentSummary.brake;
+  const tiresMsg = componentSummary.tires;
   const route = sim?.route;
   const lapInfo = route?.lap as { number?: number; progress?: number } | undefined;
   const lap = lapInfo?.number ?? 0;
@@ -261,10 +336,45 @@ export default function PmPage() {
   const speedMult = sim?.speed ?? 1;
   const gtBrake = sim?.ground_truth?.brake as Record<string, unknown> | undefined;
   const brakeWearFrac = gtBrake?.wear_fraction !== undefined ? Number(gtBrake.wear_fraction) : 0;
+  // Per-pad brake wear: the sim reply carries brakes.{wheel}.wear_fraction.
+  // The worst pad drives the provisional brake badge when present. The raw
+  // brakes map is the memo dep (stable across renders).
+  const worstPadWearFrac = useMemo(() => {
+    const rawBrakes = sim?.ground_truth?.brakes ?? {};
+    const padWears = WHEELS.map((w) => {
+      const padGt = (rawBrakes as Record<string, unknown>)[w] as Record<string, unknown> | undefined;
+      const f = padGt && typeof padGt === 'object' ? padGt.wear_fraction : undefined;
+      return typeof f === 'number' && Number.isFinite(f) ? f : NaN;
+    }).filter((f) => Number.isFinite(f));
+    return padWears.length > 0 ? Math.max(...padWears) : brakeWearFrac;
+  }, [sim?.ground_truth?.brakes, brakeWearFrac]);
+  // Per-wheel ground truth: the sim reply carries tires.{wheel}.pressure_bar /
+  // .temp_c (per-wheel PM modeling). Missing wheels fall back to null so the
+  // provisional tires badge uses whichever wheels are present (worst wins).
+  // The raw tires map is the memo dep — deriving the parsed object inside
+  // the callback keeps the dependency stable across renders (a `?? {}`
+  // fallback in the dep list would change identity every render).
+  const tirePressures = useMemo<Partial<Record<Wheel, number | null>>>(() => {
+    const rawTires = sim?.ground_truth?.tires ?? {};
+    const out: Partial<Record<Wheel, number | null>> = {};
+    for (const w of WHEELS) {
+      const wheelGt = (rawTires as Record<string, unknown>)[w] as Record<string, unknown> | undefined;
+      const p = wheelGt && typeof wheelGt === 'object' ? wheelGt.pressure_bar : undefined;
+      out[w] = typeof p === 'number' && Number.isFinite(p) ? p : null;
+    }
+    return out;
+  }, [sim?.ground_truth?.tires]);
+  // Worst per-wheel pressure (drives the KPI + provisional badge); falls back
+  // to the legacy single-channel live value when no wheel data is present.
+  const wheelBars = WHEELS.map((w) => tirePressures[w]).filter(
+    (p): p is number => p !== null && p !== undefined
+  );
+  const worstTireBar = wheelBars.length > 0 ? Math.min(...wheelBars) : tireBar;
   // Coherent health: authoritative PM message when available, otherwise
   // derived provisionally from the live values — so badges, KPIs and charts
   // always agree (a battery at 11.0 V is never 'HEALTHY' just because the
-  // detector hasn't published yet).
+  // detector hasn't published yet). The tires aggregate uses the worst
+  // per-wheel pressure.
   const coherent = useMemo(
     () => ({
       battery: coherentHealth('battery', batteryMsg, {
@@ -275,15 +385,16 @@ export default function PmPage() {
       brake: coherentHealth('brake', brakeMsg, {
         batteryVoltage: null,
         tirePressure: null,
-        brakeWearFrac: brakeWearFrac,
+        brakeWearFrac: worstPadWearFrac,
       }),
       tires: coherentHealth('tires', tiresMsg, {
         batteryVoltage: null,
         tirePressure: Number.isFinite(tireBar) ? tireBar : null,
+        tirePressures,
         brakeWearFrac: null,
       }),
     }),
-    [batteryMsg, brakeMsg, tiresMsg, batteryV, tireBar, brakeWearFrac]
+    [batteryMsg, brakeMsg, tiresMsg, batteryV, tireBar, tirePressures, worstPadWearFrac]
   );
   // P3-2: 'live' must be false when the sim is stopped OR the selection isn't
   // the sim — the KPI row shows sim.live values, so it must not present them
@@ -434,12 +545,12 @@ export default function PmPage() {
             />
             <Kpi
               label="Brake wear"
-              value={`${(brakeWearFrac * 100).toFixed(0)}%`}
+              value={`${(worstPadWearFrac * 100).toFixed(0)}%`}
               tone={severityColor(coherent.brake.severity)}
             />
             <Kpi
               label="Tire pressure"
-              value={Number.isFinite(tireBar) ? `${tireBar.toFixed(2)} bar` : '—'}
+              value={Number.isFinite(worstTireBar) ? `${worstTireBar.toFixed(2)} bar` : '—'}
               tone={severityColor(coherent.tires.severity)}
             />
           </div>
@@ -455,7 +566,33 @@ export default function PmPage() {
 
           {/* Live charts */}
           <FadeIn>
-            <PmCharts samples={windowedSamples} health={coherent} idle={!live} />
+            <PmCharts
+              samples={windowedSamples}
+              health={coherent}
+              idle={!live}
+              wheelHealth={{
+                tires: componentSummary.tireWheels
+                  .slice()
+                  .sort((a, b) => a.health_score - b.health_score)
+                  .map((m) => ({
+                    wheel: m.wheel ?? '?',
+                    score: m.health_score,
+                    severity: m.severity,
+                    reason: m.explanation,
+                    provisional: false,
+                  })),
+                brake: componentSummary.brakeWheels
+                  .slice()
+                  .sort((a, b) => a.health_score - b.health_score)
+                  .map((m) => ({
+                    wheel: m.wheel ?? '?',
+                    score: m.health_score,
+                    severity: m.severity,
+                    reason: m.explanation,
+                    provisional: false,
+                  })),
+              }}
+            />
           </FadeIn>
         </Section>
 
@@ -486,7 +623,7 @@ export default function PmPage() {
           ) : (
             <div className="max-h-44 space-y-1.5 overflow-y-auto">
               {selectedMessages.slice(0, 20).map((m, i) => (
-                <div key={`${m.timestamp}-${m.component}-${i}`} className="flex items-start gap-2 text-sm">
+                <div key={`${m.timestamp}-${m.component}-${m.wheel ?? ''}-${i}`} className="flex items-start gap-2 text-sm">
                   <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
                     {new Date(m.timestamp).toLocaleTimeString()}
                   </span>
@@ -501,7 +638,10 @@ export default function PmPage() {
                   >
                     {m.severity}
                   </Badge>
-                  <span className="font-mono text-xs uppercase text-foreground/90">{m.component}</span>
+                  <span className="font-mono text-xs uppercase text-foreground/90">
+                    {m.component}
+                    {m.wheel ? ` · ${m.wheel}` : ''}
+                  </span>
                   <span className="text-foreground/85">{m.explanation}</span>
                 </div>
               ))}

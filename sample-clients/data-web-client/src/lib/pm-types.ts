@@ -1,6 +1,10 @@
 export interface PmMessage {
   vin: string;
   component: 'battery' | 'brake' | 'tires';
+  /** Wheel/pad instance: 4th subject token of pm.{VIN}.{component}.{wheel}
+   * for tires (wheel) / brake (pad). Undefined for 3-token subjects
+   * (battery, or legacy whole-vehicle tire/brake messages). */
+  wheel?: string;
   health_score: number;
   severity: 'healthy' | 'advisory' | 'action' | 'critical';
   evidence: Record<string, string>;

@@ -20,7 +20,7 @@ const PmMessage = root.lookupType('pm.PmMessage');
 
 const mockGetServerSession = mock(() => null);
 let subStub: {
-  [Symbol.asyncIterator]: () => AsyncGenerator<{ data: Uint8Array }>;
+  [Symbol.asyncIterator]: () => AsyncGenerator<{ data: Uint8Array; subject?: string }>;
   unsubscribe: () => void;
 };
 const subscribeCalls: string[] = [];
@@ -46,7 +46,7 @@ function makeAbortableRequest(): Request {
   return new Request('http://localhost/api/pm/stream', { signal: controller.signal });
 }
 
-async function* makeMessages(payloads: Uint8Array[]): AsyncGenerator<{ data: Uint8Array }> {
+async function* makeMessages(payloads: Uint8Array[]): AsyncGenerator<{ data: Uint8Array; subject?: string }> {
   for (const p of payloads) {
     yield { data: p };
   }
@@ -116,5 +116,26 @@ describe('GET /api/pm/stream', () => {
     expect(text).toContain(
       'data: {"vin":"VIN1001","component":"battery","healthScore":62,"severity":"advisory"',
     );
+  });
+
+  it('attaches the 4th subject token as wheel for tires/brake subjects', async () => {
+    mockGetServerSession.mockResolvedValueOnce({ user: { name: 'test' } });
+    const payload = pmPayload('VIN1001', 'tires', 12, 'critical');
+    subStub = {
+      // Subject carries pm.{VIN}.{component}.{wheel} — the route must append
+      // the 4th token to the emitted JSON.
+      [Symbol.asyncIterator]: () => {
+        let sent = false;
+        return (async function* () {
+          if (sent) return;
+          sent = true;
+          yield { subject: 'pm.VIN1001.tires.fl', data: payload };
+        })();
+      },
+      unsubscribe: () => {},
+    };
+    const res = await GET(makeAbortableRequest());
+    const text = await res.text();
+    expect(text).toContain('"wheel":"fl"');
   });
 });
