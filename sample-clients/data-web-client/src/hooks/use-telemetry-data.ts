@@ -60,6 +60,8 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Monotonic epoch for stale-fetch protection (see load()).
+  const loadEpoch = useRef(0);
 
   const fetchHistorical = useCallback(async (v: string, baseIdx: number): Promise<ChartSeries[]> => {
     const end = Date.now();
@@ -73,14 +75,20 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
   }, [range]);
 
   const load = useCallback(async () => {
+    // Epoch guard against stale responses: a slow in-flight fetch for an
+    // old VIN/range must not overwrite a newer request's series after a
+    // mid-session switch. Each load bumps the epoch; only the response
+    // matching the current epoch applies its data.
+    const epoch = ++loadEpoch.current;
     setLoading(true);
     setError(null);
     const vins = [vin, ...compareVins.filter((c) => c && c !== vin)];
     try {
       const all = (await Promise.all(vins.map((v, i) => fetchHistorical(v, i)))).flat();
-      setSeries(all);
+      if (loadEpoch.current === epoch) setSeries(all);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load telemetry';
+      if (loadEpoch.current !== epoch) return; // stale failure — ignore
       setError(msg);
       // Don't leave stale series for the requested VINs after a failed
       // refetch — they'd show outdated data (or duplicate live series)
@@ -89,7 +97,7 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
       const { toast } = await import('sonner');
       toast.error(msg);
     } finally {
-      setLoading(false);
+      if (loadEpoch.current === epoch) setLoading(false);
     }
   }, [vin, compareKey, fetchHistorical]);
 
@@ -100,9 +108,17 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
     const base =
       configured ??
       `http${window.location.protocol === 'https:' ? 's' : ''}://${window.location.hostname}:8081`;
-    const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/api/v1/vehicles/${encodeURIComponent(vin)}/telemetry/live`);
-    wsRef.current = ws;
-    ws.onmessage = (ev) => {
+    const url = `${base.replace(/^http/, 'ws')}/api/v1/vehicles/${encodeURIComponent(vin)}/telemetry/live`;
+    let ws: WebSocket | null = null;
+    let retryTimer: number | null = null;
+    let attempt = 0;
+    // Bounded reconnect: after a network blip or a chart-service restart the
+    // live feed would otherwise die permanently. Retry with backoff up to 5
+    // attempts, then give up until the next vin/range change.
+    const connect = () => {
+      ws = new WebSocket(url);
+      wsRef.current = ws;
+      ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type !== 'telemetry' || !msg.timestamp || !msg.values) return;
@@ -152,8 +168,19 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
         /* ignore parse errors */
       }
     };
+      ws.onclose = () => {
+        // Bounded reconnect with backoff: 1s, 2s, 4s, 8s, 16s, then stop
+        // until the next vin/range change (attempt reset).
+        if (attempt >= 5) return;
+        attempt += 1;
+        retryTimer = window.setTimeout(connect, 1000 * 2 ** (attempt - 1));
+      };
+      ws.onerror = () => ws?.close(); // onclose schedules the retry
+    };
+    connect();
     return () => {
-      ws.close();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      ws?.close();
       wsRef.current = null;
     };
   }, [vin, range, compareKey, load]);

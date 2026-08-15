@@ -64,7 +64,11 @@ export function useScoringMessages() {
         return next;
       });
     };
-    source.onerror = () => source.close();
+    // Do NOT close on error: EventSource auto-reconnects after network
+    // blips and transient 5xx responses, which is exactly what we want
+    // (the stream recovers when NATS/the route come back). Closing here
+    // would permanently kill the panel on a single blip.
+    source.onerror = () => {};
     return () => source.close();
   }, []);
 

@@ -82,18 +82,27 @@ export function usePmMessages() {
         }
         // Newest message goes to index 0; cap the total at MAX_MESSAGES so
         // the array (and sessionStorage payload) can't grow unboundedly.
+        // If a clear happened on another page after we mounted, our in-memory
+        // list predates it. Drop the stale list entirely (start fresh from
+        // this message) instead of merely skipping one write — otherwise the
+        // next message would resurrect the pre-clear alerts. Note: we can't
+        // distinguish 'no generation stored yet' from 'generation matches',
+        // so treat a missing gen as matching (first-mount write).
+        const currentGen = window.sessionStorage.getItem(STORAGE_GEN_KEY);
+        if (genRef.current !== null && currentGen !== genRef.current) {
+          genRef.current = currentGen;
+          const fresh = [message].slice(0, MAX_MESSAGES);
+          try {
+            window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+          } catch {
+            /* storage disabled — in-memory list is still correct */
+          }
+          return fresh;
+        }
+        genRef.current = currentGen;
         const next = [message, ...prev].slice(0, MAX_MESSAGES);
         try {
-          const currentGen = window.sessionStorage.getItem(STORAGE_GEN_KEY);
-          // Stale-writer guard: if a clear happened on another page after we
-          // mounted, our in-memory list predates it — drop the write so the
-          // cleared alerts aren't resurrected.
-          if (genRef.current === null || currentGen === genRef.current) {
-            window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-          }
-          // Always refresh our snapshot so subsequent writes are judged
-          // against the latest generation.
-          genRef.current = currentGen;
+          window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         } catch {
           // Quota exceeded or storage disabled — fall through; the in-memory
           // list still updates so the UI stays correct for this session.
@@ -101,7 +110,12 @@ export function usePmMessages() {
         return next;
       });
     };
-    source.onerror = () => source.close();
+    // Do NOT close on error: EventSource auto-reconnects after network
+    // blips and transient 5xx responses, which is exactly what we want
+    // (the stream recovers when NATS/the route come back). Closing here
+    // would permanently kill the panel on a single blip. The browser gives
+    // up on its own after repeated failures.
+    source.onerror = () => {};
     return () => source.close();
   }, []);
 
