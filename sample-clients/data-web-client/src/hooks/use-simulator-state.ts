@@ -29,6 +29,11 @@ export function useSimulatorState() {
     lastUpdated: null,
   });
   const vinRef = useRef<string | null>(null);
+  const consecutiveFailures = useRef(0);
+  // Monotonic counter bumped by every user command. A poll reply that was
+  // dispatched BEFORE the command but resolves AFTER it must not overwrite
+  // the command's fresh state (last-writer-wins race).
+  const commandEpoch = useRef(0);
 
   const fetchStatus = useCallback(async (vin: string): Promise<DemoControlReply | null> => {
     try {
@@ -65,14 +70,26 @@ export function useSimulatorState() {
       setState({ vin: null, running: false, sim: null, lastUpdated: null });
       return;
     }
+    // Snapshot the epoch BEFORE the fetch: a command issued while this poll
+    // is in flight bumps the epoch, and this stale reply must not overwrite
+    // the command's fresh state (last-writer-wins race).
+    const epochAtFetch = commandEpoch.current;
     const reply = await fetchStatus(vin);
-    if (reply) {
+    if (reply && epochAtFetch === commandEpoch.current) {
+      // Healthy reply — reset the failure counter.
+      consecutiveFailures.current = 0;
       setState({ vin, running: reply.running, sim: reply, lastUpdated: Date.now() });
     } else {
-      // Sim went silent — clear so the next poll re-discovers (it may have
-      // restarted under a new VIN).
-      vinRef.current = null;
-      setState({ vin: null, running: false, sim: null, lastUpdated: null });
+      // One dropped poll is a blip (NATS hiccup, 503); only after two
+      // consecutive failures do we treat the sim as gone and clear, so the
+      // next poll re-discovers (the sim re-randomizes its VIN on restarts).
+      // Without this hysteresis a single transient error would tear the UI
+      // down mid-session.
+      consecutiveFailures.current += 1;
+      if (consecutiveFailures.current >= 2) {
+        vinRef.current = null;
+        setState({ vin: null, running: false, sim: null, lastUpdated: null });
+      }
     }
   }, [fetchStatus]);
 
@@ -91,6 +108,8 @@ export function useSimulatorState() {
     ): Promise<DemoControlReply | null> => {
       const vin = vinRef.current;
       if (!vin) return null;
+      // Invalidate any in-flight poll reply older than this command.
+      commandEpoch.current += 1;
       try {
         const body: Record<string, string> = { action, vin };
         if (preset) body.preset = preset;

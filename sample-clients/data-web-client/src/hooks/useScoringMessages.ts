@@ -48,6 +48,10 @@ export function useScoringMessages() {
     const source = new EventSource('/api/scoring/stream');
     source.onmessage = (e) => {
       setMessages((prev) => {
+        // Dedup on identity: EventSource auto-reconnects and the stream
+        // replays recent messages, so the same payload can arrive twice —
+        // don't stack duplicates of the newest entry.
+        if (prev.length > 0 && prev[0] === e.data) return prev;
         // Newest message goes to index 0; cap the total at MAX_MESSAGES so
         // the array (and sessionStorage payload) can't grow unboundedly.
         const next = [e.data, ...prev].slice(0, MAX_MESSAGES);
@@ -60,7 +64,11 @@ export function useScoringMessages() {
         return next;
       });
     };
-    source.onerror = () => source.close();
+    // Do NOT close on error: EventSource auto-reconnects after network
+    // blips and transient 5xx responses, which is exactly what we want
+    // (the stream recovers when NATS/the route come back). Closing here
+    // would permanently kill the panel on a single blip.
+    source.onerror = () => {};
     return () => source.close();
   }, []);
 

@@ -93,3 +93,25 @@ describe('usePmMessages clearAlerts', () => {
     expect(result.current.messages).toEqual([]);
   });
 });
+
+describe('usePmMessages dedup', () => {
+  it('does not stack a duplicate of the newest message (SSE reconnect replay)', () => {
+    const original = window.EventSource;
+    const listeners: Record<string, ((e: MessageEvent) => void) | undefined> = {};
+    // @ts-expect-error - minimal EventSource stub for the hook
+    window.EventSource = class {
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        listeners['message'] = (e) => this.onmessage?.(e);
+      }
+      close() {}
+    };
+    const { result } = renderHook(() => usePmMessages());
+    const msg = makeMessage('VIN1');
+    act(() => listeners['message']?.({ data: JSON.stringify(msg) } as MessageEvent));
+    act(() => listeners['message']?.({ data: JSON.stringify(msg) } as MessageEvent));
+    expect(result.current.messages).toHaveLength(1);
+    window.EventSource = original;
+  });
+});

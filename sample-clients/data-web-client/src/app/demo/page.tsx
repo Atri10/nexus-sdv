@@ -36,13 +36,16 @@ function randomVin(exclude?: string): string {
  */
 export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin?: string }> }) {
   const { vin: urlVin } = use(searchParams);
+  // A ?vin= deep link is an explicit user choice — it must NOT be clobbered
+  // by the auto-discovered sim VIN on mount (the follow effect below honors
+  // userPicked).
   const [vin, setVin] = useState<string>(urlVin ?? VIN_POOL[0]);
+  const userPicked = useRef(Boolean(urlVin));
   const [componentId, setComponentId] = useState<string>('battery');
   const [range, setRange] = useState<TimeRange>('1h');
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [components, setComponents] = useState<ComponentStatus[] | null>(null);
-  const userPicked = useRef(false);
   // Shared simulator state — one poll loop, every page agrees.
   const simState = useSimulatorState();
   const simulatorVin = simState.vin;
