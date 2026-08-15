@@ -10,6 +10,16 @@ Companion first-principles docs (same date):
 
 Signal definitions (what each raw telemetry parameter means, incl. `BRAKE_PEDAL_PCT`) are in the glossary section of `2026-08-14-pm-algorithms-implementation.md`.
 
+### Signal sourcing — where each raw parameter comes from
+
+| Quantity the detector consumes | Proto source | Bigtable qualifier | Emitted by (simulator) | Algorithm step |
+|---|---|---|---|---|
+| Vehicle speed `v` | `VehicleTelemetryData.VELOCITY` (field 9) | `dynamic:VELOCITY` | `buildChassisReport` from `drive.velocity` | `a = Δv/Δt`, `v_avg` for the energy integral |
+| Brake pedal position | `CarlaVehicleDynamics.brake_pedal_pct` (field 3) | `dynamic:BRAKE_PEDAL_PCT` | `buildChassisReport` from `drive.brakePct` (set during the brake phase, `driveCycleStep`) | Gate only (`> 5.0`) — never enters an alert |
+| Odometer `distance_meters` | `VehicleTelemetryData.distance_meters` (field 12) | — (connector never persists it) | — | Missing → no `wear_rate_per_km`, no RUL (§4.3) |
+
+The full chain (physics → proto → NATS → Bigtable → data-api → processor → detector) is traced in `2026-08-15-pm-use-case-end-to-end.md`.
+
 ---
 
 ## 1. Why pad wear ∝ friction work

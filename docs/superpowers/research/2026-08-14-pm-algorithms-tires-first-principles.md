@@ -10,6 +10,15 @@ Companion first-principles docs (same date):
 
 Signal definitions (what each raw telemetry parameter means, incl. `BRAKE_PEDAL_PCT`) are in the glossary section of `2026-08-14-pm-algorithms-implementation.md`.
 
+### Signal sourcing — where each raw parameter comes from
+
+| Quantity the detector consumes | Proto source | Bigtable qualifier | Emitted by (simulator) | Algorithm step |
+|---|---|---|---|---|
+| Tyre pressure `P` | `VehicleTelemetryData.TIRE_PRESSURE` (field 8) | `dynamic:TIRE_PRESSURE` | `buildChassisReport` from `TirePressureAt(ageDays)` | Raw input to `P_comp = P·293.15/T` |
+| Tyre temperature `T` | `VehicleTelemetryData.TIRE_TEMP` (field 16) | `dynamic:TIRE_TEMP` | `buildChassisReport` from `TireTempAt(ageDays)` (28 ± 8 °C cycle + flex heat) | Denominator of compensation (processor adds 273.15 → Kelvin) |
+
+The full chain (physics → proto → NATS → Bigtable → data-api → processor → detector) is traced in `2026-08-15-pm-use-case-end-to-end.md`.
+
 ---
 
 ## 1. Ideal-gas basis

@@ -11,6 +11,8 @@ Companion first-principles docs (same date):
 - `2026-08-14-pm-algorithms-brake-first-principles.md`
 - `2026-08-14-pm-algorithms-tires-first-principles.md`
 
+End-to-end wiring (physics → proto → NATS subject → Bigtable qualifier → data-api request → processor collection → detector → `PmMessage` → SSE → UI component): `2026-08-15-pm-use-case-end-to-end.md`
+
 ---
 
 ## 1. Theory → code map
