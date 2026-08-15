@@ -14,12 +14,20 @@ the data-api per VIN, runs the detectors, and publishes on NATS.
 | Component | Method | Alert rules (thresholds) |
 |---|---|---|
 | **12V battery** | M1: temperature-compensated resting-voltage trend (EWMA + 30-day slope); M2: cranking signature (V_min, internal resistance) | EWMA < 12.4 V or slope < −0.5 mV/day → advisory; EWMA < 12.2 V → action; cranking V_min < 9.5 V or R_int > 1.5× baseline → action/critical |
-| **Brake pads** | Energy integral `W = Σ m·a·v·Δt` (1500 kg, 6 GJ pad budget) | wear index > 80 % → advisory; > 90 % → action |
-| **Tires** | Temperature-compensated pressure trend (`P_comp = P·T_ref/T`), steady-driving samples | slope < −0.15 bar/month → advisory; P_comp < 1.8 bar → action |
+| **Brake pads** | Per-pad wear fraction (`BRAKE_WEAR.{FL,FR,RL,RR}`) published by the sim; legacy fallback: energy integral `W = Σ m·a·v·Δt` (1500 kg, 6 GJ pad budget) | wear index > 80 % → advisory; > 90 % → action |
+| **Tires** | Temperature-compensated pressure trend per wheel (`TIRE_PRESSURE.{FL,FR,RL,RR}` + `TIRE_TEMP.{FL,FR,RL,RR}`; `P_comp = P·T_ref/T`), steady-driving samples | slope < −0.15 bar/month → advisory; P_comp < 1.8 bar → action |
+
+Tires and brakes are modeled **per wheel**: the processor runs `detect_tires`
+×4 (one per corner) and `detect_brake` ×4 (one per pad) and publishes
+`pm.{VIN}.tires.{wheel}` / `pm.{VIN}.brake.{pad}` subjects so the dashboard
+can show which corner is degrading. Evidence dicts carry the `wheel`/`pad`
+label. When the per-wheel columns are absent (older simulator, mixed
+history) the processor falls back to the legacy single-channel subjects
+`pm.{VIN}.tires` / `pm.{VIN}.brake`.
 
 Detection is **deterministic and explainable** — every alert carries the
-evidence (ewma voltage, slope, threshold…) and a plain-language explanation
-built from templates. Details in
+evidence (ewma voltage, slope, threshold, wheel/pad…) and a plain-language
+explanation built from templates. Details in
 `docs/superpowers/research/2026-08-05-predictive-maintenance-*.md` and the
 design spec.
 
@@ -33,7 +41,7 @@ betterproto stub is committed at
 ```proto
 message PmMessage {
   string vin = 1;
-  string component = 2;   // battery | brake | tires
+  string component = 2;   // battery | tires.{wheel} | brake.{pad} (legacy: tires | brake)
   int32 health_score = 3; // 0-100
   string severity = 4;    // healthy | advisory | action | critical
   map<string, string> evidence = 5;
@@ -41,6 +49,18 @@ message PmMessage {
   string timestamp = 7;   // RFC3339
 }
 ```
+
+Subjects (published on NATS):
+
+| Subject | Payload | Notes |
+|---|---|---|
+| `pm.{VIN}.battery` | battery health | unchanged |
+| `pm.{VIN}.tires.{wheel}` | one per wheel (`FL`/`FR`/`RL`/`RR`) | evidence carries `wheel` |
+| `pm.{VIN}.brake.{pad}` | one per pad (`FL`/`FR`/`RL`/`RR`) | evidence carries `pad` |
+| `pm.{VIN}.tires` / `pm.{VIN}.brake` | legacy single-channel fallback | only when per-wheel columns absent |
+
+The web SSE route subscribes `pm.>` (full remainder), so the 4-token
+subjects arrive with no route change.
 
 Regenerate after changing the proto:
 
@@ -111,9 +131,10 @@ make test   # uv run pytest tests/ -v
 ```
 
 Covers: message round-trip, detector math (healthy/degrading/critical per
-component), processor publish cadence (publish on severity/band change,
-healthy publishes nothing, poll errors never crash), and the evaluator's
-precision/recall math.
+component, per-wheel tires, per-pad brakes), processor publish cadence
+(publish on severity/band change, healthy publishes nothing, poll errors
+never crash, per-wheel subjects + single-channel fallbacks), and the
+evaluator's precision/recall math.
 
 ## Validation (offline evaluator)
 

@@ -119,7 +119,7 @@ def detect_battery(rest, crank, baseline_r_int_mohm=None):
     )
 
 
-def detect_brake(wear_fraction, wear_rate_per_km=None):
+def detect_brake(wear_fraction, wear_rate_per_km=None, pad=None):
     score = max(0, min(100, round(100 * (1 - wear_fraction))))
     if wear_fraction > BRAKE_ACTION:
         severity, msg = "action", f"Wear index {wear_fraction:.0%} > {BRAKE_ACTION:.0%}"
@@ -127,14 +127,21 @@ def detect_brake(wear_fraction, wear_rate_per_km=None):
         severity, msg = "advisory", f"Wear index {wear_fraction:.0%} > {BRAKE_ADVISORY:.0%}"
     else:
         severity, msg = "healthy", f"Wear index {wear_fraction:.0%}"
-    return DetectorResult(score, severity,
-                          {"wear_fraction": f"{wear_fraction:.3f}",
-                           "wear_rate_per_km": f"{wear_rate_per_km or 0:.6f}"},
+    evidence = {"wear_fraction": f"{wear_fraction:.3f}",
+                "wear_rate_per_km": f"{wear_rate_per_km or 0:.6f}"}
+    if pad:
+        evidence["pad"] = pad
+    return DetectorResult(score, severity, evidence,
                           f"{msg} of the calibrated pad budget.")
 
 
-def detect_tires(samples, recommended_bar=2.3):
-    """samples: list[(t_epoch, P_bar, T_kelvin)]; compensates P to T_ref."""
+def detect_tires(samples, recommended_bar=2.3, wheel=None):
+    """samples: list[(t_epoch, P_bar, T_kelvin)]; compensates P to T_ref.
+
+    wheel: optional wheel label (FL/FR/RL/RR) included in the evidence dict
+    so the consumer can attribute the result to a specific wheel. Omitted
+    (or None) for the legacy single-channel call — no "wheel" evidence key.
+    """
     comp = []
     for t, p, tk in samples:
         if tk > 0:
@@ -173,7 +180,9 @@ def detect_tires(samples, recommended_bar=2.3):
         severity = "advisory"
     else:
         severity = _band(score)
-    return DetectorResult(score, severity,
-                          {"p_comp_bar": f"{last_p:.3f}", "slope_bar_month": f"{slope_bar_m:.4f}",
-                           "threshold_slope": f"{TIRE_SLOPE_BAR_M}", "floor_bar": f"{TIRE_FLOOR_BAR}"},
+    evidence = {"p_comp_bar": f"{last_p:.3f}", "slope_bar_month": f"{slope_bar_m:.4f}",
+                "threshold_slope": f"{TIRE_SLOPE_BAR_M}", "floor_bar": f"{TIRE_FLOOR_BAR}"}
+    if wheel:
+        evidence["wheel"] = wheel
+    return DetectorResult(score, severity, evidence,
                           "; ".join(reasons) or "No tire anomaly detected.")

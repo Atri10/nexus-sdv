@@ -169,6 +169,11 @@ def test_processor_requests_only_existing_qualifiers():
         assert "dynamic:TIRE_TEMP" in requested
         assert "dynamic:battery.voltage" in requested
         assert "dynamic:battery.temp" in requested
+        # Per-wheel columns are requested too.
+        for w in ("FL", "FR", "RL", "RR"):
+            assert f"dynamic:TIRE_PRESSURE.{w}" in requested
+            assert f"dynamic:TIRE_TEMP.{w}" in requested
+            assert f"dynamic:BRAKE_WEAR.{w}" in requested
     asyncio.run(run())
 
 
@@ -334,3 +339,140 @@ def test_processor_publishes_both_components_first_poll():
         assert "pm.VIN1001.battery" in subjects
         assert "pm.VIN1001.brake" in subjects
     asyncio.run(run())
+
+
+def _wheel_point(t: datetime, wheel: str, pressure: float, temp_c: float, wear: float):
+    """One chassis row carrying the per-wheel tire + brake columns for the
+    given wheel (plus the shared single-channel columns)."""
+    return _point(
+        t,
+        **{
+            "dynamic:TIRE_PRESSURE": pressure,
+            "dynamic:TIRE_TEMP": temp_c,
+            "dynamic:TIRE_PRESSURE." + wheel: pressure,
+            "dynamic:TIRE_TEMP." + wheel: temp_c,
+            "dynamic:BRAKE_WEAR." + wheel: wear,
+        },
+    )
+
+
+def test_processor_per_wheel_tires_and_brakes():
+    """Per-wheel columns flow to per-wheel detectors: FL flat tire + worn pad
+    publish on pm.VIN1001.tires.FL / pm.VIN1001.brake.FL; healthy FR corners
+    publish on their own subjects. No single-channel pm.VIN1001.tires /
+    pm.VIN1001.brake when per-wheel data is present."""
+    import predictive_maintenance.core.processor as mod
+    import predictive_maintenance.core.detectors as det_mod
+    real_detect_brake = det_mod.detect_brake  # sibling tests may have patched mod.detect_brake
+    mod.detect_brake = real_detect_brake
+
+    async def run():
+        stub = AsyncMock()
+        base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        days = 30
+        # FL pressure collapses 2.3 -> 1.0 bar over the window (flat);
+        # FR stays at 2.3. Both wheels carry BRAKE_WEAR (FL 0.9, FR 0.1).
+        rows = []
+        for i in range(days):
+            fl_p = 2.3 - 1.3 * i / days
+            rows.append(_wheel_point(base + timedelta(hours=6 * i), "FL", fl_p, 30.0, 0.9))
+            rows.append(_wheel_point(base + timedelta(hours=6 * i), "FR", 2.3, 30.0, 0.1))
+        # FL needs >= 14 compensated samples -> 30 rows is fine.
+
+        async def gen(_req):
+            for r in rows:
+                yield r
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = Processor(stub, nats)
+        await p.run("VIN1001")
+        subjects = {args[0] for args, _ in nats.publish_message.await_args_list}
+        assert "pm.VIN1001.tires.FL" in subjects
+        assert "pm.VIN1001.brake.FL" in subjects
+        assert "pm.VIN1001.tires.FR" in subjects
+        assert "pm.VIN1001.brake.FR" in subjects
+        # No single-channel legacy subjects when per-wheel data exists.
+        assert "pm.VIN1001.tires" not in subjects
+        assert "pm.VIN1001.brake" not in subjects
+        # FL flat tire is critical with evidence carrying the wheel label.
+        msgs = {args[0]: args[1] for args, _ in nats.publish_message.await_args_list}
+        fl_tire = msgs["pm.VIN1001.tires.FL"]
+        assert fl_tire.severity == "critical"
+        assert fl_tire.evidence["wheel"] == "FL"
+        fl_brake = msgs["pm.VIN1001.brake.FL"]
+        assert fl_brake.severity == "advisory"  # wear 0.9 > 0.8 → advisory
+        assert fl_brake.evidence["pad"] == "FL"
+        fr_tire = msgs["pm.VIN1001.tires.FR"]
+        assert fr_tire.severity == "healthy"
+        fr_brake = msgs["pm.VIN1001.brake.FR"]
+        assert fr_brake.severity == "healthy"
+    try:
+        asyncio.run(run())
+    finally:
+        mod.detect_brake = real_detect_brake
+
+
+def test_processor_tires_fallback_when_no_per_wheel_columns():
+    """Missing TIRE_PRESSURE.{wheel} columns (older sim / mixed history)
+    falls back to the single-channel TIRE_PRESSURE on pm.VIN1001.tires."""
+    async def run():
+        stub = AsyncMock()
+        base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        days = 30
+        rows = []
+        for i in range(days):
+            # Legacy single-channel pressure collapsing to 1.0 bar; NO
+            # per-wheel columns and no BRAKE_WEAR.* at all.
+            rows.append(_point(
+                base + timedelta(hours=6 * i),
+                **{"dynamic:TIRE_PRESSURE": 2.3 - 1.3 * i / days,
+                   "dynamic:TIRE_TEMP": 30.0},
+            ))
+
+        async def gen(_req):
+            for r in rows:
+                yield r
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = Processor(stub, nats)
+        await p.run("VIN1001")
+        subjects = {args[0] for args, _ in nats.publish_message.await_args_list}
+        assert "pm.VIN1001.tires" in subjects  # fallback subject
+        assert not any(s.startswith("pm.VIN1001.tires.") for s in subjects)
+        msgs = {args[0]: args[1] for args, _ in nats.publish_message.await_args_list}
+        assert msgs["pm.VIN1001.tires"].severity == "critical"
+    asyncio.run(run())
+
+
+def test_processor_brake_fallback_when_no_brake_wear_columns():
+    """Missing BRAKE_WEAR.{wheel} columns keeps the legacy energy-accumulator
+    brake on pm.VIN1001.brake."""
+    import predictive_maintenance.core.processor as mod
+
+    async def run():
+        stub = AsyncMock()
+        base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        rows = [
+            _point(base, **{"dynamic:VELOCITY": 20.0, "dynamic:BRAKE_PEDAL_PCT": 40.0}),
+            _point(base + timedelta(seconds=5), **{"dynamic:VELOCITY": 15.0, "dynamic:BRAKE_PEDAL_PCT": 40.0}),
+        ]
+
+        async def gen(_req):
+            for r in rows:
+                yield r
+        stub.get_telemetry_data = gen
+        nats = AsyncMock()
+        nats.is_connected = True
+        p = Processor(stub, nats)
+        await p.run("VIN1001")
+        subjects = {args[0] for args, _ in nats.publish_message.await_args_list}
+        assert "pm.VIN1001.brake" in subjects  # energy-accumulator fallback
+        assert not any(s.startswith("pm.VIN1001.brake.") for s in subjects)
+    old_budget = mod.BRAKE_ENERGY_BUDGET_J
+    mod.BRAKE_ENERGY_BUDGET_J = 150000.0  # 131250 J → 0.875 wear
+    try:
+        asyncio.run(run())
+    finally:
+        mod.BRAKE_ENERGY_BUDGET_J = old_budget
