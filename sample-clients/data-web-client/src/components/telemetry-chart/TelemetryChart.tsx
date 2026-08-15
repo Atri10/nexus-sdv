@@ -27,6 +27,13 @@ interface TelemetryChartProps {
   animated?: boolean;
   /** Wrapper height (CSS). Grid cards pass 100% to fill their fixed card area. */
   height?: string;
+  /**
+   * Data window span in ms (e.g. 10 min). When the data covers less than a
+   * few minutes, tick labels switch to HH:mm:ss so a short live window is
+   * readable instead of repeating "15:41" on every tick. Omit to use the
+   * default HH:mm / day-crossing logic.
+   */
+  timeWindowMs?: number;
 }
 
 /**
@@ -41,9 +48,20 @@ const crossDayFormat = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit',
 });
 
+const secondsFormat = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
 function timeTickLabel(this: Scale, tickValue: string | number): string {
   const ts = Number(tickValue);
   if (!isFinite(ts)) return '';
+  // Short live windows (< 3 min) read poorly with HH:mm — every tick shows
+  // the same minute ("15:41"). Include seconds so the trend is visible.
+  const span =
+    typeof this.min === 'number' && typeof this.max === 'number' ? this.max - this.min : 0;
+  if (span > 0 && span < 180_000) return secondsFormat.format(new Date(ts));
   const crossesDay = new Date(this.min ?? ts).toDateString() !== new Date(this.max ?? ts).toDateString();
   return (crossesDay ? crossDayFormat : withinDayFormat).format(new Date(ts));
 }
@@ -83,6 +101,7 @@ export default function TelemetryChart({
   yRange,
   animated = true,
   height = '400px',
+  timeWindowMs,
 }: TelemetryChartProps) {
   const chartRef = useRef<ChartJS<'line'>>(null);
   const { right } =
