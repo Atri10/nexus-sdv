@@ -39,11 +39,26 @@ class Processor:
                 "dynamic:battery.voltage", "dynamic:battery.temp",
                 "dynamic:VELOCITY", "dynamic:BRAKE_PEDAL_PCT",
                 "dynamic:TIRE_PRESSURE", "dynamic:TIRE_TEMP",
+                # Per-wheel sensors (Task: runtime VIN switching + per-wheel
+                # PM): tires/brakes are modeled per wheel so the detector can
+                # report which corner is degrading. The connector stores them
+                # as literal dynamic:<name> columns (it is generic per-sensor),
+                # and the dot is part of the qualifier, not a separator.
+                "dynamic:TIRE_PRESSURE.FL", "dynamic:TIRE_PRESSURE.FR",
+                "dynamic:TIRE_PRESSURE.RL", "dynamic:TIRE_PRESSURE.RR",
+                "dynamic:TIRE_TEMP.FL", "dynamic:TIRE_TEMP.FR",
+                "dynamic:TIRE_TEMP.RL", "dynamic:TIRE_TEMP.RR",
+                "dynamic:BRAKE_WEAR.FL", "dynamic:BRAKE_WEAR.FR",
+                "dynamic:BRAKE_WEAR.RL", "dynamic:BRAKE_WEAR.RR",
             ],
             last_duration=timedelta(seconds=settings.battery_window_days * 86400),
         )
         logger.info("Polling data-api for predictive-maintenance analysis", vehicle_id=vin)
         rest, crank, brake_energy, tires = [], [], 0.0, []
+        # Per-wheel collectors: one (t, P_bar, T_kelvin) series per tire and
+        # one wear_fraction per brake pad. Keyed by the wheel label (FL/FR/RL/RR).
+        tires_by_wheel = {w: [] for w in ("FL", "FR", "RL", "RR")}
+        brake_wear_by_pad = {w: [] for w in ("FL", "FR", "RL", "RR")}
         batt_temp = BATTERY_V_REF  # last-known battery temp (°C); default = reference (no-op)
         prev_brake = None  # (t_epoch, velocity) of the previous braking sample
         try:
@@ -60,6 +75,16 @@ class Processor:
                     tires.append((t,
                                   float(v("dynamic:TIRE_PRESSURE").decode().strip('"')),
                                   float(v("dynamic:TIRE_TEMP").decode().strip('"')) + 273.15))
+                for w in ("FL", "FR", "RL", "RR"):
+                    pw, tw = f"dynamic:TIRE_PRESSURE.{w}", f"dynamic:TIRE_TEMP.{w}"
+                    if v(pw) and v(tw):
+                        tires_by_wheel[w].append((t,
+                                                  float(v(pw).decode().strip('"')),
+                                                  float(v(tw).decode().strip('"')) + 273.15))
+                for w in ("FL", "FR", "RL", "RR"):
+                    bw = f"dynamic:BRAKE_WEAR.{w}"
+                    if v(bw):
+                        brake_wear_by_pad[w].append(float(v(bw).decode().strip('"')))
                 if v("dynamic:VELOCITY") and v("dynamic:BRAKE_PEDAL_PCT"):
                     vel = float(v("dynamic:VELOCITY").decode().strip('"'))
                     brake_pct = float(v("dynamic:BRAKE_PEDAL_PCT").decode().strip('"'))
@@ -85,10 +110,24 @@ class Processor:
             # V_comp = V - BATTERY_BETA * (T - BATTERY_V_REF); T = last-known battery temp.
             comp = [(t, v0 - BATTERY_BETA * (t0 - BATTERY_V_REF)) for t, v0, t0 in rest]
             results["battery"] = detect_battery(comp, crank)
-        if brake_energy > 0:
-            results["brake"] = detect_brake(min(1.0, brake_energy / BRAKE_ENERGY_BUDGET_J))  # E_budget 6 GJ
-        if tires:
+        # Per-wheel tires: run detect_tires once per wheel. If the per-wheel
+        # columns are absent (older sim / mixed history), fall back to the
+        # single TIRE_PRESSURE channel on pm.{vin}.tires.
+        wheel_tires = {w: s for w, s in tires_by_wheel.items() if s}
+        if wheel_tires:
+            for w, samples in wheel_tires.items():
+                results[f"tires.{w}"] = detect_tires(samples, recommended_bar=2.3, wheel=w)
+        elif tires:
             results["tires"] = detect_tires(tires)
+        # Per-pad brakes: run detect_brake once per pad from the per-wheel
+        # BRAKE_WEAR fraction the sim publishes. Missing BRAKE_WEAR.* columns
+        # (older sim) keep the energy-accumulator path on pm.{vin}.brake.
+        per_pad_wear = {w: vals[-1] for w, vals in brake_wear_by_pad.items() if vals}
+        if per_pad_wear:
+            for w, wear in per_pad_wear.items():
+                results[f"brake.{w}"] = detect_brake(min(1.0, max(0.0, wear)), pad=w)
+        elif brake_energy > 0:
+            results["brake"] = detect_brake(min(1.0, brake_energy / BRAKE_ENERGY_BUDGET_J))  # E_budget 6 GJ
         if not self._nats.is_connected:
             try:
                 await self._nats.connect()  # awaits the dial; no publish-before-connect race
@@ -104,6 +143,10 @@ class Processor:
                 # VIN (healthy included) so the /pm board always reflects live
                 # health. (The spec's publish-on-change cadence kept the feed
                 # quiet; the live board needs a state message per poll.)
+                # Component keys are "battery", "tires.<wheel>", "brake.<pad>"
+                # (and the legacy "tires"/"brake" fallbacks) — interpolating
+                # them into the subject yields the 3-token pm.{vin}.{component}
+                # or the 4-token pm.{vin}.{component}.{wheel} form.
                 await self._nats.publish_message(
                     f"pm.{vin}.{component}",
                     PmMessage(vin=vin, component=component, health_score=r.health_score,

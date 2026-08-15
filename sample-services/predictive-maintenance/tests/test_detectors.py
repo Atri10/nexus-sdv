@@ -55,3 +55,40 @@ def test_tires_temp_compensation():
     # Same absolute pressure at hot temp must compensate to a higher P_comp.
     r = detect_tires([(0.0, 2.3, 303.15)], recommended_bar=2.3)
     assert r.health_score > 0
+
+
+def test_tires_per_wheel():
+    """Per-wheel tires: FL collapses 2.3 -> 1.0 bar (flat, critical) while FR
+    holds steady at 2.3 (healthy); evidence carries the wheel label."""
+    import math
+    days = 30
+    fl = [(i * 86400.0, 2.3 - 1.3 * i / days, 303.15) for i in range(days)]
+    fr = [(i * 86400.0, 2.3, 303.15) for i in range(days)]
+    rfl = detect_tires(fl, recommended_bar=2.3, wheel="FL")
+    rfr = detect_tires(fr, recommended_bar=2.3, wheel="FR")
+    assert rfl.severity == "critical"
+    assert rfl.health_score < 15
+    assert rfl.evidence.get("wheel") == "FL"
+    assert rfr.severity == "healthy"
+    assert rfr.evidence.get("wheel") == "FR"
+
+
+def test_brake_per_pad():
+    """Per-pad brakes: pad FL worn to 0.95 (> 0.9 action threshold) while pad
+    FR is fresh (0.1, healthy); evidence carries the pad label."""
+    rfl = detect_brake(0.95, pad="FL")
+    rfr = detect_brake(0.1, pad="FR")
+    assert rfl.severity == "action"
+    assert rfl.evidence.get("pad") == "FL"
+    assert rfl.evidence["wear_fraction"] == "0.950"
+    assert rfr.severity == "healthy"
+    assert rfr.evidence.get("pad") == "FR"
+
+
+def test_detectors_omit_wheel_pad_when_not_given():
+    """Back-compat: without wheel/pad the evidence dict carries no such key
+    (legacy single-channel calls keep the old shape)."""
+    assert "wheel" not in detect_tires(
+        [(i * 86400.0, 2.3, 303.15) for i in range(15)]
+    ).evidence
+    assert "pad" not in detect_brake(0.5).evidence

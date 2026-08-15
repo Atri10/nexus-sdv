@@ -30,7 +30,10 @@ VEHICLE_MASS_KG = 1500.0
 # service's Settings default, but reachable from the host in local dev).
 DEFAULT_DATA_API_ADDR = "localhost:9090"
 
-# The detector service's poll request — replayed verbatim per VIN.
+# The detector service's poll request — replayed verbatim per VIN. Includes
+# the per-wheel tire/brake columns (TIRE_PRESSURE.{FL..RR}, TIRE_TEMP.{FL..RR},
+# BRAKE_WEAR.{FL..RR}) the sim now publishes; the legacy single-channel
+# TIRE_PRESSURE/TIRE_TEMP are kept so mixed-history windows still score.
 DATA_TYPES = [
     "dynamic:battery.voltage",
     "dynamic:battery.temp",
@@ -38,7 +41,21 @@ DATA_TYPES = [
     "dynamic:BRAKE_PEDAL_PCT",
     "dynamic:TIRE_PRESSURE",
     "dynamic:TIRE_TEMP",
+    "dynamic:TIRE_PRESSURE.FL",
+    "dynamic:TIRE_PRESSURE.FR",
+    "dynamic:TIRE_PRESSURE.RL",
+    "dynamic:TIRE_PRESSURE.RR",
+    "dynamic:TIRE_TEMP.FL",
+    "dynamic:TIRE_TEMP.FR",
+    "dynamic:TIRE_TEMP.RL",
+    "dynamic:TIRE_TEMP.RR",
+    "dynamic:BRAKE_WEAR.FL",
+    "dynamic:BRAKE_WEAR.FR",
+    "dynamic:BRAKE_WEAR.RL",
+    "dynamic:BRAKE_WEAR.RR",
 ]
+
+WHEELS = ("FL", "FR", "RL", "RR")
 
 
 def _float(value: bytes) -> float:
@@ -104,6 +121,8 @@ def run_detectors_for_vin(vins, data_types, start, end, batch_size=50,
                 request.time_range = TimeRange(start=start, end=end)
 
                 rest, crank, brake_energy, tires = [], [], 0.0, []
+                tires_by_wheel = {w: [] for w in WHEELS}
+                brake_wear_by_pad = {w: [] for w in WHEELS}
                 batt_temp = BATTERY_V_REF
                 prev_brake = None
                 try:
@@ -126,6 +145,16 @@ def run_detectors_for_vin(vins, data_types, start, end, batch_size=50,
                                     values["dynamic:TIRE_TEMP"] + 273.15,
                                 )
                             )
+                        for w in WHEELS:
+                            pw, tw = f"dynamic:TIRE_PRESSURE.{w}", f"dynamic:TIRE_TEMP.{w}"
+                            if pw in values and tw in values:
+                                tires_by_wheel[w].append(
+                                    (t, values[pw], values[tw] + 273.15)
+                                )
+                        for w in WHEELS:
+                            bw = f"dynamic:BRAKE_WEAR.{w}"
+                            if bw in values:
+                                brake_wear_by_pad[w].append(values[bw])
                         if (
                             "dynamic:VELOCITY" in values
                             and "dynamic:BRAKE_PEDAL_PCT" in values
@@ -161,25 +190,49 @@ def run_detectors_for_vin(vins, data_types, start, end, batch_size=50,
                         for t, v0, t0 in rest
                     ]
                     results["battery"] = detect_battery(comp, crank)
-                if brake_energy > 0:
+                # Per-wheel tires with single-channel fallback (mirrors the
+                # processor): per-wheel columns win when present.
+                wheel_tires = {w: s for w, s in tires_by_wheel.items() if s}
+                if wheel_tires:
+                    for w, samples in wheel_tires.items():
+                        results[f"tires.{w}"] = detect_tires(
+                            samples, recommended_bar=2.3, wheel=w
+                        )
+                elif tires:
+                    results["tires"] = detect_tires(tires)
+                # Per-pad brakes with energy-accumulator fallback (mirrors
+                # the processor): BRAKE_WEAR.{wheel} wins when present.
+                per_pad_wear = {
+                    w: vals[-1] for w, vals in brake_wear_by_pad.items() if vals
+                }
+                if per_pad_wear:
+                    for w, wear in per_pad_wear.items():
+                        results[f"brake.{w}"] = detect_brake(
+                            min(1.0, max(0.0, wear)), pad=w
+                        )
+                elif brake_energy > 0:
                     results["brake"] = detect_brake(
                         min(1.0, brake_energy / BRAKE_ENERGY_BUDGET_J)
                     )
-                if tires:
-                    results["tires"] = detect_tires(tires)
 
                 for component, result in results.items():
                     if result.severity == "healthy":
                         continue
+                    # Per-wheel keys are "tires.FL" / "brake.FL"; the alert's
+                    # component column stays the base component so the
+                    # precision/recall grouping (battery/brake/tires) and the
+                    # web /pm validation card keep working.
+                    base_component = component.split(".")[0]
                     alerts.append(
                         {
                             "vin": vin,
-                            "component": component,
+                            "component": base_component,
                             "health_score": result.health_score,
                             "severity": result.severity,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "t_epoch": _first_alert_epoch(
-                                results, component, rest, tires, window_start=start
+                                results, component, rest, tires, window_start=start,
+                                tires_by_wheel=tires_by_wheel,
                             ),
                             "evidence": result.evidence,
                             "explanation": result.explanation,
@@ -199,7 +252,8 @@ def run_detectors_for_vin(vins, data_types, start, end, batch_size=50,
     return alerts, active_pairs, scored
 
 
-def _first_alert_epoch(results, component, rest, tires, window_start=None):
+def _first_alert_epoch(results, component, rest, tires, window_start=None,
+                       tires_by_wheel=None):
     """Best-effort first-alert epoch for lead-time math: the timestamp of the
     first telemetry sample that crosses the detector's alert threshold.
 
@@ -207,12 +261,13 @@ def _first_alert_epoch(results, component, rest, tires, window_start=None):
     sample at or below the advisory threshold (12.4 V — compared against the
     SAME compensated voltage the detector consumes, not the raw reading);
     for tires the first compensated-pressure sample at or below the floor
-    (1.8 bar). Brake has no per-sample crossing (energy accumulates over the
-    whole window), so it falls back to the window start — the lead-time for
-    brake is therefore a lower bound. window_start is the poll window's
-    start datetime; for brake it is converted to an epoch. If it is not
-    given, the alert's own timestamp (t of the last sample seen) is used so
-    an alert never carries a None epoch.
+    (1.8 bar). Per-wheel tires pass "tires.<wheel>" and their own sample
+    series via tires_by_wheel. Brake has no per-sample crossing (energy
+    accumulates over the whole window), so it falls back to the window start
+    — the lead-time for brake is therefore a lower bound. window_start is the
+    poll window's start datetime; for brake it is converted to an epoch. If
+    it is not given, the alert's own timestamp (t of the last sample seen)
+    is used so an alert never carries a None epoch.
     """
     if component == "battery":
         from predictive_maintenance.core.detectors import BATTERY_ADVISORY_V
@@ -220,13 +275,18 @@ def _first_alert_epoch(results, component, rest, tires, window_start=None):
             v_comp = v_raw - BATTERY_BETA * (t0 - BATTERY_V_REF)
             if v_comp <= BATTERY_ADVISORY_V:
                 return t
-    if component == "tires":
+    if component == "tires" or component.startswith("tires."):
         from predictive_maintenance.core.detectors import TIRE_FLOOR_BAR, TIRE_REF_K
-        for t, p, tk in tires:
+        # Per-wheel caller: scan that wheel's own (t, P_bar, T_kelvin) series.
+        series = tires
+        if component.startswith("tires.") and tires_by_wheel:
+            wheel = component.split(".")[1]
+            series = tires_by_wheel.get(wheel, [])
+        for t, p, tk in series:
             p_comp = p * TIRE_REF_K / tk if tk > 0 else p
             if p_comp <= TIRE_FLOOR_BAR:
                 return t
-    if component == "brake":
+    if component == "brake" or component.startswith("brake."):
         # No per-sample crossing: energy accumulates over the whole window.
         # Fall back to the window start (docstring promise) — a lower bound
         # on lead time — or, when no window is available, the alert time.
@@ -241,6 +301,10 @@ def _first_alert_epoch(results, component, rest, tires, window_start=None):
             return rest[-1][0]
         if tires:
             return tires[-1][0]
+        if tires_by_wheel:
+            for series in tires_by_wheel.values():
+                if series:
+                    return series[-1][0]
         return 0.0
     return None
 
