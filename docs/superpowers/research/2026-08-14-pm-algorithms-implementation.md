@@ -485,11 +485,11 @@ flowchart LR
   BAT --> PAY
   PAY -->|"telemetry.{VIN} · telemetry-generic.{VIN}.{sensor}"| NATS[(NATS)]
   NATS -->|auth-callout JWT perms| CONN[nats-bigtable-connector]
-  CONN --> BT[(Bigtable telemetry<br/>row {VIN}#{RFC3339Nano})]
+  CONN --> BT[("Bigtable telemetry<br/>row {VIN}#{RFC3339Nano}")]
   BT --> API[data-api gRPC<br/>server-streaming]
   API -->|"poll 30-day window"| PM[predictive-maintenance<br/>Processor.run]
   PM --> DET[detectors.py:<br/>detect_battery · detect_brake · detect_tires]
-  DET --> PUB{publish pm.{VIN}.{component}}
+  DET --> PUB{"publish pm.{VIN}.{component}"}
   PUB -->|"pm.>"| NATS
   NATS -->|"SSE /api/pm/stream"| WEB[data-web-client<br/>/demo gauges · /pm console]
   GT -->|"status reply"| WEB
