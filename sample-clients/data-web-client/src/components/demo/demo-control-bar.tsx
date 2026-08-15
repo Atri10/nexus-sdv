@@ -12,7 +12,9 @@ export interface DemoStatus {
 }
 
 /** Keycloak-configured VIN pool (see local-dev keycloak realm setup). */
-export const VIN_POOL = Array.from({ length: 10 }, (_, i) => `VIN${1001 + i}`);
+import { VIN_POOL } from '@/lib/vin-pool';
+
+export { VIN_POOL };
 
 interface DemoControlBarProps {
   vin: string;
