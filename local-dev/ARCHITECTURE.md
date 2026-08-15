@@ -64,10 +64,10 @@ sequenceDiagram
 
   SIM->>REG: factory cert for random pool VIN (VIN1001–VIN1010) + register
   REG-->>SIM: operational cert + per-VIN Keycloak JWT
-  SIM->>NATS: "subscribe commands.{VIN}.demo (idle, publishes nothing)"
+  SIM->>NATS: "subscribe commands.> (wildcard — idle, publishes nothing)<br/>adopts the requested pool VIN on start"
   WEB->>NATS: "POST /api/demo/vehicle {action: start|stop|status, vin}"
-  NATS->>SIM: "commands.{VIN}.demo request (connector account, commands.> perms)"
-  SIM-->>WEB: reply {running, published}
+  NATS->>SIM: "commands.{VIN}.demo request (connector account, commands.> perms)<br/>DEMO_MODE=true on auth-callout grants fleet-wide perms"
+  SIM-->>WEB: reply {vin: <adopted>, running, published, ground_truth}
   loop publish ticker (start)
     SIM->>NATS: "telemetry-generic.{VIN}.battery (TelemetryMessage)<br/>telemetry.{VIN} (MetricsReport)"
     NATS->>CONN: "telemetry.> / telemetry-generic.>"
@@ -109,7 +109,7 @@ flowchart LR
   KC --> JWT["JWT (RS256)"]
   JWT --> N["NATS"]
   N --> AC["Auth Callout verifies JWT kid<br/>against its JWKS snapshot"]
-  AC -->|"maps realm roles → per-VIN NATS permissions"| PERM["telemetry.&lt;VIN&gt;.>, commands.&lt;VIN&gt;.>"]
+  AC -->|"maps realm roles → per-VIN NATS permissions<br/>(DEMO_MODE=true broadens to telemetry.>, commands.>)"| PERM["telemetry.&lt;VIN&gt;.>, commands.&lt;VIN&gt;.>"]
 ```
 
 The JWKS snapshot is taken once at setup and never refetched. Keycloak's
