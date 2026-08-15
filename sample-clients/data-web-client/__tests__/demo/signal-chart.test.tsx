@@ -26,7 +26,10 @@ describe('SignalChart', () => {
   it('shows label, unit and latest value', () => {
     render(<SignalChart series={SERIES} unit="V" paused={false} theme={THEME} onExpand={() => {}} />);
     expect(screen.getByText('battery.voltage')).toBeInTheDocument();
-    expect(screen.getByText((content) => content.includes('12.6'))).toBeInTheDocument();
+    // The current value and the min–max summary both contain "12.6" — assert
+    // the current-value span specifically.
+    expect(screen.getAllByText((content) => content.includes('12.6')).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('12.60 V')).toBeInTheDocument();
   });
 
   it('marks paused charts and keeps history', () => {

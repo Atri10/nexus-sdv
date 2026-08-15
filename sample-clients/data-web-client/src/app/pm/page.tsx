@@ -186,7 +186,11 @@ export default function PmPage() {
   // selected VIN is NOT the running sim (or the sim is down), skip appending
   // entirely — null samples would pollute the charts (BUG-8).
   const recordSample = useCallback(() => {
+    // Skip when the selection isn't the sim OR the sim isn't running:
+    // a stopped sim's frozen last values would flatline the charts and
+    // age real history out of the window (BUG-P3-1).
     if (simVin && selectedVin && simVin !== selectedVin) return;
+    if (!sim?.running) return;
     const t = Date.now();
     const gt = sim?.ground_truth ?? {};
     const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
@@ -242,7 +246,11 @@ export default function PmPage() {
   const gtBrake = sim?.ground_truth?.brake as Record<string, unknown> | undefined;
   const brakeWearFrac = gtBrake?.wear_fraction !== undefined ? Number(gtBrake.wear_fraction) : 0;
 
-  const live = sim?.running === true && Number(liveVals.velocity_m_s) !== undefined;
+  // P3-2: 'live' must be false when the sim is stopped OR the selection isn't
+  // the sim — the KPI row shows sim.live values, so it must not present them
+  // as live when they're frozen or belong to a different vehicle. (The old
+  // `Number(x) !== undefined` was always true — NaN !== undefined.)
+  const live = sim?.running === true && simVin === selectedVin && Number.isFinite(Number(liveVals.velocity_m_s));
 
   return (
     <AppLayout>

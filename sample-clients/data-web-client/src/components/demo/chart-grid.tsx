@@ -53,7 +53,7 @@ export function ChartGrid({ series, components, hidden, theme, onToggleSeries }:
                 {visible.length === groupSeries.length ? 'Hide all' : 'Show all'}
               </button>
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 min-[480px]:grid-cols-2 xl:grid-cols-3">
               {groupSeries.map((s) => (
                 <SignalChart
                   key={s.key}
