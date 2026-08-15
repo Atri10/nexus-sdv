@@ -346,3 +346,19 @@ def test_first_alert_epoch_battery_uses_compensated_voltage():
         _first_alert_epoch({"battery": object()}, "battery", rest_hot, [])
         is None
     )
+
+
+def test_first_alert_epoch_per_wheel_tires_scans_own_series():
+    """Per-wheel tires pass "tires.<wheel>" + their own sample series: the
+    crossing scan must use that wheel's pressure, not the single-channel
+    list (which may be empty or from another wheel)."""
+    from predictive_maintenance.core.detectors import TIRE_REF_K
+    # FL collapses below the 1.8 bar floor at t=2000 (compensated P = 1.75).
+    fl_series = [(1000.0, 2.30, 303.15), (2000.0, 1.75, 303.15)]
+    # FR steady; its series must NOT be scanned for the FL alert.
+    fr_series = [(1000.0, 2.30, 303.15), (2000.0, 2.30, 303.15)]
+    epoch = _first_alert_epoch(
+        {"tires.FL": object()}, "tires.FL", [], [],
+        tires_by_wheel={"FL": fl_series, "FR": fr_series},
+    )
+    assert epoch == 2000.0
