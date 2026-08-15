@@ -130,31 +130,58 @@ The 9.5 V and 1.5× thresholds are the literature-typical cranking limits for a 
 |---|---|---|
 | EWMA < 12.4 V (≈75 % SoC) or slope < −0.5 mV/day | Advisory | ~2 weeks |
 | EWMA < 12.2 V | Action | days–weeks |
-| Cranking V_min < 9.5 V or R_int > 1.5× baseline | Action/Critical | days |
+| EWMA < 11.8 V (ACTION − 0.4) | Critical | days |
+| Cranking V_min < 9.5 V | Critical | days |
+| R_int > 1.5× baseline | Score penalty only (severity via `_band`) | days |
 
-### 6.2 Score penalties (min-of-caps composition)
+### 6.2 Continuous health meter (voltage-derived score)
 
-The health score starts at 100 and each violated rule caps it via `min` (`detectors.py(detect_battery)`):
+The health score is no longer composed from step-function caps. It is a **continuous meter** mapping the EWMA resting voltage onto a 0–100 scale (`detectors.py(detect_battery)`):
 
-| Rule | Penalty |
+```
+score = round(clamp((ewma − 10.5) / (12.63 − 10.5) · 100, 0, 100))
+```
+
+EWMA resting voltage **12.63 V → 100 (healthy)** down to **10.5 V → 0 (dead)**. The meter is linear in the smoothed voltage, so it tracks the actual death arc: a battery collapsing 11.3 → 10.5 V reads 30 → 0, not a frozen 25. The threshold rules below then only **add** penalty (slope / cranking); they never override the voltage-derived score.
+
+| Rule | Effect on score |
 |---|---|
-| `ewma < BATTERY_ACTION_V` (12.2 V) | `score = min(score, 25)` |
-| else `ewma < BATTERY_ADVISORY_V` (12.4 V) | `score = min(score, 60)` |
+| Continuous meter (EWMA voltage) | `score = min(score, round(clamp((ewma−10.5)/(12.63−10.5)·100, 0, 100)))` |
 | `slope_mv_day < BATTERY_SLOPE_MV` (−0.5 mV/day) | `score = min(score, 55)` |
 | cranking `vmin < CRANK_VMIN` (9.5 V) | `score = min(score, 20)` |
 | cranking `R_int > 1.5×` baseline | `score = min(score, 30)` |
 
-The binding constraint wins: the score is the minimum of the applied caps, never higher than the worst single violation. The EWMA branches are `if/elif` (action subsumes advisory); slope and cranking stack independently.
+The voltage meter always applies (when resting data exists); slope and cranking penalties stack via `min` as before. The binding constraint wins — the score is never higher than the worst single penalty.
 
-### 6.3 Severity mapping
+### 6.3 Severity mapping (threshold-driven, decoupled from score)
+
+Severity is the **alert signal** and comes from the threshold rules, evaluated in order — not from the score. This matters: a battery at 12.10 V is below the 12.2 V action line and must alert as **action** even though its continuous score (~75) still reads high. The score is the degradation *meter*; the threshold rules are the *alerts* (`detectors.py(detect_battery)`).
 
 ```
-severity = "critical" if score < 30 else _band(score)
+if ewma < BATTERY_ACTION_V − 0.4   (11.8 V) → "critical"
+elif ewma < BATTERY_ACTION_V       (12.2 V) → "action"
+elif ewma < BATTERY_ADVISORY_V     (12.4 V) → "advisory"
+elif any crank vmin < CRANK_VMIN   (9.5 V)  → "critical"
+else → _band(score)
 ```
 
-with `_band` (`detectors.py(_band)`): ≥70 → healthy, ≥50 → advisory, else action. Full mapping: **< 30 → critical; 30–49 → action; 50–69 → advisory; ≥ 70 → healthy**.
+with `_band` (`detectors.py(_band)`): ≥70 → healthy, ≥50 → advisory, else action. Full mapping: **EWMA < 11.8 V → critical; EWMA < 12.2 V → action; EWMA < 12.4 V → advisory; crank V_min < 9.5 V → critical; else ≥ 70 → healthy, ≥ 50 → advisory, < 50 → action**.
 
-### 6.4 Insufficient-data guard
+### 6.4 Worked example — the collapse of a dying battery
+
+A battery walking down the EWMA resting voltage (temperature-compensated), with no slope or cranking penalty:
+
+| EWMA resting voltage | Score | Severity |
+|---|---|---|
+| 12.60 V | (12.60−10.5)/(12.63−10.5)·100 = 99.3 → **99** | healthy (≥70, and ≥12.4 V) |
+| 12.40 V | (12.40−10.5)/(12.63−10.5)·100 = 89.2 → **89** | advisory (12.40 ≥ 12.2, < 12.4) |
+| 12.10 V | (12.10−10.5)/(12.63−10.5)·100 = 75.1 → **75** | action (12.10 < 12.2) |
+| 11.60 V | (11.60−10.5)/(12.63−10.5)·100 = 51.6 → **52** | critical (11.60 < 11.8) |
+| 10.50 V | (10.50−10.5)/(12.63−10.5)·100 = 0 → **0** | critical |
+
+The meter reads the actual state: **12.10 V → score 75, severity action** — the alert comes from the threshold rule while the score stays informative. Under the old step-function caps the same battery floored at a frozen 25.
+
+### 6.5 Insufficient-data guard
 
 Fewer than five resting samples **and** no cranking data → hard `healthy` with score 100 (`detectors.py(detect_battery)`). Five is the minimum for a meaningful EWMA/OLS fit given the 10 % weight; crank data bypasses the guard entirely (one strong cranking event can alert).
 
@@ -163,16 +190,17 @@ Fewer than five resting samples **and** no cranking data → hard `healthy` with
 ## 7. Limitations and honest notes
 
 1. **No ignition-state gate**: the spec's "resting reading = engine off, no load" extraction is not implemented — the detector consumes whatever the processor labels as a battery row (`processor.py(run)`). In the demo, all samples are resting-ish by construction.
-2. **M2 is dormant end-to-end**: the simulator never emits cranking events (`BatteryAt` computes `vMin`/`rInt` but the publish loop discards them, `main.go(publishOnce)`), so `crank` is always empty in the live pipeline and the critical path is only reachable via EWMA < 12.2 V. Unit tests exercise M2 directly (`tests/test_detectors.py(test_battery_cranking_critical)`).
+2. **M2 is dormant end-to-end**: the simulator never emits cranking events (`BatteryAt` computes `vMin`/`rInt` but the publish loop discards them, `main.go(publishOnce)`), so `crank` is always empty in the live pipeline and the critical path is only reachable via EWMA < 11.8 V (or action below 12.2 V). Unit tests exercise M2 directly (`tests/test_detectors.py(test_battery_cranking_critical)`).
 3. **Calibration**: β and the OCV→SoC curve are literature-typical values; the simulator is the calibration instrument, not fleet data.
-4. **Code-vs-spec scoring divergence**: the spec proposed a composite weighted score (60 % resting trend / 25 % cranking / 15 % SOC drift, §3.3 above); the code implements min-of-caps composition and has **no SOC term at all** (the processor does not even request `dynamic:battery.soc`). The weights were never transcribed into code.
+4. **Code-vs-spec scoring divergence**: the spec proposed a composite weighted score (60 % resting trend / 25 % cranking / 15 % SOC drift, §3.3 above); the code implements a continuous voltage-derived meter plus threshold penalties and has **no SOC term at all** (the processor does not even request `dynamic:battery.soc`). The weights were never transcribed into code.
 5. **Explanation template quirk**: when resting data exists the explanation is always the fixed "Resting voltage … drifting … mV/day (advisory threshold 12.4 V)" template; the `or ("; ".join(reasons))` fallback is dead code (a formatted string is never falsy), so the actual trigger (action EWMA, slope) is hidden from the explanation. See the implementation doc §3.9.
+6. **Single-channel by design**: the battery stays a single component — one `pm.{VIN}.battery` subject, no per-wheel split. Per-wheel channels exist only where the physics is per-corner (tires `pm.{VIN}.tires.{wheel}`, brake pads `pm.{VIN}.brake.{pad}`); the battery's resting-voltage and cranking physics are inherently vehicle-level.
 
 ---
 
 ## 8. Summary
 
-The battery detector is a two-speed physics-informed detector: a **slow trend channel** (temperature-compensated resting voltage → EWMA level + 30-day OLS slope) that warns weeks ahead, and a **fast cranking channel** (V_min + internal resistance vs baseline) that catches the near-term failure. All thresholds are deterministic and explainable; the code's min-of-caps scoring and the missing SOC term are the two deliberate divergences from the spec.
+The battery detector is a two-speed physics-informed detector: a **slow trend channel** (temperature-compensated resting voltage → EWMA level + 30-day OLS slope) that warns weeks ahead, and a **fast cranking channel** (V_min + internal resistance vs baseline) that catches the near-term failure. All thresholds are deterministic and explainable; the score is a continuous voltage-derived meter, severity comes from the threshold rules, and the missing SOC term is the one deliberate divergence from the spec.
 
 ---
 
