@@ -12,9 +12,11 @@ const MAX_MESSAGES = 250;
 
 /** Identity of a PM message for dedup: the detector publishes continuously
  * in demo mode and EventSource auto-reconnects, so the same (vin, component,
- * timestamp) can arrive twice after a blip. Treat those as duplicates. */
+ * timestamp) can arrive twice after a blip. Treat those as duplicates. The
+ * wheel/pad instance (4th subject token) is part of the identity so two
+ * wheels of the same component at the same timestamp are NOT deduped. */
 function messageId(m: PmMessage): string {
-  return `${m.vin}|${m.component}|${m.timestamp}`;
+  return `${m.vin}|${m.component}|${m.wheel ?? ''}|${m.timestamp}`;
 }
 
 /**
@@ -148,5 +150,5 @@ export function usePmMessages() {
     }
   }, []);
 
-  return { messages, clearAlerts };
+  return { messages, clearAlerts, setMessages };
 }

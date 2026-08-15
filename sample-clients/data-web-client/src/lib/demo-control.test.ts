@@ -18,12 +18,15 @@ mock.module('@/lib/nats', () => ({
 const { demoControl, DemoSimulatorOfflineError, discoverSimulator } = await import('@/lib/demo-control');
 
 describe('demoControl', () => {
-  it('requests commands.<vin>.demo with { action } JSON and returns the parsed reply', async () => {
+  it('requests commands.<vin>.demo with { action, vin } JSON and returns the parsed reply', async () => {
     const reply = await demoControl('start', 'VIN1001');
 
     expect(captured).toHaveLength(1);
     expect(captured[0].subject).toBe('commands.VIN1001.demo');
-    expect(JSON.parse(captured[0].payload)).toEqual({ action: 'start' });
+    // The VIN is carried in the body (not just the subject) so the
+    // simulator's control handler can adopt it on start (runtime VIN
+    // switching).
+    expect(JSON.parse(captured[0].payload)).toEqual({ action: 'start', vin: 'VIN1001' });
     expect(captured[0].timeout).toBe(3000);
     expect(reply).toEqual(REPLY);
   });

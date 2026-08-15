@@ -31,17 +31,17 @@ beforeEach(() => {
 });
 
 describe('demoControl per-component', () => {
-  it('sends { action, component } JSON when a component is given', async () => {
+  it('sends { action, component, vin } JSON when a component is given', async () => {
     const reply = await demoControl('start', 'VIN1001', 'battery');
     expect(captured[0].subject).toBe('commands.VIN1001.demo');
-    expect(JSON.parse(captured[0].payload)).toEqual({ action: 'start', component: 'battery' });
+    expect(JSON.parse(captured[0].payload)).toEqual({ action: 'start', component: 'battery', vin: 'VIN1001' });
     expect(captured[0].timeout).toBe(3000);
     expect(reply.components?.[0]?.sensors[0]?.unit).toBe('V');
   });
 
   it('omits the component field when none is given (legacy behavior)', async () => {
     await demoControl('stop', 'VIN1001');
-    expect(JSON.parse(captured[0].payload)).toEqual({ action: 'stop' });
+    expect(JSON.parse(captured[0].payload)).toEqual({ action: 'stop', vin: 'VIN1001' });
   });
 
   it('throws DemoSimulatorOfflineError when the request times out', async () => {

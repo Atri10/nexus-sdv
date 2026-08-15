@@ -63,7 +63,10 @@ export async function demoControl(
   let reply;
   try {
     // nats.js rejects on timeout (NatsTimeoutError) — map to a clear error.
-    const body: Record<string, string> = { action };
+    // The VIN goes in the BODY too, not just the subject: the simulator's
+    // control handler adopts the pool VIN named in `vin` on start (runtime
+    // VIN switching — selecting VIN1002 + Start actually runs VIN1002).
+    const body: Record<string, string> = { action, vin };
     if (component) body.component = component;
     // The "speed" action carries the multiplier in the preset field
     // ({"action":"speed","preset":"5"}); "degradation" uses it for the
