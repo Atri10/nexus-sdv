@@ -53,10 +53,12 @@ describe('Sidebar scoring events', () => {
     expect(textarea.value).toBe('not-json');
   });
 
-  it('closes the EventSource on error', () => {
+  it('does not close the EventSource on error (auto-reconnect is left to the browser)', () => {
     render(<Sidebar />);
     MockEventSource.instances[0].emitError();
-    expect(mockClose).toHaveBeenCalledTimes(1);
+    // The hook must NOT close on error — EventSource auto-reconnects after
+    // transient blips; closing here would permanently kill the panel.
+    expect(mockClose).toHaveBeenCalledTimes(0);
   });
 
   it('closes the EventSource on unmount', () => {

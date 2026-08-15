@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import { getAllowedVehicleIds } from '@/lib/acl';
 
 // Proxy to Java telemetry-chart-service
 const TELEMETRY_SERVICE_URL = process.env.TELEMETRY_SERVICE_URL || 'http://localhost:8081';
+
+// VINs are 17-char uppercase alphanumeric (ISO 3779). Enforcing the format
+// here also blocks URL-path injection into the proxied fetch (encoded
+// traversal segments, extra path/query fragments).
+const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
 
 export async function GET(
   request: NextRequest,
@@ -9,6 +17,25 @@ export async function GET(
 ) {
   const { vin } = await params;
   const { searchParams } = new URL(request.url);
+
+  // Authz parity with /api/devices/[id]: session required in production
+  // (DEMO_MODE bypass for the local stack where NextAuth is incompatible),
+  // plus the vehicle ACL — never serve raw telemetry for a VIN the user
+  // isn't allowed to see.
+  const session = await getServerSession(authOptions);
+  if (!session && process.env.DEMO_MODE !== 'true') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  const allowed = await getAllowedVehicleIds(session?.groups ?? []);
+  if (allowed !== undefined && !allowed.includes(vin)) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+  if (!VIN_RE.test(vin)) {
+    return NextResponse.json(
+      { error: `invalid VIN: must be 17 uppercase alphanumeric characters` },
+      { status: 400 }
+    );
+  }
 
   // Build query parameters
   const queryParams = new URLSearchParams();
