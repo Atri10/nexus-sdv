@@ -215,12 +215,15 @@ func TestPayloadFreeRunPublishesAllComponents(t *testing.T) {
 	// a fresh controlState starts with all components disabled.
 	v := &VehicleClient{VIN: "VIN1001"}
 	msgs := v.buildPayloads(time.Now(), batteryState{}, driveState{}, "both", 0, func(string) bool { return true })
-	if len(msgs) != 4 {
-		t.Fatalf("free-run payloads = %d, want 4 (battery, cabin, powertrain, chassis)", len(msgs))
+	// battery + cabin telemetry, 4 per-wheel chassis telemetry messages
+	// (TIRE_PRESSURE.{wheel} etc.), powertrain + chassis metrics reports.
+	if len(msgs) != 8 {
+		t.Fatalf("free-run payloads = %d, want 8 (battery, cabin, 4× chassis wheels, powertrain, chassis)", len(msgs))
 	}
 	want := map[string]bool{
 		"telemetry-generic.VIN1001.battery": true,
 		"telemetry-generic.VIN1001.cabin":   true,
+		"telemetry-generic.VIN1001.chassis": true, // ×4 — per-wheel tire/brake sensors
 		"telemetry.VIN1001":                 true,
 	}
 	for _, m := range msgs {
@@ -292,11 +295,11 @@ func TestChassisReportTireTempFromDegradation(t *testing.T) {
 	if err := report.ReportData.UnmarshalTo(&vtd); err != nil {
 		t.Fatalf("unpack VehicleTelemetryData: %v", err)
 	}
-	wantTemp := float32(tires.TireTempAt(ageDays))
+	wantTemp := float32(tires.TireTempAt("FL", ageDays))
 	if vtd.TIRE_TEMP == nil || math.Abs(float64(*vtd.TIRE_TEMP-wantTemp)) > 0.01 {
 		t.Errorf("TIRE_TEMP = %v, want %v (TireTempAt day %v)", vtd.TIRE_TEMP, wantTemp, ageDays)
 	}
-	wantPressure := float32(tires.TirePressureAt(ageDays))
+	wantPressure := float32(tires.TirePressureAt("FL", ageDays))
 	if vtd.TIRE_PRESSURE == nil || math.Abs(float64(*vtd.TIRE_PRESSURE-wantPressure)) > 0.01 {
 		t.Errorf("TIRE_PRESSURE = %v, want %v (TirePressureAt day %v)", vtd.TIRE_PRESSURE, wantPressure, ageDays)
 	}
