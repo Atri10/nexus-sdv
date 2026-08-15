@@ -54,7 +54,7 @@ openssl x509 -req -in /tmp/factory.csr \
     -extfile "$FACTORY_PREFIX.ext"
 rm -f /tmp/factory.csr
 
-echo "Simulator: VIN=$VIN (control subject commands.$VIN.demo)"
+echo "Simulator: VIN=$VIN (control subject commands.>.demo — adopts any pool VIN on start)"
 
 export KEYCLOAK_CLIENT_ID="$VIN"
 export KEYCLOAK_CLIENT_SECRET="$(echo "$VIN" | tr '[:upper:]' '[:lower:]')-secret"
@@ -68,5 +68,5 @@ exec /vehicle-client \
     -keycloak-url="${KEYCLOAK_URL:-http://keycloak:8080}" \
     -nats-url="${NATS_URL:-nats://nats:4222}" \
     -message-type=both \
-    -control-subject="commands.$VIN.demo" \
+    -control-subject="commands.>.demo" \
     -interval="${INTERVAL:-2}"

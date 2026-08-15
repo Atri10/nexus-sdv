@@ -356,8 +356,11 @@ func buildPowertrainReport(vin string, drive driveState, now time.Time, count in
 // tires is the per-VIN degradation config for the tires component (may be
 // nil in tests — falls back to the legacy constant + noise) and ageDays the
 // vehicle's simulated age used to walk the tire-leak/temperature curves.
-// TIRE_TEMP rides the same metrics path (typed proto field 16, mapped to
-// dynamic:TIRE_TEMP by the connector) alongside the telemetry-path value.
+// Per-wheel tire pressure/temperature ride the generic TelemetryMessage path
+// (dynamic:TIRE_PRESSURE.FL..RR / TIRE_TEMP.FL..RR — see
+// buildChassisWheelTelemetry), while the legacy single TIRE_PRESSURE/TIRE_TEMP
+// typed fields stay for back-compat (the /pm provisional health and the
+// detector's single-channel fallback consume them).
 func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, ageDays float64, now time.Time) (*pbMetrics.MetricsReport, error) {
 	ignitionState := drive.engineRPM > 0
 	gpsLat := float32(drive.lat)
@@ -365,8 +368,8 @@ func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, 
 	tirePressure := 2.2 + (mathrand.Float64()-0.5)*0.1
 	tireTemp := 28.0 + (mathrand.Float64()-0.5)*0.5
 	if tires != nil {
-		tirePressure = tires.TirePressureAt(ageDays)
-		tireTemp = tires.TireTempAt(ageDays)
+		tirePressure = tires.TirePressureAt("FL", ageDays)
+		tireTemp = tires.TireTempAt("FL", ageDays)
 	}
 
 	vehicleData := &pbVehicle.VehicleTelemetryData{
@@ -384,6 +387,53 @@ func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, 
 		},
 	}
 	return wrapMetricsReport(vin, now, 0, vehicleData)
+}
+
+// buildChassisWheelTelemetry emits one TelemetryMessage per wheel carrying
+// that corner's per-wheel sensors (TIRE_PRESSURE.<wheel>, TIRE_TEMP.<wheel>,
+// BRAKE_WEAR.<wheel>). These ride the generic telemetry-generic path so the
+// connector stores them as dynamic:<name> columns without any connector
+// change; the detector polls them for per-wheel / per-pad PM (pm.{VIN}.tires.
+// {wheel}, pm.{VIN}.brake.{pad}). A nil tires config falls back to the legacy
+// constant + noise for pressure/temp; brake wear is always emitted from the
+// drive state's energy accumulator.
+func buildChassisWheelTelemetry(vin string, drive driveState, tires *DegradationConfig, ageDays float64, now time.Time) ([]*pb.TelemetryMessage, error) {
+	var out []*pb.TelemetryMessage
+	for _, wheel := range wheels {
+		pressure := 2.2 + (mathrand.Float64()-0.5)*0.1
+		temp := 28.0 + (mathrand.Float64()-0.5)*0.5
+		if tires != nil {
+			pressure = tires.TirePressureAt(wheel, ageDays)
+			temp = tires.TireTempAt(wheel, ageDays)
+		}
+		msg := &pb.TelemetryMessage{
+			MessageId:     uuid.New().String(),
+			SchemaVersion: 1,
+			DeviceId:      vin,
+			SensorData: []*pb.SensorReading{
+				{
+					Timestamp: timestamppb.New(now),
+					Value:     fmt.Sprintf("%.2f", pressure),
+					DataType:  pb.DataType_DYNAMIC,
+					Sensor:    "TIRE_PRESSURE." + wheel,
+				},
+				{
+					Timestamp: timestamppb.New(now),
+					Value:     fmt.Sprintf("%.2f", temp),
+					DataType:  pb.DataType_DYNAMIC,
+					Sensor:    "TIRE_TEMP." + wheel,
+				},
+				{
+					Timestamp: timestamppb.New(now),
+					Value:     fmt.Sprintf("%.4f", drive.brakeWearFraction()),
+					DataType:  pb.DataType_DYNAMIC,
+					Sensor:    "BRAKE_WEAR." + wheel,
+				},
+			},
+		}
+		out = append(out, msg)
+	}
+	return out, nil
 }
 
 // wrapMetricsReport wraps VehicleTelemetryData in the MetricsReport envelope.
@@ -428,6 +478,19 @@ func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive
 			if msg, err := buildCabinTelemetry(v.VIN, now); err == nil {
 				if payload, err := proto.Marshal(msg); err == nil {
 					emit("telemetry", v.buildTelemetrySubject("cabin"), payload)
+				}
+			}
+		}
+		if enabled("chassis") {
+			// Per-wheel tire/brake sensors ride the generic telemetry path
+			// (the connector writes dynamic:TIRE_PRESSURE.{wheel} etc.); the
+			// MetricsReport chassis report keeps the legacy single-channel
+			// typed fields for back-compat.
+			if msgs, err := buildChassisWheelTelemetry(v.VIN, drive, v.tiresDeg, v.batteryAgeDays, now); err == nil {
+				for _, msg := range msgs {
+					if payload, err := proto.Marshal(msg); err == nil {
+						emit("telemetry", v.buildTelemetrySubject("chassis"), payload)
+					}
 				}
 			}
 		}
@@ -483,11 +546,36 @@ func (v *VehicleClient) groundTruth(battery batteryState, drive driveState) map[
 		"wear_fraction": math.Round(drive.brakeWearFraction()*1000) / 1000,
 		"energy_joules": int64(drive.brakeEnergyJ),
 	}
-	if v.tiresDeg != nil {
-		gt["tires"] = map[string]any{
-			"pressure_bar": math.Round(v.tiresDeg.TirePressureAt(v.batteryAgeDays)*100) / 100,
-			"temp_c":       math.Round(v.tiresDeg.TireTempAt(v.batteryAgeDays)*10) / 10,
+	// Per-pad brake wear: the same accumulator scaled per pad (front pads do
+	// more work under braking) so the FL pad — the worst corner — crosses
+	// the detector's action threshold first. BrakeWearAt reads no config
+	// state, so a nil tires config is safe (bare &DegradationConfig{}).
+	brakeDeg := v.tiresDeg
+	if brakeDeg == nil {
+		brakeDeg = &DegradationConfig{}
+	}
+	brakes := map[string]any{}
+	for _, wheel := range wheels {
+		brakes[wheel] = map[string]any{
+			"wear_fraction": math.Round(brakeDeg.BrakeWearAt(wheel, drive.brakeEnergyJ)*1000) / 1000,
 		}
+	}
+	gt["brakes"] = brakes
+	if v.tiresDeg != nil {
+		// Legacy flat tires ground truth stays (the labels evaluator and the
+		// /pm provisional health consume it), using the FL corner as the
+		// representative; per-wheel entries sit directly under tires.
+		tiresGT := map[string]any{
+			"pressure_bar": math.Round(v.tiresDeg.TirePressureAt("FL", v.batteryAgeDays)*100) / 100,
+			"temp_c":       math.Round(v.tiresDeg.TireTempAt("FL", v.batteryAgeDays)*10) / 10,
+		}
+		for _, wheel := range wheels {
+			tiresGT[wheel] = map[string]any{
+				"pressure_bar": math.Round(v.tiresDeg.TirePressureAt(wheel, v.batteryAgeDays)*100) / 100,
+				"temp_c":       math.Round(v.tiresDeg.TireTempAt(wheel, v.batteryAgeDays)*10) / 10,
+			}
+		}
+		gt["tires"] = tiresGT
 	}
 	return gt
 }
@@ -702,6 +790,19 @@ func newControlState(vin, messageType string) *controlState {
 				sensors: []sensorInfo{
 					{Name: "VELOCITY", Label: "Velocity", Unit: "m/s"},
 					{Name: "TIRE_PRESSURE", Label: "Tire pressure", Unit: "bar"},
+					{Name: "TIRE_PRESSURE.FL", Label: "Tire pressure FL", Unit: "bar"},
+					{Name: "TIRE_PRESSURE.FR", Label: "Tire pressure FR", Unit: "bar"},
+					{Name: "TIRE_PRESSURE.RL", Label: "Tire pressure RL", Unit: "bar"},
+					{Name: "TIRE_PRESSURE.RR", Label: "Tire pressure RR", Unit: "bar"},
+					{Name: "TIRE_TEMP", Label: "Tire temp", Unit: "°C"},
+					{Name: "TIRE_TEMP.FL", Label: "Tire temp FL", Unit: "°C"},
+					{Name: "TIRE_TEMP.FR", Label: "Tire temp FR", Unit: "°C"},
+					{Name: "TIRE_TEMP.RL", Label: "Tire temp RL", Unit: "°C"},
+					{Name: "TIRE_TEMP.RR", Label: "Tire temp RR", Unit: "°C"},
+					{Name: "BRAKE_WEAR.FL", Label: "Brake wear FL", Unit: "%"},
+					{Name: "BRAKE_WEAR.FR", Label: "Brake wear FR", Unit: "%"},
+					{Name: "BRAKE_WEAR.RL", Label: "Brake wear RL", Unit: "%"},
+					{Name: "BRAKE_WEAR.RR", Label: "Brake wear RR", Unit: "%"},
 					{Name: "GPS_LATITUDE", Label: "Latitude"},
 					{Name: "GPS_LONGITUDE", Label: "Longitude"},
 					{Name: "HEADING_DEG", Label: "Heading", Unit: "°"},
@@ -733,6 +834,7 @@ func (c *controlState) handle(msg *nats.Msg) {
 		Action    string `json:"action"`
 		Component string `json:"component"`
 		Preset    string `json:"preset"`
+		Vin       string `json:"vin"`
 	}
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		c.reply(msg, map[string]any{"error": "invalid JSON"})
@@ -762,6 +864,20 @@ func (c *controlState) handle(msg *nats.Msg) {
 		c.resetSimulation(msg)
 		return
 	case "start", "stop":
+		// Runtime VIN switching: a start request for a DIFFERENT pool VIN
+		// makes the simulator adopt that VIN before enabling components — so
+		// selecting VIN1002 + Start actually runs a fresh VIN1002 (identity,
+		// degradation curves and subjects all repoint to it). adopt resets
+		// the drive/battery state exactly like a reset, so the new VIN
+		// starts clean.
+		if req.Action == "start" && req.Vin != "" && req.Vin != c.vin {
+			c.mu.Unlock()
+			if err := c.adopt(req.Vin); err != nil {
+				c.reply(msg, map[string]any{"error": err.Error()})
+				return
+			}
+			c.mu.Lock()
+		}
 		if req.Component == "" {
 			for _, comp := range c.components {
 				comp.enabled = req.Action == "start"
@@ -800,6 +916,35 @@ func (c *controlState) anyEnabledLocked() bool {
 		}
 	}
 	return false
+}
+
+// adopt switches the simulator to another pool VIN at runtime (the web's
+// "select VIN + Start" drives this). Under the lock it swaps the active VIN,
+// reseeds every degradation config from the new VIN's fleet preset, clears
+// the ground-truth/live/route state and re-arms the publish loop's drive and
+// battery state via resetFn — so a fresh VIN starts clean (age 0, healthy
+// curves, zeroed brake accumulator) exactly like a reset. Publish subjects
+// read the active VIN dynamically (v.VIN), so they repoint automatically.
+func (c *controlState) adopt(vin string) error {
+	if vin == "" {
+		return fmt.Errorf("adopt: empty vin")
+	}
+	c.mu.Lock()
+	c.vin = vin
+	for _, deg := range c.degradation {
+		deg.HorizonDays = defaultDegradationConfig(deg.Component, poolIndex(vin)).HorizonDays
+	}
+	c.published = 0
+	c.startedAt = time.Now()
+	c.groundTruth = map[string]map[string]any{}
+	c.routeDist = 0
+	c.live = map[string]any{}
+	reset := c.resetFn
+	c.mu.Unlock()
+	if reset != nil {
+		reset()
+	}
+	return nil
 }
 
 // resetSimulation handles {"action":"reset"}: restore the vehicle to its
@@ -1648,7 +1793,12 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		if controlSub != nil {
 			_ = controlSub.Unsubscribe() // stale: bound to the closed connection
 		}
-		sub, err := nc.Subscribe(v.controlSubject, func(msg *nats.Msg) {
+		// Wildcard subscription: the web targets start/stop/status at
+		// commands.<selectedVIN>.demo, and the simulator adopts whichever
+		// pool VIN a start request names (see controlState.adopt) — so it
+		// must hear commands for every pool VIN, not just the boot VIN.
+		// DEMO_MODE=true on auth-callout grants commands.> for this.
+		sub, err := nc.Subscribe("commands.>.demo", func(msg *nats.Msg) {
 			ctl.handle(msg)
 		})
 		if err != nil {
@@ -1750,7 +1900,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		vRest, vMin, rInt := battery.deg.BatteryAt(battery.ageDays)
 		battery.voltage = vRest + (mathrand.Float64()-0.5)*0.025 // ±0.025 V noise
 		battery.soc = 85.5 - 30*((battery.deg.severityFactor()*battery.ageDays/120.0)/1.0)
-		battery.temp = battery.deg.TireTempAt(battery.ageDays) // reuse temp cycle
+		battery.temp = battery.deg.TireTempAt("FL", battery.ageDays) // reuse temp cycle
 		_ = vMin
 		_ = rInt
 		if battery.soc < 5 {
@@ -1768,6 +1918,10 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// Mirror the live degradation state onto the client so the chassis
 		// report and ground truth use the same config the battery walks
 		// (control actions rewrite ctl.degradation; pick it up each tick).
+		// The active VIN too — adopt() swaps ctl.vin at runtime, and publish
+		// subjects read v.VIN, so the client mirrors it before each tick's
+		// payloads are built (subjects then repoint to the adopted VIN).
+		v.VIN = ctl.vin
 		v.batteryAgeDays = battery.ageDays
 		v.tiresDeg = ctl.degradationFor("tires")
 
@@ -1778,7 +1932,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		ctl.setGroundTruth(v.groundTruth(battery, drive))
 		tireBar := 2.2
 		if v.tiresDeg != nil {
-			tireBar = v.tiresDeg.TirePressureAt(v.batteryAgeDays)
+			tireBar = v.tiresDeg.TirePressureAt("FL", v.batteryAgeDays)
 		}
 		ctl.setLive(map[string]any{
 			"velocity_m_s":      math.Round(drive.velocity*10) / 10,
@@ -1853,7 +2007,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 			vRest, _, _ := battery.deg.BatteryAt(battery.ageDays)
 			battery.voltage = clamp(vRest+(mathrand.Float64()-0.5)*0.025, 11.0, 14.5)
 			battery.soc = clamp(85.5-30*(battery.deg.severityFactor()*battery.ageDays/120.0), 5, 100)
-			battery.temp = battery.deg.TireTempAt(battery.ageDays)
+			battery.temp = battery.deg.TireTempAt("FL", battery.ageDays)
 
 			now := time.Now().Add(-time.Duration(backfillDays-i) * 24 * time.Hour)
 			// Free-run: backfill history for every component regardless of
@@ -1880,7 +2034,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 				_ = controlSub.Unsubscribe()
 			}
 		}()
-		log.Printf("Awaiting start command on %s", v.controlSubject)
+		log.Printf("Awaiting start command on commands.>.demo")
 		for range ticker.C {
 			if ctl.isRunning() {
 				publishOnce() // one tick while running

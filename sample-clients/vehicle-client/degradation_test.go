@@ -3,7 +3,9 @@ package main
 import (
 	"math"
 	mathrand "math/rand"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestBatteryDegradesOverHorizon(t *testing.T) {
@@ -53,8 +55,8 @@ func TestTireDeathCascade(t *testing.T) {
 	deg := &DegradationConfig{Component: "tires", Preset: "degrading", HorizonDays: 120}
 	// The slow-leak phase alone (0.2 bar/month) would reach ~1.5 bar at the
 	// horizon; the cascade must go well below that.
-	pHorizon := deg.TirePressureAt(120)
-	pLate := deg.TirePressureAt(240) // 2× the horizon — long past collapse
+	pHorizon := deg.TirePressureAt("FL", 120)
+	pLate := deg.TirePressureAt("FL", 240) // 2× the horizon — long past collapse
 	if pHorizon >= 1.9 {
 		t.Fatalf("tire not leaking at horizon: %.2f bar", pHorizon)
 	}
@@ -65,12 +67,12 @@ func TestTireDeathCascade(t *testing.T) {
 		t.Fatalf("tire implausibly below the flat asymptote: %.2f bar", pLate)
 	}
 	// Flex heat: an underinflated tire runs hot (above the 28 °C mean).
-	if deg.TireTempAt(200) < 30 {
-		t.Fatalf("flat tire not running hot: %.1f °C", deg.TireTempAt(200))
+	if deg.TireTempAt("FL", 200) < 30 {
+		t.Fatalf("flat tire not running hot: %.1f °C", deg.TireTempAt("FL", 200))
 	}
 	// The healthy preset publishes nothing — must stay at 2.3 bar even late.
 	healthy := &DegradationConfig{Component: "tires", Preset: "healthy", HorizonDays: 120}
-	if p := healthy.TirePressureAt(400); math.Abs(p-2.3) > 0.01 {
+	if p := healthy.TirePressureAt("FL", 400); math.Abs(p-2.3) > 0.01 {
 		t.Fatalf("healthy tire drifted: %.2f bar", p)
 	}
 }
@@ -86,8 +88,8 @@ func TestHealthyBatteryStable(t *testing.T) {
 
 func TestTireLeak(t *testing.T) {
 	d := &DegradationConfig{Component: "tires", Preset: "degrading", HorizonDays: 60}
-	p0 := d.TirePressureAt(0)
-	p60 := d.TirePressureAt(60)
+	p0 := d.TirePressureAt("FL", 0)
+	p60 := d.TirePressureAt("FL", 60)
 	if p0-p60 < 0.3 {
 		t.Fatalf("expected leak ≥0.3 bar over 60d, got %.2f", p0-p60)
 	}
@@ -98,10 +100,46 @@ func TestTireLeak(t *testing.T) {
 // detector's 1.8 bar floor, so pressure stays at the 2.3 bar baseline.
 func TestHealthyTirePressureStable(t *testing.T) {
 	d := &DegradationConfig{Component: "tires", Preset: "healthy", HorizonDays: 60}
-	p0 := d.TirePressureAt(0)
-	p60 := d.TirePressureAt(60)
+	p0 := d.TirePressureAt("FL", 0)
+	p60 := d.TirePressureAt("FL", 60)
 	if math.Abs(p0-2.3) > 0.01 || math.Abs(p60-2.3) > 0.01 {
 		t.Fatalf("healthy tire drifted %.3f → %.3f bar, want ~2.3 stable", p0, p60)
+	}
+}
+
+// TestTireWheelStagger: tires fail per wheel — the FL corner (offset 0) hits
+// flat first, while FR (offset 15d) / RR (offset 45d) lag at the same day,
+// so the demo/PM feed can show an asymmetric failure.
+func TestTireWheelStagger(t *testing.T) {
+	deg := &DegradationConfig{Component: "tires", Preset: "degrading", HorizonDays: 120}
+	// Day 140 sits mid-collapse for the degrading preset: FL is in the
+	// structural-collapse phase (~1.0 bar), FR/RL/RR progressively lag — a
+	// clear per-wheel spread, with FL's heat uncapped vs FR.
+	day := 140.0
+	fl := deg.TirePressureAt("FL", day)
+	fr := deg.TirePressureAt("FR", day)
+	rr := deg.TirePressureAt("RR", day)
+	if fl >= 1.1 {
+		t.Fatalf("FL tire should be flat at day 140, got %.2f bar", fl)
+	}
+	if !(fl < fr && fr < rr) {
+		t.Fatalf("expected FL<FR<RR stagger at day 150, got FL=%.2f FR=%.2f RR=%.2f", fl, fr, rr)
+	}
+	if rr <= fr+0.1 {
+		t.Fatalf("RR should lag FR meaningfully at day 150: RR=%.2f FR=%.2f", rr, fr)
+	}
+	// FL's heat tracks its own leak: the flat corner runs hotter than FR.
+	flT := deg.TireTempAt("FL", day)
+	frT := deg.TireTempAt("FR", day)
+	if flT <= frT {
+		t.Fatalf("flat FL should run hotter than FR: FL=%.1f°C FR=%.1f°C", flT, frT)
+	}
+	// Healthy VINs: every wheel stays at 2.3 bar.
+	healthy := &DegradationConfig{Component: "tires", Preset: "healthy", HorizonDays: 120}
+	for _, w := range wheels {
+		if p := healthy.TirePressureAt(w, 400); math.Abs(p-2.3) > 0.01 {
+			t.Fatalf("healthy wheel %s drifted: %.2f bar", w, p)
+		}
 	}
 }
 
@@ -122,6 +160,116 @@ func TestDegradationControlAction(t *testing.T) {
 	deg = ctl.degradationFor("battery")
 	if deg.Preset != "critical" {
 		t.Fatalf("battery preset = %v, want unchanged critical", deg.Preset)
+	}
+}
+
+func TestControlStateAdopt(t *testing.T) {
+	// Adopting another pool VIN swaps the active identity AND reseeds the
+	// per-VIN degradation curves (HorizonDays from the new VIN's fleet
+	// preset), clears the live/ground-truth/route state, and re-arms the
+	// drive/battery reset hook. VIN1009 is index 8 (even → degrading, 120d);
+	// VIN1002 is index 1 (odd → healthy... but poolIndex(VIN1002) with the
+	// test env has no VIN_POOL, so it falls back to healthy/-1 — the
+	// assertion below pins the reseed contract without assuming pool env).
+	ctl, _ := newTestControl("battery")
+	_ = ctl.degradationFor("battery") // ensure battery is degradable in this ctl
+
+	// Reset hook spy: adopt must invoke it (fresh drive/battery state).
+	spy := 0
+	ctl.resetFn = func() { spy++ }
+
+	// Seed a non-default horizon so the reseed is observable.
+	ctl.degradation["battery"].HorizonDays = 999
+	ctl.setGroundTruth(map[string]map[string]any{"tires": {"pressure_bar": 1.5}})
+	ctl.setLive(map[string]any{"velocity_m_s": 12.3})
+
+	if err := ctl.adopt("VIN1002"); err != nil {
+		t.Fatalf("adopt returned error: %v", err)
+	}
+	if ctl.vin != "VIN1002" {
+		t.Errorf("c.vin = %q, want VIN1002 (adopted)", ctl.vin)
+	}
+	// Reseeded from the new VIN's pool index — must NOT be the stale 999.
+	deg := ctl.degradationFor("battery")
+	wantHorizon := defaultDegradationConfig("battery", poolIndex("VIN1002")).HorizonDays
+	if deg.HorizonDays == 999 || deg.HorizonDays != wantHorizon {
+		t.Errorf("battery HorizonDays = %d after adopt, want reseeded %d (poolIndex %d)",
+			deg.HorizonDays, wantHorizon, poolIndex("VIN1002"))
+	}
+	if spy != 1 {
+		t.Errorf("reset hook invoked %d times, want 1 (fresh drive/battery state)", spy)
+	}
+	// Ground truth + live state cleared for the fresh VIN.
+	ctl.mu.Lock()
+	gt := ctl.groundTruth
+	live := ctl.live
+	ctl.mu.Unlock()
+	if len(gt) != 0 || len(live) != 0 {
+		t.Errorf("adopt must clear groundTruth/live: gt=%d live=%d", len(gt), len(live))
+	}
+	// Empty VIN is rejected.
+	if err := ctl.adopt(""); err == nil {
+		t.Error("adopt(\"\") must error")
+	}
+}
+
+// TestAdoptOnStartSwitchesVIN: a start request carrying a different pool VIN
+// makes the simulator adopt it BEFORE enabling components — the status reply
+// then echoes the adopted VIN with a clean state.
+func TestAdoptOnStartSwitchesVIN(t *testing.T) {
+	ctl, replies := newTestControl("battery")
+	send(ctl, `{"action":"start","vin":"VIN1002"}`)
+	r := replyBody(t, replies)
+	if r["vin"] != "VIN1002" {
+		t.Errorf("status reply vin = %v, want VIN1002", r["vin"])
+	}
+	if r["running"] != true {
+		t.Errorf("running = %v, want true", r["running"])
+	}
+	// A start for the SAME VIN must not error or re-adopt.
+	send(ctl, `{"action":"start","vin":"VIN1002"}`)
+	r = replyBody(t, replies)
+	if r["error"] != nil {
+		t.Errorf("same-VIN start errored: %v", r["error"])
+	}
+	if ctl.vin != "VIN1002" {
+		t.Errorf("c.vin = %q, want unchanged VIN1002", ctl.vin)
+	}
+}
+
+// TestAdoptRepointsPublishSubjects: after the simulator adopts another VIN,
+// the next tick's payloads must be published under the NEW VIN — the publish
+// loop mirrors the adopted VIN from the control state onto the client before
+// building payloads (subjects read v.VIN, so they repoint automatically).
+func TestAdoptRepointsPublishSubjects(t *testing.T) {
+	ctl, _ := newTestControl("battery", "chassis")
+	ctl.resetFn = func() {} // wire the reset hook like PublishTelemetryContinuously
+
+	v := &VehicleClient{VIN: "VIN1009"}
+	if err := ctl.adopt("VIN1002"); err != nil {
+		t.Fatalf("adopt failed: %v", err)
+	}
+	// Simulate the publish loop's per-tick mirror (see publishOnce):
+	// adopted VIN + degradation configs flow onto the client.
+	v.VIN = ctl.vin
+	v.batteryAgeDays = 0
+	v.tiresDeg = ctl.degradationFor("tires")
+
+	msgs := v.buildPayloads(time.Now(), batteryState{deg: ctl.degradationFor("battery")}, driveState{}, "both", 0, func(string) bool { return true })
+	subjects := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		subjects = append(subjects, m.subject)
+	}
+	for _, s := range subjects {
+		if strings.Contains(s, "VIN1009") {
+			t.Errorf("subject %q still references old VIN after adopt", s)
+		}
+	}
+	if !contains(subjects, "telemetry-generic.VIN1002.battery") {
+		t.Errorf("expected telemetry-generic.VIN1002.battery in %v", subjects)
+	}
+	if !contains(subjects, "telemetry.VIN1002") {
+		t.Errorf("expected telemetry.VIN1002 metrics report in %v", subjects)
 	}
 }
 
