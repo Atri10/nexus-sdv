@@ -6,10 +6,11 @@ import { getAllowedVehicleIds } from '@/lib/acl';
 // Proxy to Java telemetry-chart-service
 const TELEMETRY_SERVICE_URL = process.env.TELEMETRY_SERVICE_URL || 'http://localhost:8081';
 
-// VINs are 17-char uppercase alphanumeric (ISO 3779). Enforcing the format
-// here also blocks URL-path injection into the proxied fetch (encoded
-// traversal segments, extra path/query fragments).
-const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
+// Demo VINs are pool-style (VIN1001..VIN1010); the platform's real VINs are
+// 17-char ISO 3779. Accept either, but strictly: the guard exists to block
+// URL-path injection into the proxied fetch (encoded traversal segments,
+// extra path/query fragments) — anything not matching is rejected with 400.
+const VIN_RE = /^(?:VIN\d{4}|[A-HJ-NPR-Z0-9]{17})$/;
 
 export async function GET(
   request: NextRequest,
@@ -21,14 +22,19 @@ export async function GET(
   // Authz parity with /api/devices/[id]: session required in production
   // (DEMO_MODE bypass for the local stack where NextAuth is incompatible),
   // plus the vehicle ACL — never serve raw telemetry for a VIN the user
-  // isn't allowed to see.
+  // isn't allowed to see. In DEMO_MODE the ACL is skipped entirely: the
+  // demo must show every VIN (the sim + backfill populate VIN1001-1010),
+  // and with DB_NAME unset the fail-closed ACL returns [] which would 404
+  // every vehicle.
   const session = await getServerSession(authOptions);
   if (!session && process.env.DEMO_MODE !== 'true') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  const allowed = await getAllowedVehicleIds(session?.groups ?? []);
-  if (allowed !== undefined && !allowed.includes(vin)) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (process.env.DEMO_MODE !== 'true') {
+    const allowed = await getAllowedVehicleIds(session?.groups ?? []);
+    if (allowed !== undefined && !allowed.includes(vin)) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
   }
   if (!VIN_RE.test(vin)) {
     return NextResponse.json(
