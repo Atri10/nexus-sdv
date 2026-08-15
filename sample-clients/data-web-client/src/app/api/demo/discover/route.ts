@@ -17,11 +17,13 @@ export async function GET() {
   try {
     const vin = await discoverSimulator(VIN_POOL);
     if (!vin) return NextResponse.json({ vin: null, running: false });
-    // Confirm liveness + running state with a status round-trip.
+    // Confirm liveness + running state with a status round-trip; the reply's
+    // own vin is the sim's actual identity (it answers every pool VIN via
+    // the commands.> wildcard, so the probed VIN is not authoritative).
     const { demoControl } = await import('@/lib/demo-control');
     const reply = await demoControl('status', vin).catch(() => null);
     return NextResponse.json({
-      vin,
+      vin: reply?.vin || vin,
       running: reply?.running === true,
     });
   } catch (e) {
