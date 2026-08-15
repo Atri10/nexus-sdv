@@ -112,3 +112,51 @@ func TestCreateNATSUserJWT(t *testing.T) {
 		})
 	}
 }
+
+func TestDemoModeGrantsBroadPerms(t *testing.T) {
+	// Generate a temporary account key pair for signing
+	accountKeyPair, err := nkeys.CreateAccount()
+	require.NoError(t, err)
+
+	// Generate a user nkey for the request
+	userKeyPair, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userPub, err := userKeyPair.PublicKey()
+	require.NoError(t, err)
+
+	// Create dummy AuthorizationRequestClaims (same helper as TestCreateNATSUserJWT)
+	authReqClaims := &natsjwt.AuthorizationRequestClaims{
+		AuthorizationRequest: natsjwt.AuthorizationRequest{
+			UserNkey: userPub,
+			ConnectOptions: natsjwt.ConnectOptions{
+				Name: "vin-1009",
+			},
+		},
+	}
+
+	t.Setenv("DEMO_MODE", "true")
+
+	jwtStr, err := createNATSUserJWT("vin-1009", []any{"telemetry-client"}, accountKeyPair, authReqClaims)
+	require.NoError(t, err)
+
+	// Decode the generated JWT to verify claims
+	claims, err := natsjwt.DecodeUserClaims(jwtStr)
+	require.NoError(t, err)
+
+	// DEMO_MODE grants the broad fleet-wide subjects on both pub and sub
+	for _, subj := range []string{
+		"telemetry.>",
+		"telemetry-generic.>",
+		"commands.>",
+		"_INBOX.>",
+	} {
+		assert.Contains(t, claims.Permissions.Pub.Allow, subj)
+		assert.Contains(t, claims.Permissions.Sub.Allow, subj)
+	}
+
+	// Per-VIN grants are retained: non-demo behavior is unchanged
+	assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-1009")
+	assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry.vin-1009.>")
+	assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-1009")
+	assert.Contains(t, claims.Permissions.Pub.Allow, "telemetry-generic.vin-1009.>")
+}
