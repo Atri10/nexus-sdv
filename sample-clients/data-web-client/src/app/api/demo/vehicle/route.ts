@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { VIN_POOL } from '@/components/demo/demo-control-bar';
+import { VIN_POOL } from '@/lib/vin-pool';
 import { demoControl, type DemoAction } from '@/lib/demo-control';
 
 // Only pool VINs are controllable — anything else is rejected up front so an
