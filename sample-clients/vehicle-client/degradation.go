@@ -161,6 +161,20 @@ func (d *DegradationConfig) BrakeWearAt(pad string, totalEnergyJ float64) float6
 	return clamp(share, 0, 1)
 }
 
+// BatteryTempAt returns °C at day — a 30 °C mean with ±6 °C diurnal cycle
+// (India; the PM detector's temperature compensation is calibrated to a
+// 30 °C reference) plus self-heating under degradation: a sulfated battery
+// dissipates more heat internally while charging/load, +4 °C by the death
+// horizon. Distinct from the tire temp — the battery has its own thermal
+// mass and sits under the bonnet, not in the wheel well.
+func (d *DegradationConfig) BatteryTempAt(day float64) float64 {
+	ambient := 30.0 + 6.0*math.Sin(day*2*math.Pi)
+	if d.Preset == "healthy" {
+		return ambient
+	}
+	return ambient + clamp(d.severityFactor()*4.0, 0, 4.0)
+}
+
 // TireTempAt returns °C at day for one wheel — 28 °C mean with ±8 °C daily
 // cycle (India), plus underinflation flex-heating per wheel: below 1.9 bar
 // the sidewalls do extra work and the tire runs hot (up to +14 °C as it
