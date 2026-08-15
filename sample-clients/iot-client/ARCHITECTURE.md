@@ -34,22 +34,14 @@ Every design decision is shaped by these constraints: fixed memory budgets, no d
 The firmware authenticates with a Keycloak identity provider using mTLS, then publishes protobuf-encoded telemetry to a NATS message broker.
 The initial device registration (factory certificate to operational certificate exchange) must be done externaly; this firmware only handles the post-registration lifecycle.
 
-```
-+------------------+     +----------+     +------+
-| ESP32            |     | Keycloak |     | NATS |
-|                  |     |          |     |      |
-| 1. Load op cert  |     |          |     |      |
-|    + key from    |     |          |     |      |
-|    LittleFS      |     |          |     |      |
-|                  |     |          |     |      |
-| 2. Get JWT ------+---->| Validate |     |      |
-|    (mTLS:op cert)|     | cert     |     |      |
-|    <-------------+-----| Return   |     |      |
-|                  |     | JWT      |     |      |
-|                  |     |          |     |      |
-| 3. PUB telemetry-+-----+----------+---->| Auth |
-|    (JWT token)   |     |          |     | Store|
-+------------------+     +----------+     +------+
+```mermaid
+flowchart LR
+    ESP32["ESP32"] -->|"1. Load op cert + key from LittleFS"| READY["ESP32: cert ready"]
+    READY -->|"2. Get JWT (mTLS op cert)"| Keycloak["Keycloak"]
+    Keycloak -->|"Validate cert"| OK["cert valid"]
+    OK -->|"Return JWT"| AUTHED["ESP32: JWT"]
+    AUTHED -->|"3. PUB telemetry (JWT token)"| NATS["NATS"]
+    NATS -->|"Auth + store"| STORED["telemetry stored"]
 ```
 
 ## State Machine
@@ -57,29 +49,16 @@ The initial device registration (factory certificate to operational certificate 
 The firmware is driven by a state machine in the `loop()` function.
 Each call to `loop()` executes one state transition, keeping the MCU responsive (no long blocking calls).
 
-```
-STATE_WIFI_CONNECT
-        |
-        v
-  STATE_NTP_SYNC
-        |
-        v
-  STATE_LOAD_CERTS          (skipped if SKIP_KEYCLOAK_AUTH)
-        |
-        v
-  STATE_AUTHENTICATE  <------+  (skipped if SKIP_KEYCLOAK_AUTH)
-        |                     |
-        v                     |
-  STATE_GPS_WAIT              |  (only if GPS_WAIT_FOR_FIX)
-        |                     |
-        v                     |
-  STATE_NATS_CONNECT          |  token expiring
-        |                     |
-        v                     |
-  STATE_SEND_TELEMETRY  ------+
-        |
-        v
-  STATE_DEEP_SLEEP              (only if DEEP_SLEEP_ENABLED)
+```mermaid
+flowchart TD
+    A["STATE_WIFI_CONNECT"] --> B["STATE_NTP_SYNC"]
+    B --> C["STATE_LOAD_CERTS (skipped if SKIP_KEYCLOAK_AUTH)"]
+    C --> D["STATE_AUTHENTICATE (skipped if SKIP_KEYCLOAK_AUTH)"]
+    D --> E["STATE_GPS_WAIT (only if GPS_WAIT_FOR_FIX)"]
+    E --> F["STATE_NATS_CONNECT"]
+    F --> G["STATE_SEND_TELEMETRY"]
+    G --> H["STATE_DEEP_SLEEP (only if DEEP_SLEEP_ENABLED)"]
+    G -->|"token expiring"| D
 ```
 
 ### Why a state machine?
@@ -232,14 +211,12 @@ After acquiring a JWT from Keycloak, the firmware saves it to LittleFS at `/cach
 
 GPS modules need 26-60 seconds for a cold start fix after power-on. After boot, the firmware reaches `STATE_SEND_TELEMETRY` within ~5-8 seconds — too fast for a fix. When `GPS_WAIT_FOR_FIX` is true, a `STATE_GPS_WAIT` state is inserted *before* `STATE_NATS_CONNECT`:
 
-```
-STATE_AUTHENTICATE (or STATE_NTP_SYNC if auth skipped)
-      |
-      v
-STATE_GPS_WAIT  ← feeds GPS until fix or GPS_FIX_TIMEOUT_S
-      |
-      v
-STATE_NATS_CONNECT → STATE_SEND_TELEMETRY → STATE_DEEP_SLEEP
+```mermaid
+flowchart TD
+    A["STATE_AUTHENTICATE (or STATE_NTP_SYNC if auth skipped)"] --> B["STATE_GPS_WAIT (feeds GPS until fix or GPS_FIX_TIMEOUT_S)"]
+    B --> C["STATE_NATS_CONNECT"]
+    C --> D["STATE_SEND_TELEMETRY"]
+    D --> E["STATE_DEEP_SLEEP"]
 ```
 
 The GPS wait happens before NATS connect so there is no idle TCP connection to keep alive during the wait. If no fix is acquired within the timeout, telemetry is sent without GPS data (existing graceful fallback).
@@ -255,7 +232,19 @@ Without a backup battery, the module still enters low power but requires a full 
 
 ### Wake Cycle Flow
 
-```
-Wake from deep sleep → setup() → loop():
-  WiFi → NTP → Certs → Auth (cached JWT?) → [GPS wait?] → NATS → Send 1 message → Sleep
+```mermaid
+flowchart LR
+    W["Wake from deep sleep"] --> S["setup()"]
+    S --> L["loop()"]
+    L --> WiFi["WiFi"]
+    WiFi --> NTP["NTP"]
+    NTP --> Certs["Certs"]
+    Certs --> Auth{"Auth: cached JWT?"}
+    Auth -->|"yes"| G1["GPS wait?"]
+    Auth -->|"no"| Keycloak["Keycloak"] --> G1
+    G1 -->|"yes"| G2["GPS wait"]
+    G2 --> N["NATS"]
+    G1 -->|"no"| N
+    N --> Send["Send 1 message"]
+    Send --> Sleep["Sleep"]
 ```

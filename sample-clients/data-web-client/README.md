@@ -13,11 +13,11 @@ Authentication is handled by Keycloak (OIDC). All BigTable access runs server-si
 
 ## Architecture
 
-```
-Browser → NextAuth session (OIDC cookie)
-       → Next.js API routes (/api/devices, /api/devices/[id])
-       → lib/ (business logic)
-       → Google BigTable
+```mermaid
+flowchart LR
+    Browser["Browser"] -->|"NextAuth session (OIDC cookie)"| Routes["Next.js API routes (/api/devices, /api/devices/[id])"]
+    Routes -->|"calls"| Lib["lib/ (business logic)"]
+    Lib -->|"queries"| BigTable["Google BigTable"]
 ```
 
 ## BigTable data model
