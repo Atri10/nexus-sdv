@@ -28,6 +28,36 @@ sequenceDiagram
     N-->>V: Connected - Telemetry accepted
 ```
 
+## Simulator mode (local demo)
+
+The same binary also runs as the **local demo simulator**: started with
+`-control-subject=commands.>` (the local-dev compose default — see
+`local-dev/docker-compose.yml`), it stays **idle** until commanded over NATS,
+then generates the telemetry that drives the `/demo` and `/pm` dashboards.
+
+- **Control over NATS** — subscribes the `commands.>` wildcard and **adopts
+  the requested pool VIN on `start`** (runtime VIN switching: Start for
+  VIN1002 actually runs a fresh VIN1002 — identity, degradation curves and
+  publish subjects all repoint to it).
+- **Degradation model** — walks physics-based degradation curves for
+  **battery / tires / brakes** against a simulated clock, so component health
+  visibly trends toward failure instead of holding a constant.
+- **Both protobuf families** — publishes `MetricsReport`/`VehicleTelemetryData`
+  on `telemetry.{VIN}` and `TelemetryMessage` readings on
+  `telemetry-generic.{VIN}.{sensor}`.
+- **Per-wheel sensors** — tire pressure/temp and brake wear are emitted per
+  wheel (`TIRE_PRESSURE.FL`, `BRAKE_WEAR.RR`, …) so asymmetric degradation
+  (FL flat while FR holds 2.3 bar) is visible to the detectors.
+- **Pacing** — `DEMO_SPEED` × `DEGRADATION_ACCEL` fast-forward **sim time**
+  (trip progress, aging, brake energy) while the published sensor values stay
+  at normal scale — a compressed lifecycle, never fake values.
+
+The request/reply JSON for the control protocol is documented under
+[NATS Control Protocol](#nats-control-protocol--control-subject-). See
+**[docs/simulator-data-generation.md](./docs/simulator-data-generation.md)**
+for the deep dive: the degradation physics, the DEMO_SPEED ×
+DEGRADATION_ACCEL pacing math, per-wheel emission and the tick loop.
+
 ## Prerequisites
 
 ### 1. Factory-Issued Certificate
