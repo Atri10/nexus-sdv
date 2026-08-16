@@ -424,7 +424,7 @@ func buildChassisReport(vin string, drive driveState, tires *DegradationConfig, 
 // {wheel}, pm.{VIN}.brake.{pad}). A nil tires config falls back to the legacy
 // constant + noise for pressure/temp; brake wear is always emitted from the
 // drive state's energy accumulator.
-func buildChassisWheelTelemetry(vin string, drive driveState, tires *DegradationConfig, ageDays float64, now time.Time) ([]*pb.TelemetryMessage, error) {
+func buildChassisWheelTelemetry(vin string, drive driveState, tires *DegradationConfig, brake *DegradationConfig, ageDays float64, now time.Time) ([]*pb.TelemetryMessage, error) {
 	var out []*pb.TelemetryMessage
 	for _, wheel := range wheels {
 		pressure := 2.2 + gauss(0.02)
@@ -432,6 +432,15 @@ func buildChassisWheelTelemetry(vin string, drive driveState, tires *Degradation
 		if tires != nil {
 			pressure = tires.TirePressureAt(wheel, ageDays)
 			temp = tires.TireTempAt(wheel, ageDays)
+		}
+		// Per-pad wear: BrakeWearAt applies the per-pad wear bias (front pads
+		// wear faster — FL=1.4x, FR=1.25x, RL=0.8x, RR=0.55x) so the published
+		// BRAKE_WEAR.{wheel} readings are asymmetric across pads, matching the
+		// ground truth. Fall back to the uniform overall fraction if the
+		// brake config is missing.
+		wear := drive.brakeWearFraction()
+		if brake != nil {
+			wear = brake.BrakeWearAt(wheel, drive.brakeEnergyJ)
 		}
 		msg := &pb.TelemetryMessage{
 			MessageId:     uuid.New().String(),
@@ -452,7 +461,7 @@ func buildChassisWheelTelemetry(vin string, drive driveState, tires *Degradation
 				},
 				{
 					Timestamp: timestamppb.New(now),
-					Value:     fmt.Sprintf("%.4f", drive.brakeWearFraction()),
+					Value:     fmt.Sprintf("%.4f", wear),
 					DataType:  pb.DataType_DYNAMIC,
 					Sensor:    "BRAKE_WEAR." + wheel,
 				},
@@ -513,7 +522,7 @@ func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive
 			// (the connector writes dynamic:TIRE_PRESSURE.{wheel} etc.); the
 			// MetricsReport chassis report keeps the legacy single-channel
 			// typed fields for back-compat.
-			if msgs, err := buildChassisWheelTelemetry(v.VIN, drive, v.tiresDeg, v.batteryAgeDays, now); err == nil {
+			if msgs, err := buildChassisWheelTelemetry(v.VIN, drive, v.tiresDeg, v.tiresDeg, v.batteryAgeDays, now); err == nil {
 				for _, msg := range msgs {
 					if payload, err := proto.Marshal(msg); err == nil {
 						emit("telemetry", v.buildTelemetrySubject("chassis"), payload)
