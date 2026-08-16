@@ -21,15 +21,15 @@ The demo PM pipeline moves one physical quantity from the simulated vehicle to a
 
 ```mermaid
 flowchart LR
-  P["① Physics: degradation curve<br/>(degradation.go BatteryAt/TirePressureAt<br/>driveCycleStep brake accumulator)"]
-  S["② Simulator tick (main.go publishOnce):<br/>walks curve → publishes 1–2 NATS messages"]
-  B["③ NATS subject:<br/>telemetry-generic.{VIN}.battery (SensorReading)<br/>telemetry.{VIN} (MetricsReport)"]
+  P["① Physics: degradation curve<br/>(degradation.go BatteryAt/TirePressureAt<br/>BrakeWearAt per pad · driveCycleStep brake accumulator)"]
+  S["② Simulator tick (main.go publishOnce):<br/>walks curve → publishes 1–2 NATS messages<br/>(+ wheel telemetry: TIRE_PRESSURE.{w},<br/>TIRE_TEMP.{w}, BRAKE_WEAR.{w})"]
+  B["③ NATS subject:<br/>telemetry-generic.{VIN}.battery (SensorReading)<br/>telemetry-generic.{VIN}.chassis (per-wheel sensors)<br/>telemetry.{VIN} (MetricsReport)"]
   C["④ nats-bigtable-connector:<br/>unmarshals → writes dynamic:{qualifier} cell<br/>row key {VIN}#{RFC3339Nano}"]
-  T["⑤ Bigtable 'telemetry' table<br/>family dynamic, qualifier = sensor/field name"]
+  T["⑤ Bigtable 'telemetry' table<br/>family dynamic, qualifier = sensor/field name<br/>(TIRE_PRESSURE.FL…RR, BRAKE_WEAR.FL…RR)"]
   A["⑥ data-api gRPC GetTelemetryData:<br/>row-key range scan + column filter,<br/>streams TelemetryPoint{values: {family:qualifier → bytes}}"]
   PR["⑦ Processor.run poll (60 s per VIN):<br/>decodes bytes → (t, value) lists,<br/>applies temp compensation"]
-  D["⑧ detectors.py pure functions:<br/>EWMA/OLS/thresholds → DetectorResult<br/>(health_score, severity, evidence, explanation)"]
-  N["⑨ NATS pm.{VIN}.{component} protobuf PmMessage"]
+  D["⑧ detectors.py pure functions:<br/>EWMA/OLS/thresholds → DetectorResult<br/>detect_tires ×4 (tires.{FL|FR|RL|RR})<br/>detect_brake ×4 (brake.{FL|FR|RL|RR})"]
+  N["⑨ NATS pm.{VIN}.{component} protobuf PmMessage<br/>(component = battery · tires.{wheel} · brake.{pad})"]
   U["⑩ data-web-client:<br/>SSE /api/pm/stream → usePmMessages →<br/>gauges, charts, badges, PM events feed"]
   P --> S --> B --> C --> T --> A --> PR --> D --> N --> U
 ```
@@ -52,7 +52,8 @@ The vehicle-client publishes **two different protobuf message types** each tick 
 | Message type | NATS subject | Proto schema | Who consumes it |
 |---|---|---|---|
 | `TelemetryMessage` | `telemetry-generic.{VIN}.battery` | `proto/telemetry.proto` — `device_id`, `sensor_data[]` of `SensorReading{timestamp, value(string), data_type, sensor}` | battery detector |
-| `MetricsReport` (envelope) | `telemetry.{VIN}` | `proto/metrics_report.proto` — `report_data` is a `google.protobuf.Any` wrapping `VehicleTelemetryData` | brake + tire detectors |
+| `TelemetryMessage` | `telemetry-generic.{VIN}.chassis` | same `proto/telemetry.proto` — per-wheel `SensorReading`s (`TIRE_PRESSURE.{wheel}`, `TIRE_TEMP.{wheel}`, `BRAKE_WEAR.{wheel}`) | per-wheel tire (×4) + per-pad brake (×4) detectors |
+| `MetricsReport` (envelope) | `telemetry.{VIN}` | `proto/metrics_report.proto` — `report_data` is a `google.protobuf.Any` wrapping `VehicleTelemetryData` | legacy single-channel brake + tire fallback (back-compat) |
 
 `MetricsReport.ReportData` is a **type-erased `Any`**: the connector unpacks it via `mr.ReportData.UnmarshalTo(&vtd)` (`nats-bigtable-connector/src/main.go`), so the VIN comes from the **subject** (`parts[1]`), not the payload. The `SensorReading` path carries `device_id` inside the message, but the connector keys rows off `tm.DeviceId` (`nats-bigtable-connector/src/main.go`).
 
@@ -64,12 +65,17 @@ This is the table the whole use case hangs on. "Proto field" = the source field 
 |---|---|---|---|---|
 | Vehicle speed | `VehicleTelemetryData.VELOCITY` (field 9) | m/s | `dynamic:VELOCITY` | Brake: `a = Δv/Δt`, `v_avg` (`processor.py(run)`) |
 | Brake pedal position | `CarlaVehicleDynamics.brake_pedal_pct` (field 3, inside `vehicle_dynamics`, field 13) | % (0–100) | `dynamic:BRAKE_PEDAL_PCT` | Brake gate only (`> 5.0`); never enters an alert |
-| Tyre pressure | `VehicleTelemetryData.TIRE_PRESSURE` (field 8) | bar | `dynamic:TIRE_PRESSURE` | Tires: raw input to `P_comp = P·293.15/T` |
-| Tyre temperature | `VehicleTelemetryData.TIRE_TEMP` (field 16) | °C | `dynamic:TIRE_TEMP` | Tires: denominator of compensation (processor adds 273.15 → Kelvin) |
+| Tyre pressure (legacy single) | `VehicleTelemetryData.TIRE_PRESSURE` (field 8) | bar | `dynamic:TIRE_PRESSURE` | **Back-compat** — fallback only when per-wheel columns are absent |
+| Tyre temperature (legacy single) | `VehicleTelemetryData.TIRE_TEMP` (field 16) | °C | `dynamic:TIRE_TEMP` | **Back-compat** — fallback only when per-wheel columns are absent |
+| Tyre pressure per wheel | `SensorReading{sensor: "TIRE_PRESSURE.{wheel}"}` (generic path, `buildChassisWheelTelemetry`) | bar | `dynamic:TIRE_PRESSURE.{FL\|FR\|RL\|RR}` | Tires ×4: raw input to `P_comp = P·293.15/T` per wheel (`detect_tires` per wheel) |
+| Tyre temperature per wheel | `SensorReading{sensor: "TIRE_TEMP.{wheel}"}` (generic path, `buildChassisWheelTelemetry`) | °C | `dynamic:TIRE_TEMP.{FL\|FR\|RL\|RR}` | Tires ×4: denominator of compensation (processor adds 273.15 → Kelvin) |
+| Brake pad wear per wheel | `SensorReading{sensor: "BRAKE_WEAR.{wheel}"}` (generic path, `buildChassisWheelTelemetry`) | fraction (0–1) | `dynamic:BRAKE_WEAR.{FL\|FR\|RL\|RR}` | Brake ×4: last wear per pad → `detect_brake(..., pad=w)` → `pm.{VIN}.brake.{pad}` |
 | Battery terminal voltage | `SensorReading{sensor: "battery.voltage"}` | V | `dynamic:battery.voltage` | Battery: input to temp compensation then EWMA + slope |
 | Battery temperature | `SensorReading{sensor: "battery.temp"}` | °C | `dynamic:battery.temp` | Battery: forward-filled compensation temperature |
 | Battery current | `SensorReading{sensor: "battery.current"}` | A | `dynamic:battery.current` | **Not consumed** — M2 cranking is dormant (§8 of implementation doc) |
 | Battery SoC | `SensorReading{sensor: "battery.soc"}` | % | `dynamic:battery.soc` | **Not consumed** — SOC drift term unimplemented; processor never requests it |
+
+The per-wheel sensors (`TIRE_PRESSURE.{wheel}`, `TIRE_TEMP.{wheel}`, `BRAKE_WEAR.{wheel}`) ride the generic `telemetry-generic.{VIN}.{sensor}` path (sensor name contains the dot — `"TIRE_PRESSURE.FL"` etc., `main.go(buildChassisWheelTelemetry)`), so the connector stores them as `dynamic:TIRE_PRESSURE.FL` … columns without connector changes. The legacy single `dynamic:TIRE_PRESSURE` / `dynamic:TIRE_TEMP` / `dynamic:BRAKE_PEDAL_PCT` + `dynamic:VELOCITY` typed fields stay for back-compat: the processor falls back to the single tire channel and the energy-accumulator brake path when the per-wheel columns are absent (older sim / mixed history, `processor.py(run)`).
 
 Everything else in `VehicleTelemetryData` (ENGINE_POWER, ENGINE_RPM, FUEL_*, GPS_*, HEADING_DEG, LOCKED, IGNITION_STATE, `acceleration_modulus_m_s2`, `distance_meters`, `gear_status`, steering/accelerator) is **persisted but not consumed** by the PM detectors. Two worth calling out because they look useful and aren't:
 
@@ -85,7 +91,8 @@ Everything else in `VehicleTelemetryData` (ENGINE_POWER, ENGINE_RPM, FUEL_*, GPS
 | `battery.soc` | `buildBatteryTelemetry` | `85.5 − 30·(severityFactor·ageDays/120)`, floor 5 — dead data for PM |
 | `battery.temp` | `buildBatteryTelemetry` | reuses `TireTempAt(ageDays)` (28 °C ± 8 °C cycle) |
 | `TIRE_TEMP` (legacy generic path) | `buildBatteryTelemetry` | same `battery.temp` value — the typed path is the real one |
-| `VELOCITY`, `TIRE_PRESSURE`, `TIRE_TEMP`, `BRAKE_PEDAL_PCT`, GPS, heading | `main.go(buildChassisReport)` | `drive.velocity` / `TirePressureAt` / `TireTempAt` / `drive.brakePct` |
+| `VELOCITY`, `TIRE_PRESSURE`, `TIRE_TEMP`, `BRAKE_PEDAL_PCT`, GPS, heading | `main.go(buildChassisReport)` | `drive.velocity` / `TirePressureAt` / `TireTempAt` / `drive.brakePct` — legacy single-channel, back-compat |
+| `TIRE_PRESSURE.{FL\|FR\|RL\|RR}`, `TIRE_TEMP.{FL\|FR\|RL\|RR}`, `BRAKE_WEAR.{FL\|FR\|RL\|RR}` | `main.go(buildChassisWheelTelemetry)` | `TirePressureAt(ageDays + wheelOffset)` / `TireTempAt(…)` per wheel (staggered offsets FL=0/FR=15/RL=30/RR=45) / `BrakeWearAt(wheel, brakeEnergyJ)` (pad bias FL=1.4×, FR=1.25×, RL=0.8×, RR=0.55×) |
 
 A subtle but load-bearing detail: **`battery.voltage` is a string** — `fmt.Sprintf("%.2f", b.voltage)` (`buildBatteryTelemetry`). The processor decodes it with `.decode().strip('"')` (`processor.py(run)`). The typed fields (`VELOCITY` etc.) are stored by the connector as `%.2f`-formatted bytes (`metricFormat`, `nats-bigtable-connector/src/main.go`). Both arrive as text; the processor's `_parse_point`/decode strips quotes either way.
 
@@ -101,10 +108,10 @@ A subtle but load-bearing detail: **`battery.voltage` is a string** — `fmt.Spr
 
 Table `telemetry` (created by `local-dev/setup-automated.sh phase_bigtable_schema`, self-healed by the connector's `ensureTable` ticker) has two families:
 
-- `dynamic` — every PM-relevant qualifier (`battery.voltage`, `battery.temp`, `VELOCITY`, `BRAKE_PEDAL_PCT`, `TIRE_PRESSURE`, `TIRE_TEMP`, …). Generic path: family = `DataType_STATIC ? "static" : "dynamic"`, qualifier = `reading.Sensor`. Typed path: always `dynamic`, qualifier = the upper-case field name.
+- `dynamic` — every PM-relevant qualifier (`battery.voltage`, `battery.temp`, `VELOCITY`, `BRAKE_PEDAL_PCT`, `TIRE_PRESSURE`, `TIRE_TEMP`, `TIRE_PRESSURE.{FL\|FR\|RL\|RR}`, `TIRE_TEMP.{FL\|FR\|RL\|RR}`, `BRAKE_WEAR.{FL\|FR\|RL\|RR}`, …). Generic path: family = `DataType_STATIC ? "static" : "dynamic"`, qualifier = `reading.Sensor` — the per-wheel sensor names carry the dot (`"TIRE_PRESSURE.FL"`), which is part of the qualifier, not a separator. Typed path: always `dynamic`, qualifier = the upper-case field name.
 - `static` — cabin identity (`make`, `model`, `year`, `firmware`) — irrelevant to PM.
 
-**Row granularity**: one row per message timestamp, one cell per qualifier. The typed chassis report writes VELOCITY/TIRE_PRESSURE/TIRE_TEMP/BRAKE_PEDAL_PCT all in the same row (one `Apply` per report); the battery TelemetryMessage writes its four sensors in **separate rows** (one `Apply` per sensor reading — see the loop in `nats-bigtable-connector/src/main.go`). This is why the processor treats battery voltage/temp as a forward-filled pairing rather than per-row columns.
+**Row granularity**: one row per message timestamp, one cell per qualifier. The typed chassis report writes VELOCITY/TIRE_PRESSURE/TIRE_TEMP/BRAKE_PEDAL_PCT all in the same row (one `Apply` per report); each per-wheel `TelemetryMessage` writes its three sensors (`TIRE_PRESSURE.{wheel}`, `TIRE_TEMP.{wheel}`, `BRAKE_WEAR.{wheel}`) in separate rows, one `Apply` per sensor (same loop as the battery sensors in `nats-bigtable-connector/src/main.go`). This is why the processor treats battery voltage/temp as a forward-filled pairing rather than per-row columns.
 
 ### 3.3 Value encoding
 
@@ -119,7 +126,7 @@ The processor's `float(v(...).decode().strip('"'))` handles both. The web client
 
 `base-services/data-api` exposes the single gRPC stream `GetTelemetryData(GetTelemetryDataRequest) returns (stream TelemetryPoint)` (`sample-services/predictive-maintenance/proto/data-api.proto`).
 
-- Request: `{vehicle_id: VIN, data_types: ["dynamic:battery.voltage", "dynamic:battery.temp", "dynamic:VELOCITY", "dynamic:BRAKE_PEDAL_PCT", "dynamic:TIRE_PRESSURE", "dynamic:TIRE_TEMP"], time_selector: last_duration = battery_window_days·86400 s}` (`processor.py(run)`).
+- Request: `{vehicle_id: VIN, data_types: ["dynamic:battery.voltage", "dynamic:battery.temp", "dynamic:VELOCITY", "dynamic:BRAKE_PEDAL_PCT", "dynamic:TIRE_PRESSURE", "dynamic:TIRE_TEMP", "dynamic:TIRE_PRESSURE.FL"…"dynamic:TIRE_PRESSURE.RR", "dynamic:TIRE_TEMP.FL"…"dynamic:TIRE_TEMP.RR", "dynamic:BRAKE_WEAR.FL"…"dynamic:BRAKE_WEAR.RR"], time_selector: last_duration = battery_window_days·86400 s}` (`processor.py(run)`).
 - The server turns `data_types` into a Bigtable filter: family + `^(q1|q2|…)$` qualifier regex per family, `InterleaveFilters` across families (`bigtable.go(buildColumnFilter)`); the window becomes a row-key range `{VIN}#{start}` → `{VIN}#{end}` (`buildRowRange`), clamped to `MaxLookback = 365 days` (`data-api/src/main.go`).
 - Each returned `TelemetryPoint` is `{timestamp, values: map["family:qualifier"] → raw bytes}` — the key is the **full column name** (`server.go(parseRowToTelemetryPoint)`), exactly the string the processor indexes with.
 - The poll window is `battery_window_days = 30` (`config.py(top)`), so a 60 s poll re-reads the last 30 days of rows every minute. The evaluator uses an explicit `TimeRange` instead (`evaluate_detectors.py(run_detectors_for_vin)`) so a soak can be re-scored over its full range.
@@ -137,10 +144,10 @@ Inside the stream loop, per point:
 1. `t = point.timestamp.timestamp()` — **the row's own timestamp is the x-axis** (calendar-accurate OLS, uneven spacing safe).
 2. `batt_temp` is a running **last-known** battery temperature, seeded to `BATTERY_V_REF` (30 °C, no-op default) and updated whenever a row carries `dynamic:battery.temp`. Attached to every voltage row — a forward-fill, not per-row pairing.
 3. Battery: rows carrying `dynamic:battery.voltage` → `(t, V, batt_temp)` triples.
-4. Tires: rows carrying **both** `dynamic:TIRE_PRESSURE` and `dynamic:TIRE_TEMP` → `(t, P_bar, T_kelvin)` with `+ 273.15` applied at collection.
-5. Brake: rows carrying **both** `dynamic:VELOCITY` and `dynamic:BRAKE_PEDAL_PCT` → remembers the previous pair, and when `brake_pct > 5.0` computes `dt` = real sample spacing, `a = Δv/Δt`, `v_avg`; accumulates `1500·|a|·v_avg·dt` only when `a < −0.5` m/s² and `v_avg > 0.5` m/s.
+4. Tires **×4**: for each wheel w ∈ FL/FR/RL/RR, rows carrying **both** `dynamic:TIRE_PRESSURE.{w}` and `dynamic:TIRE_TEMP.{w}` → `(t, P_bar, T_kelvin)` per wheel with `+ 273.15` applied at collection. The legacy single `dynamic:TIRE_PRESSURE` / `dynamic:TIRE_TEMP` pair is also collected as the fallback channel.
+5. Brake **×4**: rows carrying `dynamic:BRAKE_WEAR.{w}` → the **last** wear fraction per pad is retained. The legacy brake path (rows carrying **both** `dynamic:VELOCITY` and `dynamic:BRAKE_PEDAL_PCT`) still runs: remembers the previous pair, and when `brake_pct > 5.0` computes `dt` = real sample spacing, `a = Δv/Δt`, `v_avg`; accumulates `1500·|a|·v_avg·dt` only when `a < −0.5` m/s² and `v_avg > 0.5` m/s.
 
-After the stream: battery gets its **temperature compensation applied here** (`V_comp = V − β·(T − 30)`, `processor.py(run)`) before `detect_battery`; brake gets `min(1, E/6e9)`; tires get passed through raw. Results are serialized to `PmMessage` and published (demo cadence: every poll, healthy included — see `processor.py(run)` comment).
+After the stream: battery gets its **temperature compensation applied here** (`V_comp = V − β·(T − 30)`, `processor.py(run)`) before `detect_battery`; tires run **`detect_tires` once per wheel** (`results[f"tires.{w}"] = detect_tires(samples, recommended_bar=2.3, wheel=w)`, published `pm.{VIN}.tires.{wheel}`) with the single-channel fallback to `pm.{VIN}.tires` when no per-wheel columns exist; brakes run **`detect_brake` once per pad** (`results[f"brake.{w}"] = detect_brake(min(1.0, max(0.0, wear)), pad=w)`, published `pm.{VIN}.brake.{pad}`), with the legacy `min(1, E/6e9)` energy path on `pm.{VIN}.brake` when no `BRAKE_WEAR.*` columns exist. All three detectors now score with **continuous meters** — battery `round(clamp((ewma − 10.5)/(12.63 − 10.5)·100, 0, 100))`, tires per wheel `round(clamp((last_p − 0.9)/(2.3 − 0.9)·100, 0, 100))`, brake per pad `round(100·(1 − wear))` — while severity stays threshold-driven (battery ewma < 12.4/12.2/11.8 V advisory/action/critical; tire last_p < 1.8/1.2 bar action/critical; brake wear > 0.8/0.9 advisory/action). Results are serialized to `PmMessage` and published (demo cadence: every poll, healthy included — see `processor.py(run)` comment).
 
 ### 5.1 Why compensation lives in the caller, not the detector
 
@@ -180,8 +187,8 @@ brake:   accumulator in driveCycleStep (brake phase): E += speed·1500·|Δv|·v
 `main.go(groundTruth)` derives from the **same curves**:
 
 - battery: `wear = clamp((12.63 − vRest)/0.63, 0, 1)`, `days_to_failure = (1 − norm(ageDays))·HorizonDays` (forced 0 past horizon)
-- brake: `wear_fraction = clamp(E/6e9, 0, 1)`, `energy_joules`
-- tires: `pressure_bar`, `temp_c`
+- brake: `wear_fraction = clamp(E/6e9, 0, 1)`, `energy_joules` — plus a **per-pad `brakes` map**: `BrakeWearAt(wheel, drive.brakeEnergyJ)` per wheel (pad bias FL=1.4×, FR=1.25×, RL=0.8×, RR=0.55×), so the FL pad — the worst corner — crosses the detector's action threshold first (`main.go(groundTruth)`)
+- tires: `pressure_bar`, `temp_c` — per-wheel entries sit directly under `tires` (the FL corner is the representative for the legacy single `pressure_bar` consumed by `/pm` provisional health)
 
 These ride the status reply (`commands.{VIN}.demo` → `stateLocked`) — the /pm KPI row reads `ground_truth.brake.wear_fraction` and the charts read `live.battery_voltage` / `live.tire_pressure_bar` — and are appended to `local-dev/data/sim-ground-truth.jsonl` (`writeGroundTruthLabels`) for the evaluator. **The detector never sees these**; the only path from truth to detection is the published telemetry.
 
@@ -193,7 +200,8 @@ These ride the status reply (`commands.{VIN}.demo` → `stateLocked`) — the /p
 
 - **Failure definitions** (mirror the sim's own truth): battery `days_to_failure ≤ 0`, tires `pressure_bar ≤ 1.8`, brake `energy_joules ≥ 6e9` (`collect_ground_truth`).
 - **TP/FP/FN**: alert precedes failure → TP; alert on a healthy VIN or after failure → FP; failure with no prior alert → FN.
-- **First-alert epoch**: battery = first *compensated* sample ≤ 12.4 V; tires = first compensated sample ≤ 1.8 bar; brake = **window start** (lower bound — energy accumulates over the whole window).
+- **Per-wheel alert keys group under the base component**: per-wheel detector keys (`tires.FL`, `brake.FL`, …) are recorded with the alert's component column set to the base component (`tires`/`brake`), so precision/recall grouping (battery/brake/tires) and the web /pm validation card keep working (`evaluate_detectors.py(run_detectors_for_vin)`).
+- **First-alert epoch**: battery = first *compensated* sample ≤ 12.4 V; tires = first compensated sample ≤ 1.8 bar (per-wheel keys scan that wheel's own series, `_first_alert_epoch`); brake = **window start** (lower bound — energy accumulates over the whole window).
 - Output → `sample-clients/data-web-client/public/pm-validation.json` (the "validation card" data).
 
 The honest framing (implementation doc §8.1): because the sim is the source of truth, high precision/recall prove the detector **reproduces the formulas**, not that the formulas predict real fleet failures. The value is (a) catching implementation divergence (the poll-interval regression guard is the canonical example) and (b) demonstrating the alert→failure lead time under controlled trajectories.
