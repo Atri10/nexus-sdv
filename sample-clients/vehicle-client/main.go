@@ -698,6 +698,13 @@ type controlState struct {
 	// Non-degradable components keep nil entries so the status reply omits
 	// their ground truth.
 	degradation map[string]*DegradationConfig
+	// batteryAgeDays is the current simulated battery age (mirrored from the
+	// publish loop each tick) — the death-stop checks it against the battery
+	// horizon so a dead vehicle stops driving.
+	batteryAgeDays float64
+	// dead is set once the vehicle reaches end-of-life (battery dead or a
+	// tire flat); the publish loop stops and the status reply exposes it.
+	dead bool
 	// groundTruth holds the live simulator values the status reply exposes
 	// (see stateLocked). Set by the publish loop each tick; only components
 	// with an enabled config are populated.
@@ -967,6 +974,8 @@ func (c *controlState) adopt(vin string) error {
 	}
 	c.mu.Lock()
 	c.vin = vin
+	c.dead = false
+	c.batteryAgeDays = 0
 	for _, deg := range c.degradation {
 		deg.HorizonDays = defaultDegradationConfig(deg.Component, poolIndex(vin)).HorizonDays
 	}
@@ -991,6 +1000,8 @@ func (c *controlState) adopt(vin string) error {
 func (c *controlState) resetSimulation(msg *nats.Msg) {
 	c.mu.Lock()
 	c.published = 0
+	c.dead = false
+	c.batteryAgeDays = 0
 	c.startedAt = time.Now()
 	c.groundTruth = map[string]map[string]any{}
 	c.routeDist = 0
@@ -1100,6 +1111,7 @@ func (c *controlState) stateLocked() map[string]any {
 	return map[string]any{
 		"vin":               c.vin,
 		"running":           c.running,
+		"dead":              c.dead,
 		"published":         c.published,
 		"messageType":       c.messageType,
 		"components":        comps,
@@ -1182,6 +1194,37 @@ func (c *controlState) isRunning() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.running
+}
+
+// stop halts publishing: disables every component so the publish loop stops
+// emitting telemetry. Used by the death-stop (a vehicle whose battery died
+// must not keep driving laps) and by the "stop" control action.
+func (c *controlState) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, comp := range c.components {
+		comp.enabled = false
+	}
+	c.running = false
+}
+
+// isDeadLocked reports whether the vehicle has reached its end-of-life state:
+// any degradable component past its horizon (battery dead = ageDays ≥ horizon,
+// tires flat = worst wheel at floor). A dead vehicle stops the simulation.
+func (c *controlState) isDeadLocked() bool {
+	deg := c.degradation["battery"]
+	if deg != nil && deg.severityFactor() > 0 && c.batteryAgeDays >= float64(deg.horizonDays()) {
+		return true
+	}
+	tires := c.degradation["tires"]
+	if tires != nil && tires.severityFactor() > 0 {
+		for _, w := range wheels {
+			if tires.TirePressureAt(w, c.batteryAgeDays) <= 1.2 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *controlState) reply(msg *nats.Msg, body map[string]any) {
@@ -1911,6 +1954,9 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// Consume a pending reset: re-init battery + drive state so the
 		// demo restarts from its known healthy starting point.
 		if atomic.CompareAndSwapInt32(&resetRequested, 1, 0) {
+			ctl.mu.Lock()
+			ctl.dead = false
+			ctl.mu.Unlock()
 			battery = batteryState{
 				voltage: 12.6,
 				current: 45.2,
@@ -1951,13 +1997,28 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		battery.temp = battery.deg.BatteryTempAt(battery.ageDays) + gauss(0.3)
 		_ = vMin
 		_ = rInt
-		battery.voltage = clamp(battery.voltage, 11.0, 14.5)
+		battery.voltage = clamp(battery.voltage, 10.5, 14.5)
 		battery.current = clamp(battery.current+gauss(0.4), 0, 100)
 
 		// Advance the randomized drive cycle (velocity, engine, GPS, dynamics).
 		driveCycleStep(&drive, float64(intervalSeconds), speed)
 		ctl.mu.Lock()
 		ctl.routeDist = drive.tripDist
+		ctl.batteryAgeDays = battery.ageDays
+		// Death-stop: once the vehicle reaches end-of-life (battery dead or
+		// a tire flat) it stops driving — a dead vehicle publishing laps is
+		// logically incoherent. Stop the components, mark dead, and publish
+		// one final status so the dashboards show "vehicle dead, stopped".
+		if !ctl.dead && ctl.isDeadLocked() {
+			ctl.dead = true
+			for _, comp := range ctl.components {
+				comp.enabled = false
+			}
+			ctl.running = false
+			ctl.mu.Unlock()
+			log.Println("Vehicle reached end-of-life (battery dead / tire flat) — stopping simulation")
+			return
+		}
 		ctl.mu.Unlock()
 
 		// Mirror the live degradation state onto the client so the chassis
@@ -2050,7 +2111,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 			}
 			battery.ageDays += 1.0 // one simulated day per backfill row
 			vRest, _, _ := battery.deg.BatteryAt(battery.ageDays)
-			battery.voltage = clamp(vRest+(mathrand.Float64()-0.5)*0.025, 11.0, 14.5)
+			battery.voltage = clamp(vRest+(mathrand.Float64()-0.5)*0.025, 10.5, 14.5)
 			battery.soc = clamp(85.5-30*(battery.deg.severityFactor()*battery.ageDays/120.0), 5, 100)
 			battery.temp = battery.deg.BatteryTempAt(battery.ageDays)
 
