@@ -175,3 +175,28 @@ export function coherentHealth(
     case 'brake': return brakesFromWear(live.brakeWearFrac);
   }
 }
+
+/**
+ * User-friendly + technical alert text for a PM message. The detector's
+ * explanation is terse/technical ("EWMA 11.13 V < 12.2 V (action)"); this
+ * produces a plain-language headline ("Battery is failing") plus the
+ * technical evidence so both a demo audience and an engineer get what they
+ * need. Falls back to the raw explanation when the shape is unexpected.
+ */
+export function friendlyAlert(msg: Pick<PmMessage, 'component' | 'severity' | 'explanation' | 'wheel'>): {
+  headline: string;
+  detail: string;
+} {
+  const comp = msg.component === 'tires' ? (msg.wheel ? `Tire ${msg.wheel.toUpperCase()}` : 'Tires') : msg.component === 'brake' ? (msg.wheel ? `Brake pad ${msg.wheel.toUpperCase()}` : 'Brakes') : 'Battery';
+  const sev = msg.severity;
+  const headline =
+    sev === 'critical'
+      ? `${comp} has failed — needs attention now`
+      : sev === 'action'
+        ? `${comp} is failing — action required`
+        : sev === 'advisory'
+          ? `${comp} shows early signs of wear`
+          : `${comp} is healthy`;
+  const detail = msg.explanation || 'No anomaly detected.';
+  return { headline, detail };
+}

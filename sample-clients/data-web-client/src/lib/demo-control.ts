@@ -30,6 +30,8 @@ export interface RouteStatus {
 export interface DemoControlReply {
   vin: string;
   running: boolean;
+  /** True when the vehicle reached end-of-life (battery dead / tire flat) and the sim stopped itself. */
+  dead?: boolean;
   published: number;
   messageType: string;
   components?: ComponentStatus[];

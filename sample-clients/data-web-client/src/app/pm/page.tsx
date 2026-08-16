@@ -15,13 +15,14 @@ import {
   coherentHealth,
   clearPmState,
   worstWheel,
+  friendlyAlert,
   WHEELS,
   type CoherentHealth,
   type Wheel,
 } from '@/lib/pm-health';
 import type { PmSample } from '@/components/pm/pm-charts';
 import { DEMO_ROUTE_TOTAL_M } from '@/lib/pm-route';
-import { RotateCcw, Square, Play, Zap } from 'lucide-react';
+import { RotateCcw, Square, Play, Zap, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 
 // Live-data console: never statically prerender (the page streams live
@@ -171,6 +172,16 @@ export default function PmPage() {
       }
       setBusy(true);
       try {
+        // A dead vehicle (battery died / tire flat) must be RESET before it
+        // can start again — starting a corpse is logically incoherent. The
+        // reset re-seeds age 0 + fresh curves, then start enables components.
+        if (action === 'start' && sim?.dead) {
+          const resetReply = await simState.command('reset');
+          if (!resetReply || resetReply.error) {
+            toast.error(resetReply?.error ?? 'Simulator did not respond to reset');
+            return;
+          }
+        }
         // Runtime VIN switching: Start for a different pool VIN makes the
         // simulator adopt it (select VIN1002 + Start actually runs a fresh
         // VIN1002). Pass the SELECTED VIN as the command target so the body
@@ -477,6 +488,17 @@ export default function PmPage() {
               ))}
             </div>
 
+            {/* End-of-life banner: the vehicle died (battery dead / tire
+                flat) and the sim stopped itself — a dead vehicle must not
+                keep driving. Reset + Start restores it. */}
+            {sim?.dead && (
+              <div className="flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+                <span className="font-medium text-red-500">Vehicle reached end-of-life — simulation stopped</span>
+                <span className="text-xs text-muted-foreground">Reset + Start to restore it</span>
+              </div>
+            )}
+
             {/* Simulator control — explicit, never auto-started (BUG-1). */}
             <Button
               variant={sim?.running ? 'destructive' : 'default'}
@@ -486,7 +508,7 @@ export default function PmPage() {
               className="gap-1.5"
             >
               {sim?.running ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-              {sim?.running ? 'Stop' : 'Start'}
+              {sim?.running ? 'Stop' : sim?.dead ? 'Restart' : 'Start'}
             </Button>
 
             <Button
@@ -638,29 +660,37 @@ export default function PmPage() {
             </p>
           ) : (
             <div className="max-h-44 space-y-1.5 overflow-y-auto">
-              {selectedMessages.slice(0, 20).map((m, i) => (
-                <div key={`${m.timestamp}-${m.component}-${m.wheel ?? ''}-${i}`} className="flex items-start gap-2 text-sm">
-                  <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                    {new Date(m.timestamp).toLocaleTimeString()}
-                  </span>
-                  <Badge
-                    className={`shrink-0 font-mono text-xs uppercase tracking-wider ${
-                      m.severity === 'healthy' ? 'opacity-60' : ''
-                    }`}
-                    style={{
-                      backgroundColor: `${severityColor(m.severity)}26`,
-                      color: severityColor(m.severity),
-                    }}
-                  >
-                    {m.severity}
-                  </Badge>
-                  <span className="font-mono text-xs uppercase text-foreground/90">
-                    {m.component}
-                    {m.wheel ? ` · ${m.wheel}` : ''}
-                  </span>
-                  <span className="text-foreground/85">{m.explanation}</span>
-                </div>
-              ))}
+              {selectedMessages.slice(0, 20).map((m, i) => {
+                const friendly = friendlyAlert(m);
+                return (
+                  <div key={`${m.timestamp}-${m.component}-${m.wheel ?? ''}-${i}`} className="flex items-start gap-2 text-sm">
+                    <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+                      {new Date(m.timestamp).toLocaleTimeString()}
+                    </span>
+                    <Badge
+                      className={`shrink-0 font-mono text-xs uppercase tracking-wider ${
+                        m.severity === 'healthy' ? 'opacity-60' : ''
+                      }`}
+                      style={{
+                        backgroundColor: `${severityColor(m.severity)}26`,
+                        color: severityColor(m.severity),
+                      }}
+                    >
+                      {m.severity}
+                    </Badge>
+                    <span className="font-mono text-xs uppercase text-foreground/90">
+                      {m.component}
+                      {m.wheel ? ` · ${m.wheel}` : ''}
+                    </span>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="truncate font-medium text-foreground/90">{friendly.headline}</span>
+                      <span className="truncate font-mono text-xs text-muted-foreground/80" title={friendly.detail}>
+                        {friendly.detail}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </Section>
