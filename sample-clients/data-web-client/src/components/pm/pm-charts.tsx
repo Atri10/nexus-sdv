@@ -9,7 +9,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import TelemetryChart from '@/components/telemetry-chart/TelemetryChart';
 import { useChartTheme } from '@/hooks/use-chart-theme';
 import type { ChartSeries } from '@/lib/telemetry-chart-utils';
-import type { CoherentHealth } from '@/lib/pm-health';
+import type { CoherentHealth, Wheel } from '@/lib/pm-health';
+import { WHEELS } from '@/lib/pm-health';
 import type { PmMessage } from '@/lib/pm-types';
 
 /** One sample of the live values driving the PM charts. */
@@ -19,7 +20,24 @@ export interface PmSample {
   voltage?: number | null;
   brakeWear?: number | null;
   tirePressure?: number | null;
+  /** Per-wheel tire pressures (bar) at this sample, when ground truth has them. */
+  tirePressures?: Partial<Record<Wheel, number | null>>;
+  /** Per-pad brake wear fractions (0..1) at this sample, when ground truth has them. */
+  brakeWears?: Partial<Record<Wheel, number | null>>;
 }
+
+const WHEEL_SHADES: Record<Wheel, string> = {
+  FL: '#A855F7',
+  FR: '#C084FC',
+  RL: '#7C3AED',
+  RR: '#D946EF',
+};
+const PAD_SHADES: Record<Wheel, string> = {
+  FL: '#F97316',
+  FR: '#FB923C',
+  RL: '#EA580C',
+  RR: '#F43F5E',
+};
 
 const COLORS = {
   health: '#22C55E',
@@ -45,7 +63,8 @@ const HEALTH_BAND_LABEL: Record<CoherentHealth['severity'], string> = {
 interface PmChartCardProps {
   title: string;
   unit: string;
-  series: ChartSeries;
+  /** One series per wheel/pad (4 lines) or a single aggregate series. */
+  series: ChartSeries[];
   health: CoherentHealth;
   /** Window span (ms) for readable time ticks. */
   windowMs: number;
@@ -70,7 +89,10 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
   const theme = useChartTheme();
   const [expanded, setExpanded] = useState(false);
 
-  const pts = series.points;
+  // The LAST series is the primary (worst-wheel/aggregate) for the header
+  // current-value + trend; the per-wheel series are drawn beneath it.
+  const primary = series[series.length - 1];
+  const pts = primary?.points ?? [];
   const last = pts.length ? pts[pts.length - 1].y : null;
   const prev = pts.length > 1 ? pts[pts.length - 2].y : null;
   const trend =
@@ -131,14 +153,14 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
             <div className="h-36">
               <TelemetryChart
                 vehicleId="pm"
-                series={[series]}
+                series={series}
                 type="line"
                 axisMode="single"
                 hidden={new Set()}
                 theme={theme}
                 resetZoomToken={0}
                 zoomEnabled={false}
-                units={{ [series.key]: unit }}
+                units={Object.fromEntries(series.map((s) => [s.key, unit]))}
                 animated={false}
                 height="100%"
                 yRange={yRange}
@@ -192,13 +214,13 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
             {showChart ? (
               <TelemetryChart
                 vehicleId="pm"
-                series={[series]}
+                series={series}
                 type="line"
                 axisMode="single"
                 hidden={new Set()}
                 theme={theme}
                 resetZoomToken={0}
-                units={{ [series.key]: unit }}
+                units={Object.fromEntries(series.map((s) => [s.key, unit]))}
                 height="100%"
                 yRange={yRange}
                 timeWindowMs={windowMs}
@@ -278,7 +300,7 @@ export interface PmChartsProps {
  * degradation climax stays on-plot.
  */
 export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) {
-  const series = useMemo<Record<string, ChartSeries>>(() => {
+  const series = useMemo<Record<string, ChartSeries[]>>(() => {
     const make = (
       key: string,
       label: string,
@@ -292,13 +314,43 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
       color,
       points: samples.map((s) => ({ x: s.t, y: pick(s) ?? null })).filter((p) => p.y !== null),
     });
+    // Per-wheel/pad series: one line per corner so asymmetric degradation is
+    // visible in the chart itself (FL dying while FR holds 2.3 bar). The
+    // aggregate (worst-wheel) series is appended LAST so the card header's
+    // current-value/trend reads the worst corner, matching the badge.
+    const wheelSeries = (
+      base: string,
+      labelBase: string,
+      colors: Record<Wheel, string>,
+      pick: (s: PmSample, w: Wheel) => number | null | undefined,
+      scale: (v: number) => number
+    ): ChartSeries[] => {
+      const out: ChartSeries[] = [];
+      for (const w of WHEELS) {
+        out.push(
+          make(`${base}.${w}`, `${labelBase} ${w}`, colors[w], (s) => {
+            const v = pick(s, w);
+            return v === null || v === undefined ? null : scale(v);
+          })
+        );
+      }
+      return out;
+    };
+    const tireWheel = wheelSeries('tires', 'Tire', WHEEL_SHADES, (s, w) => s.tirePressures?.[w], (v) => v);
+    const padWheel = wheelSeries('brake', 'Brake', PAD_SHADES, (s, w) => s.brakeWears?.[w], (v) => v * 100);
     return {
-      health: make('health', 'Battery health', COLORS.health, (s) => s.health),
-      voltage: make('voltage', 'Battery voltage', COLORS.voltage, (s) => s.voltage),
-      brake: make('brake', 'Brake wear', COLORS.brake, (s) =>
-        s.brakeWear === null || s.brakeWear === undefined ? null : s.brakeWear * 100
-      ),
-      tires: make('tires', 'Tire pressure', COLORS.tires, (s) => s.tirePressure),
+      health: [make('health', 'Battery health', COLORS.health, (s) => s.health)],
+      voltage: [make('voltage', 'Battery voltage', COLORS.voltage, (s) => s.voltage)],
+      brake: [
+        ...padWheel,
+        make('brake', 'Brake wear', COLORS.brake, (s) =>
+          s.brakeWear === null || s.brakeWear === undefined ? null : s.brakeWear * 100
+        ),
+      ],
+      tires: [
+        ...tireWheel,
+        make('tires', 'Tire pressure', COLORS.tires, (s) => s.tirePressure),
+      ],
     };
   }, [samples]);
 
