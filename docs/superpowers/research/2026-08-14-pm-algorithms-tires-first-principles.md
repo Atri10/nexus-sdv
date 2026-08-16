@@ -14,8 +14,8 @@ Signal definitions (what each raw telemetry parameter means, incl. `BRAKE_PEDAL_
 
 | Quantity the detector consumes | Proto source | Bigtable qualifier | Emitted by (simulator) | Algorithm step |
 |---|---|---|---|---|
-| Tyre pressure `P` | `VehicleTelemetryData.TIRE_PRESSURE` (field 8) | `dynamic:TIRE_PRESSURE` | `buildChassisReport` from `TirePressureAt(ageDays)` | Raw input to `P_comp = P·293.15/T` |
-| Tyre temperature `T` | `VehicleTelemetryData.TIRE_TEMP` (field 16) | `dynamic:TIRE_TEMP` | `buildChassisReport` from `TireTempAt(ageDays)` (28 ± 8 °C cycle + flex heat) | Denominator of compensation (processor adds 273.15 → Kelvin) |
+| Tyre pressure `P` | `VehicleTelemetryData.TIRE_PRESSURE` (field 8) — per-wheel columns `TIRE_PRESSURE.{wheel}`, wheel ∈ FL/FR/RL/RR | `dynamic:TIRE_PRESSURE.{wheel}` | `buildChassisWheelTelemetry` from `TirePressureAt(ageDays + wheelOffsetDays)` — staggered per-wheel failure, FL first (offsets FL=0/FR=15/RL=30/RR=45 days) | Raw input to `P_comp = P·293.15/T` |
+| Tyre temperature `T` | `VehicleTelemetryData.TIRE_TEMP` (field 16) — per-wheel columns `TIRE_TEMP.{wheel}`, wheel ∈ FL/FR/RL/RR | `dynamic:TIRE_TEMP.{wheel}` | `buildChassisWheelTelemetry` from `TireTempAt(ageDays + wheelOffsetDays)` (28 ± 8 °C cycle + flex heat) | Denominator of compensation (processor adds 273.15 → Kelvin) |
 
 The full chain (physics → proto → NATS → Bigtable → data-api → processor → detector) is traced in `2026-08-15-pm-use-case-end-to-end.md`.
 
@@ -49,11 +49,11 @@ The simulator's temperature model is a 28 °C mean with a ±8 °C daily cycle �
 
 ## 3. Leak physics
 
-Normal tires lose ~0.05 bar/month to permeation. A slow leak is 0.05–0.25 bar/month. The demo leak curve (`degradation.go(TirePressureAt)`):
+Normal tires lose ~0.05 bar/month to permeation. A slow leak is 0.05–0.25 bar/month. The demo leak curve (`degradation.go(TirePressureAt)`) runs per wheel with a staggered failure onset — FL fails first, then FR/RL/RR at 15/30/45-day offsets:
 
 ```
 healthy   → 2.3 bar (no leak)
-degrading/critical → P(day) = 2.3 − leak·day/30,  leak = 0.2·norm(day)
+degrading/critical → P(day) = 2.3 − leak·(day − wheelOffset)/30,  leak = 0.2·norm(day − wheelOffset)
 ```
 
 The leak term is quadratic in day until the horizon clamps `norm`: worked at day 45 of horizon 120 → `leak = 0.2·(45/120) = 0.075`, `P = 2.3 − 0.075·45/30 = 2.1875 bar`.
@@ -76,17 +76,32 @@ A 0.1 bar/month leak is *not* slope-alerted (it sits above −0.15). It is caugh
 
 Worked (test-locked): 2.30 → 1.75 bar linear over 30 days at 303.15 K → after compensation the series runs 2.224 → 1.693 bar; the compensated slope is −0.532 bar/month (well below −0.15, but the floor already binds) (`tests/test_detectors.py(test_tires_slow_leak_slope_advisory)`).
 
+### 4.2 Per-wheel detection (x4)
+
+`detect_tires` runs once per wheel — FL/FR/RL/RR — each consuming its own sensor columns (`TIRE_PRESSURE.{wheel}` / `TIRE_TEMP.{wheel}`), results keyed `tires.{wheel}`, and published per wheel on `pm.{VIN}.tires.{wheel}` (`detectors.py(detect_tires)`, `processor.py(run)`). The whole pipeline above (compensation, OLS slope, floor, meter) applies identically to each wheel; the staggered sim failure means the four meters diverge at 0/15/30/45 days of sim age instead of failing together.
+
 ---
 
-## 5. The absolute floor and scoring
+## 5. The continuous health meter and severity
+
+The meter is continuous in compensated pressure — no step-function floors:
 
 ```
-P_comp < 1.8 bar (TIRE_FLOOR_BAR)   → score = min(score, 20)   → action
-slope < −0.15 bar/month             → score = min(score, 55)   → advisory
-severity = "action" if score < 30 else _band(score)
+score = round(clamp((last_p − 0.9) / (2.3 − 0.9) · 100, 0, 100))
 ```
 
-`last_p` is the **last compensated pressure** (`comp[-1][1]`) — the floor rule is a current-value rule, not a trend rule. Score 20 from the floor → action; score 55 from the slope alone → advisory; both → 20 → action. `_band` (`detectors.py(_band)`): ≥70 healthy, ≥50 advisory, else action.
+2.3 bar = 100, 0.9 bar = 0 (`detectors.py(detect_tires)`, per wheel). `last_p` is the **last compensated pressure** (`comp[-1][1]`). Severity is decoupled from the score and threshold-driven:
+
+```
+last_p < 1.2 bar               → critical
+last_p < 1.8 bar (TIRE_FLOOR_BAR) → action
+slope < −0.15 bar/month (TIRE_SLOPE_BAR_M) → advisory
+else → _band(score)
+```
+
+Slope penalty retained: `score = min(score, 55)` when the slope rule binds — the slope can pull the meter down, but the meter itself is the continuous pressure score. `_band` (`detectors.py(_band)`): ≥70 healthy, ≥50 advisory, else action.
+
+Worked: a tire collapsing 1.7 → 0.9 bar reads `round((1.7−0.9)/1.4·100) = 57 → 0`; below 1.8 bar the floor already binds (action), so the meter's low end is severity-capped before it reaches 0.
 
 **14-sample minimum**: fewer than 14 compensated samples → hard `healthy` with score 100 and "Insufficient tire data." — the minimum for a stable OLS fit (`detectors.py(detect_tires)`).
 
@@ -101,17 +116,17 @@ Evidence:
 
 ## 6. Detection limits and honest gaps
 
-1. **No wheel localization**: the schema carries one scalar `TIRE_PRESSURE` — the alert says "pressure low/leaking", never "front-left". Per-wheel pressure is the natural upgrade.
+1. **Wheel localization shipped**: per-wheel pressure/temp columns (`TIRE_PRESSURE.{wheel}` / `TIRE_TEMP.{wheel}`) are now in the schema and the detector runs per wheel — the alert says "front-left" via `tires.{wheel}` / `pm.{VIN}.tires.{wheel}`. What remains future work is *per-wheel speed* (the indirect-TPMS signal, gap 5).
 2. **No steady-driving filter**: the spec's "sample only at steady driving (v > 10 m/s, > 5 min into trip, small |dv/dt|)" is **not implemented** — every row with both pressure and temp is fed to the detector (`processor.py(run)`). The 14-sample guard and OLS averaging are the only noise mitigation.
 3. **Noise sources in the demo**: the ±8 °C daily temp cycle (compensated out) plus the chassis-report noise (±0.05 bar, ±0.25 °C, `main.go(buildChassisReport)`) are what the slope fit must survive.
 4. **Compensation depends on TIRE_TEMP**: that field exists (`vehicle_telemetry.proto`, field 16) and is emitted on the typed metrics path; without it the compensation is impossible.
-5. **Indirect TPMS (UNECE R64)**: comparing per-wheel speeds (an underinflated wheel rotates faster) is the standard ABS-based upgrade path — it catches symmetrical leaks too — but needs per-wheel speed signals not in the schema.
+5. **Indirect TPMS (UNECE R64)**: comparing per-wheel speeds (an underinflated wheel rotates faster) is the standard ABS-based upgrade path — it catches symmetrical leaks too — but needs per-wheel speed signals, which are not in the schema (per-wheel PRESSURE/TEMP are; per-wheel SPEED remains a future path).
 
 ---
 
 ## 7. Summary
 
-Tire leak detection is ideal-gas compensation (`P_comp = P·293.15/T`) followed by a bar/month slope fit against a −0.15 bar/month rule, plus a 1.8 bar absolute floor. Compensation is the whole game: a 10 °C swing moves pressure more than a month of leakage. The 0.1 bar/month blind spot, the missing steady-driving filter, and the single-scalar (no wheel localization) are the documented limitations.
+Tire leak detection runs per wheel (x4, `tires.{wheel}` / `pm.{VIN}.tires.{wheel}`): ideal-gas compensation (`P_comp = P·293.15/T`) followed by a bar/month slope fit against a −0.15 bar/month rule, a 1.8 bar absolute floor, and a continuous health meter (`(last_p − 0.9)/1.4·100`, 2.3 bar = 100). Compensation is the whole game: a 10 °C swing moves pressure more than a month of leakage. The 0.1 bar/month blind spot and the missing steady-driving filter are the documented limitations; wheel localization (per-wheel pressure/temp) is shipped, while per-wheel speeds for indirect TPMS remain a future path.
 
 ---
 
