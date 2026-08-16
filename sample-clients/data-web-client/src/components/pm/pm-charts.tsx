@@ -150,23 +150,39 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
         </CardHeader>
         <CardContent className="pt-1">
           {showChart ? (
-            <div className="h-36">
-              <TelemetryChart
-                vehicleId="pm"
-                series={series}
-                type="line"
-                axisMode="single"
-                hidden={new Set()}
-                theme={theme}
-                resetZoomToken={0}
-                zoomEnabled={false}
-                units={Object.fromEntries(series.map((s) => [s.key, unit]))}
-                animated={false}
-                height="100%"
-                yRange={yRange}
-                timeWindowMs={windowMs}
-              />
-            </div>
+            <>
+              <div className="h-36">
+                <TelemetryChart
+                  vehicleId="pm"
+                  series={series}
+                  type="line"
+                  axisMode="single"
+                  hidden={new Set()}
+                  theme={theme}
+                  resetZoomToken={0}
+                  zoomEnabled={false}
+                  units={Object.fromEntries(series.map((s) => [s.key, unit]))}
+                  animated={false}
+                  height="100%"
+                  yRange={yRange}
+                  timeWindowMs={windowMs}
+                />
+              </div>
+              {series.length > 1 && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {series.map((s) => (
+                    <span key={s.key} className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      <span
+                        className="inline-block h-2 w-2 rounded-full"
+                        style={{ backgroundColor: s.color }}
+                        aria-hidden="true"
+                      />
+                      {s.label.replace(/^Tire |^Brake /, '')}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
             <div className="flex h-36 flex-col items-center justify-center gap-1.5 rounded border border-dashed border-border/50 text-center">
               {idle ? (
