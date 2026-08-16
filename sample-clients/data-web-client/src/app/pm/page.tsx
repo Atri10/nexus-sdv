@@ -286,12 +286,28 @@ export default function PmPage() {
       wheelPressures.length > 0
         ? Math.min(...wheelPressures)
         : Number(liveVals.tire_pressure_bar ?? NaN);
+    // Per-wheel pressures + per-pad wears from ground truth — one line each
+    // on the chart so asymmetric degradation is visible (FL flat, FR fine).
+    const gtTiresWheels = (gt.tires ?? {}) as Record<string, unknown>;
+    const gtBrakesWheels = (gt.brakes ?? {}) as Record<string, unknown>;
+    const tirePressures: Partial<Record<Wheel, number | null>> = {};
+    const brakeWears: Partial<Record<Wheel, number | null>> = {};
+    for (const w of WHEELS) {
+      const tw = gtTiresWheels[w] as Record<string, unknown> | undefined;
+      const p = tw && typeof tw === 'object' ? tw.pressure_bar : undefined;
+      tirePressures[w] = typeof p === 'number' && Number.isFinite(p) ? p : null;
+      const bw = gtBrakesWheels[w] as Record<string, unknown> | undefined;
+      const f = bw && typeof bw === 'object' ? bw.wear_fraction : undefined;
+      brakeWears[w] = typeof f === 'number' && Number.isFinite(f) ? f : null;
+    }
     const next: PmSample = {
       t,
       health,
       voltage: Number.isFinite(voltage) ? voltage : null,
       brakeWear: brakeWearSample,
       tirePressure: Number.isFinite(tirePressure) ? tirePressure : null,
+      tirePressures,
+      brakeWears,
     };
     lastSamples.current = [...prev, next].slice(-MAX_SAMPLES);
     setSamples(lastSamples.current);
