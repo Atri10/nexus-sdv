@@ -132,33 +132,41 @@ Two things worth calling out. First, the denominator-zero guard — `slope_mv_da
 
 Worked: the same 30-day 12.60 → 12.40 V series gives slope = −6.67 mV/day (verified by hand), far below the −0.5 mV/day rule; the test asserts this series is advisory (`tests/test_detectors.py(test_battery_degrading_slope_advisory)`).
 
-### 3.5 Score penalties and minimum composition
+### 3.5 Continuous health meter and penalty composition
 
-Score starts at 100 (`detectors.py(detect_battery)`) and only ever decreases via `min`:
+The score is a **continuous, voltage-derived meter**, not a step function. `detectors.py(detect_battery)` maps the EWMA resting voltage onto a 0–100 scale:
+
+```
+score = round(clamp((ewma − 10.5) / (12.63 − 10.5) · 100, 0, 100))
+```
+
+A battery resting at the simulator's healthy ceiling 12.63 V reads 100; a dead cell at 10.5 V (the death-collapse endpoint, §6.1) reads 0. Because the meter tracks the EWMA, a battery collapsing 11.3 → 10.5 V reads 30 → 0 — the death arc stays visible instead of freezing at a floor. The OLD step-function floors (`min(score, 25)` for `ewma < 12.2 V`, `min(score, 60)` for `ewma < 12.4 V`) are **gone**: the EWMA threshold branches now only append *reasons* — they no longer touch the score at all (`detectors.py(detect_battery)`).
+
+The remaining rules are true penalties — they can only pull the meter down, never override it:
 
 | Rule | Penalty | Location |
 |---|---|---|
-| `ewma < BATTERY_ACTION_V` (12.2 V) | `score = min(score, 25)` | `detectors.py(detect_battery)` |
-| else `ewma < BATTERY_ADVISORY_V` (12.4 V) | `score = min(score, 60)` | `detectors.py(detect_battery)` |
 | `slope_mv_day < BATTERY_SLOPE_MV` (−0.5 mV/day) | `score = min(score, 55)` | `detectors.py(detect_battery)` |
 | cranking `vmin < CRANK_VMIN` (9.5 V) | `score = min(score, 20)` | `detectors.py(detect_battery)` |
 | cranking `R_int > 1.5·baseline` | `score = min(score, 30)` | `detectors.py(detect_battery)` |
 
-The `min` composition is the key property: each rule can only pull the score down to its own cap, so the binding constraint wins and the final score is the *minimum of the applied caps* (the score can never be higher than the worst single violation). Then `score = max(0, score)`.
-
-The EWMA branches are `if/elif` — the action line subsumes the advisory line (a battery below 12.2 V is also below 12.4 V, and the 25 cap is strictly lower than the 60 cap, so `elif` preserves the min). Slope and cranking rules are independent `if`s and stack multiplicatively via `min`.
+The `min` composition is the key property: each penalty can only pull the score down to its own cap, so the binding constraint wins and the final score is the *minimum of the applied caps* (the score can never be higher than the worst single violation). Then `score = max(0, score)`. Slope and cranking rules are independent `if`s and stack via `min`; the voltage meter itself is computed first, and its value is the *starting point* the penalties cap.
 
 ### 3.6 Severity mapping
 
-`detectors.py(detect_battery)`:
+Severity is **decoupled from the score** and driven by threshold rules — the meter answers "how degraded", the thresholds answer "what to alert". `detectors.py(detect_battery)`:
 
 ```
-severity = "critical" if score < 30 else _band(score)
+if ewma < BATTERY_ACTION_V − 0.4  (11.8 V):  critical
+elif ewma < BATTERY_ACTION_V      (12.2 V):  action
+elif ewma < BATTERY_ADVISORY_V    (12.4 V):  advisory
+elif any cranking vmin < CRANK_VMIN (9.5 V): critical
+else:                                       _band(score)
 ```
 
-with `_band` at `detectors.py(_band)`: `≥70 → healthy`, `≥50 → advisory`, else `action`. So the full battery mapping is: **< 30 → critical; 30–49 → action; 50–69 → advisory; ≥ 70 → healthy**. The `score < 30` critical branch is the one place the battery deviates from the shared `_band`.
+with `_band` at `detectors.py(_band)`: `≥70 → healthy`, `≥50 → advisory`, else `action`. So the full battery mapping is: **EWMA < 11.8 V → critical; 11.8–12.2 V → action; 12.2–12.4 V → advisory; any cranking V_min < 9.5 V → critical; otherwise the score band**. The old `score < 30 → critical` composition is gone — severity now reads the thresholds, and a battery whose *meter* still reads high can still alert as action because it sits below the action line.
 
-Worked critical: the processor test feeds five rows at a flat 12.10 V (`tests/test_processor.py(…)`) → EWMA = 12.10 < 12.2 → score 25 → critical. The cranking test (`tests/test_detectors.py(test_battery_cranking_critical)`) uses `rest = [(0.0, 12.6)]`, `crank = [(1.0, 9.0, 180.0)]`: one rest sample (≥5 required only when there is no crank), V_min 9.0 < 9.5 → score 20 → critical; `R_int = (12.6 − 9.0)/180·1000 = 20.0 mΩ` is 2.15× the 9.3 mΩ baseline, also over 1.5× → score 30, but 20 already binds.
+Worked (the five-row processor test, `tests/test_processor.py(…)`): five rows at a flat 12.10 V → EWMA = 12.10 V → meter score `round((12.10 − 10.5)/(12.63 − 10.5)·100) = round(75.1) = 75`; severity **action** (12.10 < 12.2), not the old "score 25 → critical". The cranking test (`tests/test_detectors.py(test_battery_cranking_critical)`) uses `rest = [(0.0, 12.6)]`, `crank = [(1.0, 9.0, 180.0)]`: one rest sample (≥5 required only when there is no crank), V_min 9.0 < 9.5 → the cranking branch fires and severity is **critical**; `R_int = (12.6 − 9.0)/180·1000 = 20.0 mΩ` is 2.15× the 9.3 mΩ baseline, also over 1.5× → score penalty 30, and V_min < 9.5 → score penalty 20, so the meter is capped at 20 — but severity came from the crank threshold, not the capped meter.
 
 ### 3.7 Insufficient-data guard
 
@@ -205,6 +213,23 @@ This is a live quirk in the current code (as of 2026-08-14), not a bug under tes
 
 ## 4. Brake as implemented
 
+Brake detection has two paths, chosen per-pad availability:
+
+- **Primary — per-pad wear** (§4.0): the sim publishes a per-wheel `BRAKE_WEAR.{wheel}` fraction, the processor runs `detect_brake` once per pad, and the results publish as `pm.{VIN}.brake.{pad}`.
+- **Fallback — energy accumulator** (§4.1–§4.3): when no `BRAKE_WEAR.*` columns exist (older sim / mixed history), the processor keeps the legacy velocity-pedal energy path and publishes a single `pm.{VIN}.brake`.
+
+### 4.0 Per-pad wear path (primary)
+
+`processor.py(run)` collects the **last** `dynamic:BRAKE_WEAR.{wheel}` value per pad (FL/FR/RL/RR) and runs `detect_brake` once per pad:
+
+```
+per_pad_wear = {w: vals[-1] for w, vals in brake_wear_by_pad.items() if vals}
+for w, wear in per_pad_wear.items():
+    results[f"brake.{w}"] = detect_brake(min(1.0, max(0.0, wear)), pad=w)
+```
+
+The processor clamps the raw fraction to `[0, 1]` (`min(1.0, max(0.0, wear))`, `processor.py(run)`) before calling the detector. Results are keyed `brake.{pad}` and published on `pm.{VIN}.brake.{pad}` (`processor.py(run)`). The simulator emits the per-pad readings via `buildChassisWheelTelemetry` (`main.go(buildChassisWheelTelemetry)`, committed as `97ebe3e`): `BrakeWearAt(wheel, brakeEnergyJ)` scales the overall fraction per wheel with bias factors **FL=1.4×, FR=1.25×, RL=0.8×, RR=0.55×** (summing to 4.0 so the per-pad mean equals the overall fraction) — the front-left pad wears first and hardest, the rear-right last. The ground-truth status reply uses the same `BrakeWearAt` per wheel, so detector and truth agree pad for pad.
+
 ### 4.1 Energy accumulation loop (Processor)
 
 `processor.py(run)`, inside the row stream:
@@ -230,7 +255,7 @@ with `VEHICLE_MASS_KG = 1500.0` (`processor.py(top)`). Since `a = Δv/Δt`, the 
 
 Why velocity-delta instead of an acceleration sensor? The processor comment states it plainly: the acceleration-modulus proto field is never persisted by the connector, so the only honest deceleration estimate available from stored telemetry is the finite difference of `VELOCITY` over the real sample spacing.
 
-### 4.2 Budget and clamp
+### 4.2 Budget and clamp (fallback path)
 
 `processor.py(run)`:
 
@@ -249,12 +274,12 @@ score = max(0, min(100, round(100·(1 − wear_fraction))))
 severity: wear_fraction > 0.9 → action; > 0.8 → advisory; else healthy
 ```
 
-The score is literally `100·(1 − wear)`, rounded, clamped — the spec's "brake = 100 − wear%". Severity mapping: **> 0.9 action, > 0.8 advisory, else healthy** (`BRAKE_ACTION = 0.9`, `BRAKE_ADVISORY = 0.8` at `detectors.py(top)`). Note this is the *only* detector whose severity comes from wear thresholds directly rather than the score band: a wear of 0.85 gives score 15 → the band would say action, but the explicit branch says advisory.
+The score is literally `100·(1 − wear)`, rounded, clamped — the spec's "brake = 100 − wear%" — and is **always continuous**, for both the per-pad and the fallback path. Severity mapping: **> 0.9 action, > 0.8 advisory, else healthy** (`BRAKE_ACTION = 0.9`, `BRAKE_ADVISORY = 0.8` at `detectors.py(top)`). Note this is the *only* detector whose severity comes from wear thresholds directly rather than the score band: a wear of 0.85 gives score 15 → the band would say action, but the explicit branch says advisory. On the per-pad path the detector also carries the pad identity: `detect_brake(..., pad=w)` adds `"pad": w` to the evidence dict (`detectors.py(detect_brake)`).
 
 Evidence:
 
 ```
-{"wear_fraction": "0.875", "wear_rate_per_km": "0.000000"}
+{"wear_fraction": "0.875", "wear_rate_per_km": "0.000000", "pad": "FL"}
 ```
 
 `wear_rate_per_km` is **not wired**: the optional parameter `wear_rate_per_km=None` (`detectors.py(detect_brake)`) is never passed by the processor or evaluator, and the evidence field renders `wear_rate_per_km or 0` — always `0.000000`. The spec's RUL formula `RUL_km = (E_budget − W_accum)/wear_rate_km` therefore cannot be computed; the implementation is a wear-fraction detector only, no rate, no RUL.
@@ -267,17 +292,21 @@ Worked (locked by tests): two rows 5 s apart, 20 → 15 m/s (a = −1 m/s²), br
 
 ### 5.1 Data collection (Processor)
 
-Rows with **both** `dynamic:TIRE_PRESSURE` and `dynamic:TIRE_TEMP` are collected as `(t, P_bar, T_kelvin)` triples — the temp is converted to Kelvin at collection time by adding 273.15 (`processor.py(run)`). No steady-driving filter exists: the spec's "sample only at steady driving (v > 10 m/s, > 5 min, small |dv/dt|)" is not implemented; every row that carries both fields is fed to the detector, including idle/idle-adjacent rows. The evaluator collects identically (`evaluate_detectors.py(run_detectors_for_vin)`).
+`detect_tires` runs **once per wheel, x4** (`processor.py(run)`), each from its own sensor columns. Rows carrying **both** `dynamic:TIRE_PRESSURE.{wheel}` and `dynamic:TIRE_TEMP.{wheel}` (wheel ∈ FL/FR/RL/RR) are collected as `(t, P_bar, T_kelvin)` triples per wheel — the temp is converted to Kelvin at collection time by adding 273.15 (`processor.py(run)`). Each wheel's samples feed `detect_tires(samples, recommended_bar=2.3, wheel=w)`, results are keyed `tires.{wheel}` and published on `pm.{VIN}.tires.{wheel}` (`processor.py(run)`). If the per-wheel columns are absent (older sim / mixed history), the processor falls back to the legacy single `dynamic:TIRE_PRESSURE` / `dynamic:TIRE_TEMP` channel on `pm.{VIN}.tires` (`processor.py(run)`).
+
+No steady-driving filter exists on either path: the spec's "sample only at steady driving (v > 10 m/s, > 5 min, small |dv/dt|)" is not implemented; every row that carries the fields is fed to the detector, including idle/idle-adjacent rows. The evaluator collects identically (`evaluate_detectors.py(run_detectors_for_vin)`).
+
+The simulator publishes the per-wheel columns via `buildChassisWheelTelemetry` (`main.go(buildChassisWheelTelemetry)`), riding the generic `telemetry-generic.{VIN}.{sensor}` path so the connector stores them as `dynamic:TIRE_PRESSURE.{wheel}` / `dynamic:TIRE_TEMP.{wheel}` without connector changes, and **staggered per wheel**: the failure is not simultaneous — FL fails first, with per-wheel offsets FL=0, FR=15, RL=30, RR=45 days (`main.go(buildChassisWheelTelemetry)`), so a viewer watches the corners fail in sequence rather than all at once.
 
 ### 5.2 Compensation
 
-`detectors.py(detect_tires)`:
+`detectors.py(detect_tires)`, applied independently within each wheel's series:
 
 ```
 comp = [(t, P·TIRE_REF_K / T) for each sample with T > 0],  TIRE_REF_K = 293.15
 ```
 
-Ideal-gas normalization to 20 °C (`detectors.py(top)`). The `tk > 0` guard drops Kelvin-invalid samples (a 0 K row is physically impossible but arithmetically catastrophic). Worked (test-locked): 2.3 bar at 30 °C (303.15 K) → `2.3·293.15/303.15 = 2.2241 bar` — the same number as the first-principles doc. The single-sample temp-compensation test (`tests/test_detectors.py(test_tires_temp_compensation)`) exercises this path.
+Ideal-gas normalization to 20 °C (`detectors.py(top)`). The `tk > 0` guard drops Kelvin-invalid samples (a 0 K row is physically impossible but arithmetically catastrophic). Worked (test-locked): 2.3 bar at 30 °C (303.15 K) → `2.3·293.15/303.15 = 2.2241 bar` — the same number as the first-principles doc. The single-sample temp-compensation test (`tests/test_detectors.py(test_tires_temp_compensation)`) exercises this path. When called per-wheel the evidence dict gains `"wheel": w` (`detectors.py(detect_tires)`).
 
 ### 5.3 OLS with x in months
 
@@ -290,27 +319,43 @@ ys = P_comp
 slope_bar_m = Σ(x−x̄)(y−ȳ) / Σ(x−x̄)²,  guard den == 0 → 0.0
 ```
 
-The 14-sample guard is the tire analog of the battery's 5-sample guard: with fewer than 14 compensated samples the detector returns healthy/100 with the explanation "Insufficient tire data." — a hard no-alert. The x-axis is months (`t/86400.0/30.0`), so the slope comes out directly in bar/month, and the denominator guard again collapses to slope 0.0 (safe — above the −0.15 rule).
+The 14-sample guard is the tire analog of the battery's 5-sample guard: with fewer than 14 compensated samples the detector returns healthy/100 with the explanation "Insufficient tire data." — a hard no-alert. The x-axis is months (`t/86400.0/30.0`), so the slope comes out directly in bar/month, and the denominator guard again collapses to slope 0.0 (safe — above the −0.15 rule). On the per-wheel path the guard applies **per wheel**: each wheel's series needs its own 14 samples before that corner reports anything.
 
-### 5.4 Floor, slope rule, scoring
+### 5.4 Continuous meter, floor/slope penalties, severity
 
-`detectors.py(detect_tires)`:
+`detectors.py(detect_tires)` starts from a **continuous, pressure-derived meter** (mirroring the battery's voltage meter):
+
+```
+score = round(clamp((last_p − 0.9) / (2.3 − 0.9) · 100, 0, 100))
+```
+
+A tire at the healthy baseline 2.3 bar reads 100; a flat tire at 0.9 bar reads 0. Because the meter tracks `last_p`, a tire collapsing 1.7 → 0.9 bar reads 60 → 0 — the flat-death arc stays visible instead of freezing at a floor. The OLD step floor (`min(score, 20)` for `last_p < 1.8 bar`) is **gone**: the floor rule now only appends a *reason* and no longer touches the score (`detectors.py(detect_tires)`).
+
+The one remaining penalty can only pull the meter down:
 
 | Rule | Penalty |
 |---|---|
-| `last_p < TIRE_FLOOR_BAR` (1.8 bar) | `score = min(score, 20)` |
 | `slope_bar_m < TIRE_SLOPE_BAR_M` (−0.15 bar/month) | `score = min(score, 55)` |
 
-`last_p` is the **last compensated pressure** (`comp[-1][1]`) — the floor rule is a current-value rule, not a trend rule. Severity: `"action" if score < 30 else _band(score)` — score 20 from the floor → action; score 55 from the slope alone → advisory; both → 20 → action. Evidence:
+`last_p` is the **last compensated pressure** (`comp[-1][1]`) — the floor rule is a current-value rule, not a trend rule. Severity is **decoupled to thresholds**, like the battery's:
+
+```
+if last_p < 1.2 bar:            critical
+elif last_p < TIRE_FLOOR_BAR (1.8 bar):  action
+elif slope_bar_m < TIRE_SLOPE_BAR_M:     advisory
+else:                           _band(score)
+```
+
+A truly flat tire (< 1.2 bar) escalates to critical regardless of score; the 1.8 bar floor is action; the slope rule alone is advisory. Evidence (per-wheel calls add `"wheel"`):
 
 ```
 {"p_comp_bar": "2.224", "slope_bar_month": "-0.0861",
- "threshold_slope": "-0.15", "floor_bar": "1.8"}
+ "threshold_slope": "-0.15", "floor_bar": "1.8", "wheel": "FL"}
 ```
 
 Explanation is the joined reasons or "No tire anomaly detected." — no template quirk here.
 
-Worked (test-locked): 2.30 → 1.75 bar linear over 30 days at 303.15 K (`tests/test_detectors.py(test_tires_slow_leak_slope_advisory)`). After compensation the series runs 2.224 → 1.693 bar, last = 1.71 < 1.8 → score 20 → action; the compensated slope is −0.532 bar/month (well below −0.15, but the floor already binds). The test asserts `action`.
+Worked (test-locked): 2.30 → 1.75 bar linear over 30 days at 303.15 K (`tests/test_detectors.py(test_tires_slow_leak_slope_advisory)`). After compensation the series runs 2.224 → 1.693 bar, last = 1.71 < 1.8 → meter `round((1.71 − 0.9)/1.4·100) = round(57.9) = 58`; severity **action** (1.71 < 1.8 floor); the compensated slope is −0.532 bar/month (well below −0.15, capping the meter at 55). The test asserts `action`.
 
 ---
 
@@ -361,7 +406,7 @@ TireTempAt: 28 + 8·sin(day·2π) °C ambient; below 1.9 bar add flex heat
             clamp((1.9 − P)·20, 0, 14) °C — +2 °C per 0.1 bar underinflation
 ```
 
-Healthy VINs return a flat 2.3 bar and ambient temp (they must publish nothing, so no leak, no heat). The self-acceleration is the physical story: the leak drops pressure, the drop flexes the sidewalls, the flexing heats the tire, and the heat — via the detector's ideal-gas compensation `P_comp = P·293.15/T` — makes the *compensated* pressure decline even faster than the raw leak. Phase 2 starts at the 1.9 bar threshold (below the detector's 1.8 bar floor is reached mid-phase-2, so the floor rule fires while the tire is already self-accelerating); phase 3 crosses into the 1.0–1.2 bar range where the tire is structurally dead, well below `TIRE_FLOOR_BAR`, so severity saturates at action and stays there.
+Healthy VINs return a flat 2.3 bar and ambient temp (they must publish nothing, so no leak, no heat). The self-acceleration is the physical story: the leak drops pressure, the drop flexes the sidewalls, the flexing heats the tire, and the heat — via the detector's ideal-gas compensation `P_comp = P·293.15/T` — makes the *compensated* pressure decline even faster than the raw leak. Phase 2 starts at the 1.9 bar threshold (below the detector's 1.8 bar floor is reached mid-phase-2, so the floor rule fires while the tire is already self-accelerating); phase 3 crosses into the 1.0–1.2 bar range where the tire is structurally dead, well below `TIRE_FLOOR_BAR` — the severity escalates past action to **critical** (`last_p < 1.2 bar`, §5.4) and the continuous pressure meter keeps falling toward 0.
 
 Worked (degrading, severityFactor 0.85): `leakRate = 0.00567 bar/day`; the 1.9 bar threshold is crossed at day 70.6; the 1.2 bar floor at day ~132; at day 160 (28 days into collapse) `f = 1 − e^−4 = 0.982`, `P = 1.2 − 0.196 = 1.004 bar`, flex heat `(1.9 − 1.004)·20 = 17.9 → clamped 14 °C` — a flat, hot tire. The critical preset (severityFactor 1.0, horizon 60) reaches the flat asymptote twice as fast.
 
@@ -532,15 +577,15 @@ The /pm **Reset demo** button fires both: the simulator `reset` command, then `c
 
 ### 8.2 M2 cranking detector is dormant
 
-`detect_battery`'s M2 branch is fully implemented (`detectors.py(detect_battery)`: `vmin < CRANK_VMIN` → 20, `R_int > 1.5×` baseline → 30, `r_int = (12.6 − vmin)/ic·1000`), and the cranking-only evidence path exists. But the **simulator never emits cranking events**: `driveCycleStep`'s idle phase never produces a starter event, `BatteryAt` computes `vMin` and `rInt` (`degradation.go(BatteryAt)`) but the publish loop discards them (`_ = vMin; _ = rInt`, `main.go(publishOnce)`), and the processor's `crank` list is always empty. Consequence: M2 can never fire end-to-end; the critical-severity path is only reachable through EWMA < 12.2 V (score 25 → critical). The M2 unit tests pass against direct calls (`tests/test_detectors.py(test_battery_cranking_critical)`) but nothing in the live pipeline exercises them.
+`detect_battery`'s M2 branch is fully implemented (`detectors.py(detect_battery)`: `vmin < CRANK_VMIN` → penalty 20, `R_int > 1.5×` baseline → penalty 30, `r_int = (12.6 − vmin)/ic·1000`), and the cranking-only evidence path exists. But the **simulator never emits cranking events**: `driveCycleStep`'s idle phase never produces a starter event, `BatteryAt` computes `vMin` and `rInt` (`degradation.go(BatteryAt)`) but the publish loop discards them (`_ = vMin; _ = rInt`, `main.go(publishOnce)`), and the processor's `crank` list is always empty. Consequence: M2 can never fire end-to-end; in live runs the critical-severity path is reached through the EWMA threshold instead — a battery resting below 11.8 V (`BATTERY_ACTION_V − 0.4`, §3.6) reads critical. The M2 unit tests pass against direct calls (`tests/test_detectors.py(test_battery_cranking_critical)`) but nothing in the live pipeline exercises them.
 
 ### 8.3 SOC drift (15 % weight) unimplemented
 
-The spec's composite health score weights were "60 % resting-voltage trend, 25 % cranking signature, 15 % SOC drift" (`2026-08-14-pm-algorithms-battery-first-principles.md` §3.3). The implementation has **no SOC term at all**: `detect_battery` computes EWMA + slope + cranking only; the processor deliberately does not even request `dynamic:battery.soc` (comment in `processor.py(run)`; locked by `test_processor_requests_only_existing_qualifiers`, which asserts `dynamic:battery.soc` is not in the request). The score is a min-of-caps composition, not a weighted sum — the 60/25/15 weights were never transcribed into code. The simulator does emit SoC (`main.go(publishOnce)`) but it is dead data for the PM pipeline.
+The spec's composite health score weights were "60 % resting-voltage trend, 25 % cranking signature, 15 % SOC drift" (`2026-08-14-pm-algorithms-battery-first-principles.md` §3.3). The implementation has **no SOC term at all**: `detect_battery` computes EWMA + slope + cranking only; the processor deliberately does not even request `dynamic:battery.soc` (comment in `processor.py(run)`; locked by `test_processor_requests_only_existing_qualifiers`, which asserts `dynamic:battery.soc` is not in the request). The score is a continuous voltage meter with penalty caps, not a weighted sum — the 60/25/15 weights were never transcribed into code. The simulator does emit SoC (`main.go(publishOnce)`) but it is dead data for the PM pipeline.
 
 ### 8.4 Tire steady-driving filter unimplemented
 
-The first-principles spec requires sampling only at steady driving (v > 10 m/s, > 5 min into trip, small |dv/dt|) to kill warm-up and transient noise. The processor collects every row that has both pressure and temp — no velocity gate, no trip-time gate, no rate-of-change gate. In practice the simulator's tire rows share rows with the brake/velocity fields, and the ±8 °C daily temp cycle (compensated out by the ideal-gas normalization) plus the ±0.1 bar chassis noise (`main.go(buildChassisReport)`: healthy chassis reports `2.2 ± 0.05` bar, `28 ± 0.25` °C) are the main noise sources the slope fit must survive. The 14-sample guard and the OLS averaging are the only mitigation.
+The first-principles spec requires sampling only at steady driving (v > 10 m/s, > 5 min into trip, small |dv/dt|) to kill warm-up and transient noise. The processor collects every row that has both pressure and temp — no velocity gate, no trip-time gate, no rate-of-change gate, and per-wheel on the x4 path. In practice the simulator's tire rows share rows with the brake/velocity fields, and the ±8 °C daily temp cycle (compensated out by the ideal-gas normalization) plus the ±0.1 bar chassis noise (`main.go(buildChassisReport)`: healthy chassis reports `2.2 ± 0.05` bar, `28 ± 0.25` °C) are the main noise sources the slope fit must survive. The 14-sample guard and the OLS averaging are the only mitigation.
 
 ### 8.5 Battery explanation-template quirk
 
@@ -550,7 +595,7 @@ Described in §3.9: when resting data exists, the explanation is always the fixe
 
 - **Publish cadence**: the spec says publish on severity change; the current processor publishes every poll, healthy included, with an explicit comment that this was changed for the live board (`processor.py(run)`). This is operational behavior, not algorithm — but it changes what the evaluator's alert filter (`severity != healthy`) is doing: it reconstructs the spec's cadence from the service's always-on stream.
 - **Brake `wear_rate_per_km`** is a placeholder 0 (see §4.3) — no RUL in the current build.
-- **`recommended_bar=2.3`** (`detectors.py(detect_tires)`) is accepted but never used by the detector body (the floor and slope rules don't reference it) — the spec's "linear 100→0 as P falls from recommended to floor" score was implemented as the two min-caps instead.
+- **`recommended_bar=2.3`** (`detectors.py(detect_tires)`) is accepted but never used by the detector body (the floor, slope, and continuous-meter rules don't reference it) — the spec's "linear 100→0 as P falls from recommended to floor" score is implemented as the continuous pressure meter (`(last_p − 0.9)/(2.3 − 0.9)`), which uses the same 2.3 bar healthy anchor as a constant rather than the parameter.
 - **`Processor._band_of`** (`processor.py(_band_of)`) exists but is not called by `run` — severity is computed inside the detectors (`_band`, `detectors.py(_band)`); the method is currently dead code.
 
 ---
