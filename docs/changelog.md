@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   console to verify 0% battery health and 0% SoC without confusing either with
   a 0 V sensor reading.
 
+### Fixed
+- **Dashboard live-frame consistency**: `/pm`, `/demo`, `/device`, and `/fleet`
+  now use the simulator's timestamped live frame for current values instead of
+  mixing independently timed simulator and Bigtable reads. PM chart headers and
+  KPI values use the same health and physical-value snapshot. Dashboard
+  telemetry also converts simulator/detector velocity from m/s to the shared
+  km/h display unit across chart, table, KPI, and fleet views, and aligns the
+  simulator's engine-power unit metadata with the dashboard's kW display.
+
 ### Removed
 
 ## [1.2.0] - 2026-06-23

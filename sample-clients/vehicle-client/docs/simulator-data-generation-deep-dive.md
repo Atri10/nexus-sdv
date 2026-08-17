@@ -66,7 +66,16 @@ Two independent consumers see the same underlying state each tick:
    dashboards. This is the "sensor" path — noisy, realistic-looking values.
 2. **Control status reply** (plain JSON, `stateLocked`) → dashboards
    directly. This is the "ground truth" path — the exact, noise-free value
-the model is walking, used to verify the detector is right.
+   the model is walking, used to verify the detector is right. The reply's
+   `observed_at` timestamp identifies the one simulator tick represented by
+   every value in `live` and `ground_truth`.
+
+The web client uses that status frame as the canonical current snapshot. The
+`/demo`, `/device`, and `/fleet` surfaces overlay it onto their historical
+Bigtable series/table values for the active simulator VIN. `/pm` samples the
+same frame directly. Historical points remain sensor-path data; only the
+current frame is aligned, so a chart does not appear to disagree with its
+current-value KPI merely because the chart-service poll arrived earlier.
 
 The status reply also includes `degradation`, a per-component map of the
 active `healthy`/`degrading`/`critical` presets, and `live.battery_soc`. At
@@ -101,10 +110,10 @@ goroutine, so it alone has a `sync.Mutex`.
 |---|---|---|
 | `batteryState` (`main.go`) | publish-loop closure | voltage/current/SoC/temp + `deg *DegradationConfig` + `ageDays` |
 | `driveState` (`main.go`) | publish-loop closure | velocity, engine, GPS, steering, accumulated brake energy |
-| `controlState` (`main.go`) | shared, mutex-guarded | start/stop state, per-component `DegradationConfig`s, speed multipliers, ground truth, dead flag, live KPI snapshot |
+| `controlState` (`main.go`) | shared, mutex-guarded | start/stop state, per-component `DegradationConfig`s, speed multipliers, ground truth, dead flag, timestamped live snapshot |
 
 `controlState` is the bridge: the publish loop **writes** `groundTruth`,
-`live`, `routeDist`, `batteryAgeDays`, `dead` into it every tick (`setLive`,
+`live`, `observedAt`, `routeDist`, `batteryAgeDays`, `dead` into it every tick (`setLiveAt`,
 `setGroundTruth`), and **reads** `degradation`, `speed`, `degradationAccel`,
 `components[*].enabled` from it every tick. NATS control callbacks only ever
 touch `controlState` — they never touch `battery`/`drive` directly (they set

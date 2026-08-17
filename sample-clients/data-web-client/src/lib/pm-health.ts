@@ -1,5 +1,10 @@
 import type { PmMessage } from '@/lib/pm-types';
 
+export interface SimulatorStatusSignals {
+  live?: Record<string, unknown>;
+  ground_truth?: Record<string, Record<string, unknown>>;
+}
+
 /**
  * Coherent PM health for one component.
  *
@@ -192,6 +197,41 @@ export interface LiveSignals {
   /** Per-wheel pressures (bar); the tires aggregate uses the worst wheel. */
   tirePressures?: Partial<Record<Wheel, number | null>>;
   brakeWearFrac: number | null;
+}
+
+/**
+ * Normalize the simulator status reply into the live signals consumed by all
+ * PM surfaces. Keeping this extraction here prevents /demo and /pm from
+ * applying different fallbacks to the same battery, tire, or brake frame.
+ */
+export function liveSignalsFromSimulator(
+  status: SimulatorStatusSignals | null | undefined,
+): LiveSignals {
+  const live = status?.live ?? {};
+  const groundTruth = status?.ground_truth ?? {};
+  const battery = groundTruth.battery ?? {};
+  const tires = groundTruth.tires ?? {};
+  const brakes = groundTruth.brakes ?? {};
+  const numeric = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const tirePressures: Partial<Record<Wheel, number | null>> = {};
+  for (const wheel of WHEELS) {
+    tirePressures[wheel] = numeric((tires[wheel] as Record<string, unknown> | undefined)?.pressure_bar);
+  }
+  const padWears = WHEELS.map((wheel) =>
+    numeric((brakes[wheel] as Record<string, unknown> | undefined)?.wear_fraction)
+  ).filter((value): value is number => value !== null);
+
+  return {
+    batteryVoltage: numeric(live.battery_voltage),
+    batteryWearFrac: numeric(battery.wear_fraction),
+    tirePressure: numeric(live.tire_pressure_bar) ?? numeric(tires.pressure_bar),
+    tirePressures,
+    brakeWearFrac: padWears.length > 0 ? Math.max(...padWears) : numeric((groundTruth.brake ?? {}).wear_fraction),
+  };
 }
 
 /**

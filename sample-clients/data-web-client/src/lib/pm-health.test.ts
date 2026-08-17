@@ -3,6 +3,7 @@ import {
   clearPmState,
   coherentHealth,
   deriveDeathCause,
+  liveSignalsFromSimulator,
   pmMessageFromSubject,
   worstWheel,
   type CoherentHealth,
@@ -139,6 +140,39 @@ describe('coherentHealth battery ground truth', () => {
     expect(h.severity).toBe('critical');
     expect(h.provisional).toBe(false);
     expect(h.reason).toContain('battery health is 0%');
+  });
+});
+
+describe('liveSignalsFromSimulator', () => {
+  it('normalizes one simulator frame for every PM component', () => {
+    const signals = liveSignalsFromSimulator({
+      live: { battery_voltage: 12.1, tire_pressure_bar: 2.3 },
+      ground_truth: {
+        battery: { wear_fraction: 0.4 },
+        tires: {
+          FL: { pressure_bar: 1.1 },
+          FR: { pressure_bar: 2.3 },
+          RL: { pressure_bar: 2.3 },
+          RR: { pressure_bar: 2.3 },
+        },
+        brakes: {
+          FL: { wear_fraction: 0.2 },
+          FR: { wear_fraction: 0.1 },
+        },
+      },
+    });
+    expect(signals.batteryVoltage).toBe(12.1);
+    expect(signals.batteryWearFrac).toBe(0.4);
+    expect(signals.tirePressures?.FL).toBe(1.1);
+    expect(signals.brakeWearFrac).toBe(0.2);
+  });
+
+  it('lets the same normalized frame produce the same battery health score', () => {
+    const signals = liveSignalsFromSimulator({
+      live: { battery_voltage: 12.1 },
+      ground_truth: { battery: { wear_fraction: 0.4 } },
+    });
+    expect(coherentHealth('battery', undefined, signals).score).toBe(60);
   });
 });
 

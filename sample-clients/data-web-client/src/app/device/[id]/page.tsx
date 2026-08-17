@@ -80,7 +80,13 @@ export default function DevicePage({ params }: { params: Promise<{ id: string }>
   const isSim = simVin === id;
 
   const theme = useChartTheme();
-  const { series, loading, error, refetch } = useTelemetryData({ vin: id, range, compareVins });
+  const { series, loading, error, refetch } = useTelemetryData({
+    vin: id,
+    range,
+    compareVins,
+    liveSnapshot: isSim ? sim.sim : null,
+    liveSnapshotAt: sim.lastUpdated,
+  });
 
   useEffect(() => {
     fetch('/api/maps-config')

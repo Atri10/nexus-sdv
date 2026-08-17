@@ -17,6 +17,7 @@ import {
   deriveDeathCause,
   worstWheel,
   friendlyAlert,
+  liveSignalsFromSimulator,
   WHEELS,
   type CoherentHealth,
   type DeathCause,
@@ -346,6 +347,15 @@ export default function PmPage() {
 
     const published = Number(currentSim.published);
     if (!Number.isFinite(published)) return;
+    const gt = currentSim.ground_truth ?? {};
+    const liveVals = (currentSim.live ?? {}) as Record<string, unknown>;
+    const voltage = Number(liveVals.battery_voltage ?? NaN);
+    const batterySignals = liveSignalsFromSimulator(currentSim);
+    const health = coherentHealth(
+      'battery',
+      latestPerComponentRef.current.get('battery'),
+      batterySignals,
+    ).score;
     // A death-stop writes one final status snapshot but does not increment
     // published because it intentionally sends no telemetry payload. Accept
     // that one terminal snapshot; later identical polls are ignored after the
@@ -354,30 +364,23 @@ export default function PmPage() {
       wasRunningRef.current = currentSim.running === true;
       return;
     }
-    if (lastPublishedRef.current === published && !currentSim.dead) {
+    const lastSample = previous[previous.length - 1];
+    const healthChanged = !lastSample?.gap && lastSample?.health !== health;
+    if (lastPublishedRef.current === published && !currentSim.dead && !healthChanged) {
       wasRunningRef.current = currentSim.running === true;
+      return;
+    }
+
+    if (lastPublishedRef.current === published && !currentSim.dead && healthChanged && lastSample) {
+      const updated = [...previous];
+      updated[updated.length - 1] = { ...lastSample, health };
+      lastSamples.current = updated;
+      setSamples(updated);
       return;
     }
 
     lastPublishedRef.current = published;
     wasRunningRef.current = currentSim.running === true;
-    const gt = currentSim.ground_truth ?? {};
-    const liveVals = (currentSim.live ?? {}) as Record<string, unknown>;
-    const voltage = Number(liveVals.battery_voltage ?? NaN);
-    const batteryGt = (gt.battery ?? {}) as Record<string, unknown>;
-    const batteryWear = Number(batteryGt.wear_fraction ?? NaN);
-    // Battery health is a 60s detector value once available. The chart marks
-    // this series as stepped so repeated values are understood as a held
-    // detector state, not a smooth stream of measurements.
-    // Terminal ground truth wins over the last detector message so a battery
-    // failure is charted as 0% health immediately, not as the detector's
-    // previous 60-second score.
-    const health = Number.isFinite(batteryWear)
-      ? Math.round(Math.max(0, Math.min(100, (1 - batteryWear) * 100)))
-      : latestPerComponentRef.current.get('battery')?.health_score ??
-        (Number.isFinite(voltage)
-          ? Math.round(Math.max(0, Math.min(100, ((voltage - 10.5) / (12.63 - 10.5)) * 100)))
-          : null);
     const brakeGt = gt.brake as Record<string, unknown> | undefined;
     const brakeWear = brakeGt?.wear_fraction !== undefined ? Number(brakeGt.wear_fraction) : null;
     const gtBrakes = (gt.brakes ?? {}) as Record<string, unknown>;
@@ -427,9 +430,7 @@ export default function PmPage() {
 
   useEffect(() => {
     recordSample();
-    const id = window.setInterval(recordSample, 2000);
-    return () => window.clearInterval(id);
-  }, [recordSample]);
+  }, [recordSample, sim, latestPerComponent]);
 
   // Trim the buffer to the rolling window (kept separate so the charts only
   // re-render when a sample actually ages out). The cutoff is derived from a
@@ -451,11 +452,10 @@ export default function PmPage() {
   const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
   const speedMs = Number(liveVals.velocity_m_s ?? NaN);
   const speedKmh = Number.isFinite(speedMs) ? speedMs * 3.6 : NaN;
-  const batteryV = Number(liveVals.battery_voltage ?? NaN);
+  const liveSignals = useMemo(() => liveSignalsFromSimulator(sim), [sim]);
+  const batteryV = liveSignals.batteryVoltage ?? NaN;
   const batterySoc = Number(liveVals.battery_soc ?? NaN);
-  const batteryGroundTruth = (sim?.ground_truth?.battery ?? {}) as Record<string, unknown>;
-  const batteryWearFrac = Number(batteryGroundTruth.wear_fraction ?? NaN);
-  const tireBar = Number(liveVals.tire_pressure_bar ?? NaN);
+  const tireBar = liveSignals.tirePressure ?? NaN;
   const batteryMsg = componentSummary.battery;
   const brakeMsg = componentSummary.brake;
   const tiresMsg = componentSummary.tires;
@@ -464,36 +464,11 @@ export default function PmPage() {
   const lap = lapInfo?.number ?? 0;
   const progress = lapInfo?.progress ?? 0;
   const speedMult = sim?.speed ?? 1;
-  const gtBrake = sim?.ground_truth?.brake as Record<string, unknown> | undefined;
-  const brakeWearFrac = gtBrake?.wear_fraction !== undefined ? Number(gtBrake.wear_fraction) : 0;
   // Per-pad brake wear: the sim reply carries brakes.{wheel}.wear_fraction.
   // The worst pad drives the provisional brake badge when present. The raw
   // brakes map is the memo dep (stable across renders).
-  const worstPadWearFrac = useMemo(() => {
-    const rawBrakes = sim?.ground_truth?.brakes ?? {};
-    const padWears = WHEELS.map((w) => {
-      const padGt = (rawBrakes as Record<string, unknown>)[w] as Record<string, unknown> | undefined;
-      const f = padGt && typeof padGt === 'object' ? padGt.wear_fraction : undefined;
-      return typeof f === 'number' && Number.isFinite(f) ? f : NaN;
-    }).filter((f) => Number.isFinite(f));
-    return padWears.length > 0 ? Math.max(...padWears) : brakeWearFrac;
-  }, [sim?.ground_truth?.brakes, brakeWearFrac]);
-  // Per-wheel ground truth: the sim reply carries tires.{wheel}.pressure_bar /
-  // .temp_c (per-wheel PM modeling). Missing wheels fall back to null so the
-  // provisional tires badge uses whichever wheels are present (worst wins).
-  // The raw tires map is the memo dep — deriving the parsed object inside
-  // the callback keeps the dependency stable across renders (a `?? {}`
-  // fallback in the dep list would change identity every render).
-  const tirePressures = useMemo<Partial<Record<Wheel, number | null>>>(() => {
-    const rawTires = sim?.ground_truth?.tires ?? {};
-    const out: Partial<Record<Wheel, number | null>> = {};
-    for (const w of WHEELS) {
-      const wheelGt = (rawTires as Record<string, unknown>)[w] as Record<string, unknown> | undefined;
-      const p = wheelGt && typeof wheelGt === 'object' ? wheelGt.pressure_bar : undefined;
-      out[w] = typeof p === 'number' && Number.isFinite(p) ? p : null;
-    }
-    return out;
-  }, [sim?.ground_truth?.tires]);
+  const worstPadWearFrac = liveSignals.brakeWearFrac ?? 0;
+  const tirePressures = liveSignals.tirePressures ?? {};
   // Worst per-wheel pressure (drives the KPI + provisional badge); falls back
   // to the legacy single-channel live value when no wheel data is present.
   const wheelBars = WHEELS.map((w) => tirePressures[w]).filter(
@@ -507,25 +482,11 @@ export default function PmPage() {
   // per-wheel pressure.
   const coherent = useMemo(
     () => ({
-      battery: coherentHealth('battery', batteryMsg, {
-        batteryVoltage: Number.isFinite(batteryV) ? batteryV : null,
-        batteryWearFrac: Number.isFinite(batteryWearFrac) ? batteryWearFrac : null,
-        tirePressure: null,
-        brakeWearFrac: null,
-      }),
-      brake: coherentHealth('brake', brakeMsg, {
-        batteryVoltage: null,
-        tirePressure: null,
-        brakeWearFrac: worstPadWearFrac,
-      }),
-      tires: coherentHealth('tires', tiresMsg, {
-        batteryVoltage: null,
-        tirePressure: Number.isFinite(tireBar) ? tireBar : null,
-        tirePressures,
-        brakeWearFrac: null,
-      }),
+      battery: coherentHealth('battery', batteryMsg, liveSignals),
+      brake: coherentHealth('brake', brakeMsg, liveSignals),
+      tires: coherentHealth('tires', tiresMsg, liveSignals),
     }),
-    [batteryMsg, brakeMsg, tiresMsg, batteryV, batteryWearFrac, tireBar, tirePressures, worstPadWearFrac]
+    [batteryMsg, brakeMsg, tiresMsg, liveSignals]
   );
   const deathCause = useMemo<DeathCause | null>(() => {
     if (!sim?.dead) return null;
@@ -809,6 +770,12 @@ export default function PmPage() {
               stopped={!live && windowedSamples.length >= 2}
               dead={Boolean(sim?.dead)}
               timeWindowMs={CHART_WINDOW_MS}
+              currentValues={{
+                health: coherent.battery.score,
+                voltage: Number.isFinite(batteryV) ? batteryV : null,
+                brake: worstPadWearFrac * 100,
+                tires: Number.isFinite(worstTireBar) ? worstTireBar : null,
+              }}
               wheelHealth={{
                 tires: componentSummary.tireWheels
                   .slice()
