@@ -122,7 +122,7 @@ func (d *DegradationConfig) TirePressureAt(wheel string, day float64) float64 {
 	// temperature compensation compounds this into an even steeper P_comp
 	// decline). Runs until the 1.2 bar structural floor.
 	over := day - floorDay
-	collapseDay := floorDay + (1.9 - 1.2) / (2 * leakRate)
+	collapseDay := floorDay + (1.9-1.2)/(2*leakRate)
 	if day <= collapseDay {
 		return 1.9 - 2*leakRate*over
 	}
@@ -156,8 +156,29 @@ func padWearBias(pad string) float64 {
 // energy dissipated across ALL pads so far. The pad's share of the budget is
 // the total energy times its bias; a pad is 100 % worn when its share reaches
 // the full 6 GJ budget. FL wears fastest (bias 1.4), RR slowest (0.55).
+func (d *DegradationConfig) brakeWearMultiplier() float64 {
+	// Healthy brakes still wear at the physical baseline. Degrading and
+	// critical presets model a pad/caliper fault that consumes the same life
+	// budget faster, so the PM demo can exercise brake findings without
+	// changing the vehicle's speed or inventing brake sensor values.
+	switch d.Preset {
+	case "degrading":
+		return 2.0
+	case "critical":
+		return 4.0
+	}
+	return 1.0
+}
+
+// BrakeWearFraction returns the overall brake-system wear before per-pad
+// biasing. It is the legacy ground-truth channel; BrakeWearAt adds the
+// per-corner spread on top of this same selected fault multiplier.
+func (d *DegradationConfig) BrakeWearFraction(totalEnergyJ float64) float64 {
+	return clamp(totalEnergyJ*d.brakeWearMultiplier()/brakeEnergyBudgetJ, 0, 1)
+}
+
 func (d *DegradationConfig) BrakeWearAt(pad string, totalEnergyJ float64) float64 {
-	share := totalEnergyJ * padWearBias(pad) / brakeEnergyBudgetJ
+	share := totalEnergyJ * padWearBias(pad) * d.brakeWearMultiplier() / brakeEnergyBudgetJ
 	return clamp(share, 0, 1)
 }
 

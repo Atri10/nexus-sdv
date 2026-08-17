@@ -21,7 +21,7 @@ of two personalities depending on flags/env:
 - **Local demo simulator** — activated when `-control-subject` is set (the
   docker-compose default). In this mode the binary also subscribes to a NATS
   control subject, runs an internal physics/degradation model, and answers
-  start/stop/status/reset/degrade requests from the `/demo` and `/pm` web
+  start/stop/status/reset/degradation requests from the `/demo` and `/pm` web
   dashboards.
 
 This document is about the simulator personality — specifically the code
@@ -34,7 +34,7 @@ path started by `VehicleClient.PublishTelemetryContinuously`.
 ```mermaid
 flowchart TD
     subgraph Control["Control plane (NATS commands.>)"]
-        WEB[/demo or /pm dashboard/] -->|start/stop/status/reset/degrade/speed| CTL[controlState.handle]
+        WEB[/demo or /pm dashboard/] -->|start/stop/status/reset/degradation/speed| CTL[controlState.handle]
     end
 
     subgraph Tick["Simulation tick (ticker, every intervalSeconds)"]
@@ -66,7 +66,13 @@ Two independent consumers see the same underlying state each tick:
    dashboards. This is the "sensor" path — noisy, realistic-looking values.
 2. **Control status reply** (plain JSON, `stateLocked`) → dashboards
    directly. This is the "ground truth" path — the exact, noise-free value
-   the model is walking, used to verify the detector is right.
+the model is walking, used to verify the detector is right.
+
+The status reply also includes `degradation`, a per-component map of the
+active `healthy`/`degrading`/`critical` presets, and `live.battery_soc`. At
+battery end-of-life, `ground_truth.battery.wear_fraction` is `1`,
+`ground_truth.battery.days_to_failure` is `0`, and `live.battery_soc` is `0`.
+The live voltage remains a voltage measurement; it is not the health score.
 
 **In plain terms:** think of the simulator as a single imaginary car whose
 "true" state (exact battery voltage, exact tire pressure, exact position)
@@ -109,7 +115,7 @@ view).
 **In plain terms:** there are two "actors" running concurrently inside the
 process — a background loop that ticks like a clock and actually drives the
 car forward in time, and a mailbox handler that wakes up whenever a
-start/stop/status/degrade message arrives on NATS. Letting the mailbox
+start/stop/status/degradation message arrives on NATS. Letting the mailbox
 handler directly rewrite "the car is at this exact speed right now" while
 the clock loop is mid-calculation would be a classic race condition (two
 threads scribbling on the same variable at once, corrupting it). So the
@@ -176,9 +182,10 @@ faking the footage (physically wrong at every frame).
 
 ## 5. Per-component models (`degradation.go`)
 
-Every degradable component (currently `battery`, `tires`; `brakes` piggyback
-on the drive cycle's energy accumulator rather than a `DegradationConfig`)
-is driven by a `DegradationConfig{Component, Preset, HorizonDays}`:
+Every degradable component (`battery`, `tires`, and `brake`) is driven by a
+`DegradationConfig{Component, Preset, HorizonDays}`. Battery and tires use
+simulated age; brakes apply the preset as a multiplier to the drive cycle's
+energy accumulator:
 
 - `Preset` ∈ `healthy | degrading | critical` → `severityFactor()` → `0.0 |
   0.85 | 1.0`. A healthy config always returns 0, so its curves collapse to
@@ -219,13 +226,17 @@ graph LR
   sulfation curve — fast early drop, then a plateau — rather than a
   straight line, so the first 20% of the horizon looks like "just started
   aging," matching real batteries.
-- **Death collapse**: once `day` passes `HorizonDays` *and* the preset is
-  degrading/critical (healthy batteries never die), an exponential term
-  (`1 - e^{-over/7}`) kicks in over roughly 3 simulated weeks, pulling
-  `V_rest` down to ~10.5 V, `V_min` down further (cranking can no longer
-  turn the starter), and `R_int` up to ~30 mΩ. This is the "dead battery,
-  won't start" arc the PM detector's critical rule keys off (`vMin <
-  CRANK_VMIN`).
+- **Terminal threshold**: when `day >= HorizonDays` and the preset is
+  degrading/critical (healthy batteries never die), `groundTruth()` records
+  `wear_fraction=1`, `days_to_failure=0`, and SoC `0%`. The status `live`
+  voltage is still a physical terminal reading (about `12.00 V` at the exact
+  threshold), not a charge percentage and not expected to become `0 V`.
+- **Death collapse**: if `BatteryAt` is evaluated beyond `HorizonDays`, an
+  exponential term (`1 - e^{-over/7}`) pulls `V_rest` toward ~10.5 V, drives
+  `V_min` down further, and raises `R_int` toward ~30 mΩ. The death-stop now
+  writes ground truth/live before stopping, so the final status is internally
+  consistent; the simulator normally stops at the threshold before producing
+  a later post-failure sample.
 - `groundTruth()` (see §7) derives `wear_fraction` and `days_to_failure`
   from this same curve — the ground truth is not a separate model, it's a
   read-out of `BatteryAt`.
@@ -309,11 +320,17 @@ vAvg := 0.5 * (vStart + vEnd)
 brakeEnergyJ += speed * 1500.0 * |Δv| * vAvg     // per tick, mass = 1500 kg
 ```
 
-Then, per pad:
+Then, per pad, with the selected brake fault multiplier:
 
 ```
-wear_fraction(pad) = clamp(totalEnergyJ * padWearBias(pad) / 6e9, 0, 1)
+wear_fraction(pad) = clamp(totalEnergyJ * padWearBias(pad) * faultMultiplier / 6e9, 0, 1)
 ```
+
+`faultMultiplier` is `1×` for `healthy`, `2×` for `degrading`, and `4×` for
+`critical`. The multiplier is deliberately applied only to pad wear; speed,
+brake-pedal percentage, brake energy, and tire pressure remain physical
+signals. Brake wear is an inspectable PM failure, not an automatic vehicle
+death condition.
 
 | Pad | Bias | Rationale |
 |---|---|---|
@@ -323,11 +340,12 @@ wear_fraction(pad) = clamp(totalEnergyJ * padWearBias(pad) / 6e9, 0, 1)
 | RR | 0.55 | Rear-right does the least |
 
 Biases sum to 4.0, so the *mean* pad wear equals the legacy single-channel
-`E / 6e9` fraction — this keeps old single-channel consumers correct while
-giving the per-wheel path (§9) a realistic asymmetric spread, FL crossing
-the detector's threshold first. `6e9` J is `brakeEnergyBudgetJ`, matched to
-the PM processor's own `BRAKE_ENERGY_BUDGET_J` so detector wear and ground
-truth stay numerically comparable.
+`E / 6e9` fraction before the fault multiplier — this keeps old
+single-channel consumers correct while giving the per-wheel path (§9) a
+realistic asymmetric spread, FL crossing the detector's threshold first.
+`6e9` J is `brakeEnergyBudgetJ`, matched to the PM processor's own
+`BRAKE_ENERGY_BUDGET_J` so detector wear and ground truth stay numerically
+comparable.
 
 **In plain terms:** brake pads don't wear out with the passage of time —
 they wear out from being *used*. Every time the simulated car brakes, its
@@ -473,7 +491,7 @@ of two different models drifting apart.
 `driveCycleStep`) declares the vehicle dead when **either**:
 
 - the battery's preset is degrading/critical *and* `batteryAgeDays ≥
-  HorizonDays` (i.e. `BatteryAt` has entered its death-collapse region), or
+  HorizonDays` (the terminal ground-truth threshold), or
 - any wheel's `TirePressureAt(wheel, day) ≤ 1.2` bar (Phase 3 structural
   collapse floor).
 
@@ -482,23 +500,28 @@ When this flips true for the first time, the tick loop:
 1. Sets `ctl.dead = true`.
 2. Records the cause using `controlState.deathCauseLocked()`: `battery`, or
    `tires` plus the first failing wheel (`FL`, `FR`, `RL`, or `RR`).
-3. Disables every component (`comp.enabled = false` for all), so no more
+3. Writes the final noise-free ground truth and live snapshot to the status
+   state before stopping, so the dashboard can verify the terminal values.
+4. Disables every component (`comp.enabled = false` for all), so no more
    telemetry publishes.
-4. Sets `ctl.running = false`.
-5. Logs and returns — no payloads are built or published that tick.
+5. Sets `ctl.running = false`, logs, and returns — no payloads are built or
+   published for the death tick.
 
 The status reply produced by `controlState.stateLocked()` retains
-`dead_component` and `dead_wheel` after the loop stops. This is important
-because the final status poll happens after telemetry has stopped: a
-dashboard can explain the incident without guessing from stale KPI values.
+`dead_component` and `dead_wheel` after the loop stops, plus the final battery
+ground truth (`wear_fraction=1`, `days_to_failure=0`, SoC `0%`) when battery
+caused the stop. This is important because the final status poll happens
+after telemetry has stopped: a dashboard can explain the incident and verify
+the terminal data without guessing from stale KPI values.
 The web console still has a ground-truth fallback for rolling deployments
 where an older simulator reports only `dead`.
 
 This exists because "a dead vehicle publishing new GPS laps and battery
 readings" is logically incoherent for a demo — once you're out of the
 story, the sim should visibly stop, not degrade gracefully forever. `reset`
-or adopting a different VIN (`start` with a new `vin`) both clear `dead`
-and re-seed a fresh healthy state (see §9).
+or adopting a different VIN (`start` with a new `vin`) both clear `dead` and
+re-seed a fresh age/energy baseline (see §9). The active presets remain in
+force until changed through the degradation action or `/pm` Test fault.
 
 **In plain terms:** a car with a completely dead battery can't crank the
 engine, and a car with a genuinely flat tire can't safely keep driving —
@@ -536,7 +559,7 @@ screen can refresh immediately, without a separate polling request.
 | `stop` | Disables component(s); `running=false` when no component remains enabled. | `controlState.handle`, `controlState.anyEnabledLocked` |
 | `status` | No mutation — just returns `stateLocked()`. | `controlState.handle` |
 | `reset` | Zeros `published`/`batteryAgeDays`/`routeDist`, clears `dead`, restores each degradation config's horizon to its VIN-preset default, and (via `resetFn`, run by the publish-loop goroutine) reinitializes `battery`/`drive` to their starting values. | `controlState.resetSimulation` |
-| `degrade` (`component`, `preset`) | Rewrites one component's `DegradationConfig.Preset` (and its horizon, per `defaultDegradationConfig`) for an instant state change — used by the demo to jump a VIN straight to "critical" without waiting out the curve. | `controlState.applyDegradation` |
+| `degradation` (`component`, `preset`) | Rewrites one component's `DegradationConfig.Preset` for an instant state change. Components are `battery`, `tires`, and `brake`; `all` or empty updates all three. | `controlState.applyDegradation` |
 | `speed` (`preset` carries the multiplier as a string) | Sets `controlState.speed` at runtime (equivalent to `DEMO_SPEED` but adjustable without restart). | `controlState.handle` |
 
 `adopt(vin)` and `resetSimulation` both funnel through the same
@@ -644,7 +667,7 @@ To add a new degradable component (checklist from
    `TelemetryMessage`/`SensorReading` on the generic path if per-instance
    granularity is needed.
 3. **Register** — add the component id to `degradableComponents` (if it
-   should respond to the `degrade` control action) and to
+   should respond to the `degradation` control action) and to
    `newControlState`'s `components` map (so the dashboard discovers its
    sensors from the status reply).
 4. **Ground truth** — add its live values to `stateLocked`/`groundTruth()`
@@ -664,7 +687,7 @@ To add a new degradable component (checklist from
 | Why do wheels fail at different times? | `degradation.go` · `wheelOffsetDays` |
 | How is brake wear computed? | `degradation.go` · `BrakeWearAt`, `padWearBias`; `main.go` · `driveCycleStep` (energy accumulation) |
 | How does the car move on the map? | `trip_route.go` (route data), `trip_logic.go` · `trip.positionAt` |
-| How does start/stop/reset/degrade work? | `main.go` · `controlState.handle`, `adopt`, `resetSimulation`, `applyDegradation` |
+| How does start/stop/reset/degradation work? | `main.go` · `controlState.handle`, `adopt`, `resetSimulation`, `applyDegradation` |
 | When does the vehicle "die"? | `main.go` · `controlState.isDeadLocked`, `PublishTelemetryContinuously`'s death-stop block |
 | What's the difference between sensor values and ground truth? | `main.go` · `VehicleClient.groundTruth` vs. `publishOnce`'s noise-adding assignments |
 | What gets published where? | `main.go` · `VehicleClient.buildPayloads` |

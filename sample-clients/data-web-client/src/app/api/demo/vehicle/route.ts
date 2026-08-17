@@ -19,12 +19,12 @@ export async function POST(request: Request) {
   const { action, vin, component, preset } = body ?? {};
   if (
     typeof action !== 'string' ||
-    !['start', 'stop', 'status', 'speed', 'reset'].includes(action) ||
+    !['start', 'stop', 'status', 'speed', 'reset', 'degradation'].includes(action) ||
     typeof vin !== 'string' ||
     !vin
   ) {
     return NextResponse.json(
-      { error: 'expected { action: start|stop|status|speed|reset, vin: string, component?: string, preset?: string }' },
+      { error: 'expected { action: start|stop|status|speed|reset|degradation, vin: string, component?: string, preset?: string }' },
       { status: 400 }
     );
   }

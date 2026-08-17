@@ -26,6 +26,14 @@ The simulator personality:
 - answers control requests (`start`/`stop`/`status`/`reset`) with a status
   reply carrying the live values + per-wheel ground truth.
 
+The `/pm` console exposes this model through **Test fault**. Choose one
+component (`Battery failure`, `Tire failure`, or `Brake wear`) and an intensity
+(`Progressive` or `Failure test`), then choose **Apply + reset**. The command
+resets simulated age and brake energy, marks the other modeled components
+healthy, and restarts the simulator only if it was already running. This makes
+component-by-component PM testing deterministic instead of inheriting the
+fleet's default mixed presets.
+
 ## 2. The simulation clock: DEMO_SPEED × DEGRADATION_ACCEL
 
 Two independent multipliers drive "how fast things happen" (`controlState`):
@@ -40,7 +48,8 @@ The two are **multiplied** in the tick loop: the sim advances
 advances `dt × speed`. Net effect for a showcase:
 
 - the vehicle drives laps at 20× (the map dot moves fast),
-- the battery/tires degrade at 1200× (health drops from 100 → 0 in ~2 min),
+- the battery/tires degrade at `DEMO_SPEED × DEGRADATION_ACCEL` (6000× in the
+  compose demo; health drops from 100 → 0 in ~2 min),
 - published sensors (voltage 12.6→11.0 V, pressure 2.3→0.9 bar) always read
   realistic magnitudes — only the *trend rate* is accelerated.
 
@@ -65,9 +74,15 @@ Returns `(V_rest, V_min, R_int_mohm)` at simulated day:
 - `V_rest` declines on a sqrt-ish sulfation curve: fast early drop, plateau,
   then a terminal collapse as the horizon approaches;
 - `R_int` rises roughly linearly with degradation;
-- beyond the horizon the battery enters a **death state** — `wear_fraction=1`,
-  `days_to_failure=0`, `V_rest` floored at ~10.5 V. This is the "dead battery"
-  the PM detector flags critical (score → 0 on the continuous voltage meter).
+- at the failure horizon the simulator records the battery as terminal —
+  `wear_fraction=1`, `days_to_failure=0`, and SoC `0%`. The live voltage is a
+  physical terminal reading (about `12.00 V` at the threshold), not a charge
+  percentage and not expected to become `0 V`; the PM console uses the
+  ground-truth wear label to show battery health `0%`.
+- if the curve is evaluated beyond the horizon, `V_rest` collapses toward
+  ~10.5 V and internal resistance spikes. The simulator stops at the horizon,
+  so the final status normally shows the threshold reading rather than a
+  later post-failure sample.
 
 `V_min`/`R_int` drive the **cranking signature** the detector reads
 (`vmin < CRANK_VMIN` → critical).
@@ -90,7 +105,11 @@ Healthy presets never leak (pressure stays 2.3 bar).
 
 ### 3.3 Brakes (`BrakeWearAt(pad, totalEnergyJ)`)
 
-Per-pad wear fraction (0..1) = `totalEnergyJ × padWearBias(pad) / 6e9`:
+Per-pad baseline wear fraction (0..1) =
+`totalEnergyJ × padWearBias(pad) / 6e9`. The selected brake preset applies an
+additional fault multiplier: healthy `1×`, degrading `2×`, critical `4×`.
+This changes pad life consumption while preserving realistic energy and pedal
+signals:
 
 | Pad | Bias |
 |---|---|
@@ -100,7 +119,10 @@ Per-pad wear fraction (0..1) = `totalEnergyJ × padWearBias(pad) / 6e9`:
 | RR | 0.55× |
 
 Front pads wear faster (sum = 4.0, so the mean pad = the legacy overall
-fraction). `totalEnergyJ` comes from the drive cycle's brake-energy accumulator.
+fraction before the fault multiplier). `totalEnergyJ` comes from the drive
+cycle's brake-energy accumulator. A brake fault raises PM brake wear but does
+not automatically stop the vehicle; the vehicle continues so engineers can
+inspect the brake alert and per-pad trend.
 
 ## 4. The drive cycle + trip route
 
@@ -141,12 +163,16 @@ The sim subscribes `commands.>` and honors:
 {"action": "stop"}
 {"action": "status"}
 {"action": "reset"}
-{"action": "degrade", "component": "battery", "preset": "critical"}
+{"action": "degradation", "component": "battery", "preset": "critical"}
 ```
 
 `start` with a `vin` **adopts** that VIN (rebinds identity + reseeds
-degradation + clears drive state); `reset` reseeds to a fresh healthy start;
-`degrade` rewrites a component's preset for instant state changes.
+degradation + clears drive state); `reset` reseeds age/energy to a fresh start
+while keeping the active presets;
+`degradation` rewrites a component's preset for instant state changes. Valid
+components are `battery`, `tires`, `brake`, `all`, or empty (all). Valid
+presets are `healthy`, `degrading`, and `critical`. The `status` reply also
+includes the active presets under `degradation`.
 
 ## 7. The two time dimensions (why the detector sees fast slopes)
 

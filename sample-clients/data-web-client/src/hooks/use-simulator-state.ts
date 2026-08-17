@@ -105,12 +105,12 @@ export function useSimulatorState() {
     return () => window.clearInterval(id);
   }, [refresh]);
 
-  /** Single write path for start/stop/speed/reset — targets the sim VIN.
+  /** Single write path for start/stop/speed/reset/degradation — targets the sim VIN.
    * Pass `targetVin` to override (runtime VIN switching: Start for a
    * different pool VIN adopts it in the simulator). */
   const command = useCallback(
     async (
-      action: 'start' | 'stop' | 'speed' | 'reset',
+      action: 'start' | 'stop' | 'speed' | 'reset' | 'degradation',
       preset?: string,
       component?: string,
       targetVin?: string

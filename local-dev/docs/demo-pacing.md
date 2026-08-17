@@ -100,7 +100,7 @@ only `controlState.speed`; `degradationAccel` stays at its env value.
 |---|---|---|
 | Trip progress / route dot | Yes | `tripDist += velocity × dt × speed` (`driveCycleStep`) |
 | Brake-energy accumulator | Yes | `brakeEnergyJ += speed × m·\|Δv\|·v_avg` per braking tick |
-| Degradation accrual (age) | Yes (× 2) | `ageDays += dt_days × speed × degradationAccel` |
+| Degradation accrual (age) | Yes (× `speed × degradationAccel`) | `ageDays += dt_days × speed × degradationAccel` |
 | **Published sensor values** | **No** | `BatteryAt(ageDays)`, `TirePressureAt`, velocity, SOC etc. all emit **normal-scale** magnitudes |
 
 The published values staying normal scale is the whole point: `DEMO_SPEED`
@@ -117,7 +117,9 @@ for the full argument.
 One subtlety: `DEGRADATION_ACCEL` affects only the **aging** line
 (`ageDays`). The drive cycle advances at `speed` alone, which is why the route
 dot laps at 5× while the battery dies at 6000× — the vehicle drives a handful
-of laps over its entire compressed lifetime.
+of laps over its entire compressed lifetime. The `/pm` brake fault scenario is
+separate: it applies a 2× or 4× pad-wear multiplier to accumulated brake energy
+and does not change the route or stop the vehicle.
 
 ## 4. The PM pipeline under fast mode
 
@@ -183,10 +185,10 @@ wraps them via `/api/demo/vehicle`):
 |---|---|---|
 | `start` | `{"action":"start","vin":"VIN1002","component":"all","preset":""}` | Enables components; a `vin` differing from the active VIN **adopts** it first (rebinds identity, reseeds degradation curves, clears drive/battery state). `component` omitted = all components. |
 | `stop` | `{"action":"stop","vin":"VIN1002"}` | Disables components (pauses the ticker; NATS connection stays alive). |
-| `status` | `{"action":"status","vin":"VIN1002"}` | Returns `{vin, running, published, messageType, components, ground_truth, speed, degradation_accel, route, live}` — the dashboard's discovery + live-values source. |
+| `status` | `{"action":"status","vin":"VIN1002"}` | Returns `{vin, running, published, messageType, components, degradation, ground_truth, speed, degradation_accel, route, live}` — the dashboard's discovery + live-values source. `degradation` reports the active battery/tires/brake presets. |
 | `reset` | `{"action":"reset","vin":"VIN1002"}` | Restores the demo starting state (battery age 0, fresh drive cycle, zeroed brake accumulator); keeps the current speed multiplier. |
 | `speed` | `{"action":"speed","vin":"VIN1002","preset":"5"}` | Rewrites the demo-speed multiplier at runtime (multiplier in the `preset` field, parsed as float ≥ 1). |
-| `degradation` | `{"action":"degradation","component":"battery","preset":"critical"}` | Rewrites a component's degradation trajectory (`battery` / `tires` / `all`; preset `healthy` / `degrading` / `critical`). Not surfaced in the web UI; used by scripts and testing. |
+| `degradation` | `{"action":"degradation","component":"battery","preset":"critical"}` | Rewrites one component's preset (`battery` / `tires` / `brake`; `all` updates all three; preset `healthy` / `degrading` / `critical`). `/pm` exposes this through Test fault → Apply + reset. |
 
 Replies go to the request's reply subject; every action other than
 `status`/`reset` returns the same status payload, so the UI updates from the

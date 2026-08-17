@@ -1,7 +1,7 @@
 import { getNatsScoringConnection } from '@/lib/nats';
 import { StringCodec } from 'nats';
 
-export type DemoAction = 'start' | 'stop' | 'status' | 'speed' | 'reset';
+export type DemoAction = 'start' | 'stop' | 'status' | 'speed' | 'reset' | 'degradation';
 
 /** One publishable signal of a component (unit empty when plain). */
 export interface SignalInfo {
@@ -27,6 +27,12 @@ export interface RouteStatus {
   progress?: number;
 }
 
+export interface DegradationStatus {
+  component: string;
+  preset: 'healthy' | 'degrading' | 'critical' | string;
+  horizon_days: number;
+}
+
 export interface DemoControlReply {
   vin: string;
   running: boolean;
@@ -39,6 +45,8 @@ export interface DemoControlReply {
   published: number;
   messageType: string;
   components?: ComponentStatus[];
+  /** Active simulator degradation preset per supported component. */
+  degradation?: Record<string, DegradationStatus>;
   /** Demo-speed multiplier (1 = real-time, 5 = fast, 20 = showcase). */
   speed?: number;
   /** Route/lap state (present when the simulator walks the trip loop). */
