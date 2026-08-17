@@ -16,6 +16,8 @@ import type { PmMessage } from '@/lib/pm-types';
 /** One sample of the live values driving the PM charts. */
 export interface PmSample {
   t: number; // epoch ms
+  /** Explicit missing-data marker used to break lines across simulator stops. */
+  gap?: boolean;
   health?: number | null;
   voltage?: number | null;
   brakeWear?: number | null;
@@ -60,22 +62,37 @@ const HEALTH_BAND_LABEL: Record<CoherentHealth['severity'], string> = {
   critical: 'CRITICAL',
 };
 
+function autoYRange(series: ChartSeries[], unit: string): { min: number; max: number } | undefined {
+  const values = series.flatMap((entry) => entry.points.map((point) => point.y)).filter(
+    (value): value is number => value !== null && Number.isFinite(value)
+  );
+  if (values.length === 0) return undefined;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min;
+  const minimumPadding = unit === '%' ? 5 : unit === 'V' ? 0.05 : unit === 'bar' ? 0.05 : 1;
+  const padding = Math.max(span * 0.15, minimumPadding);
+  return { min: min - padding, max: max + padding };
+}
+
 interface PmChartCardProps {
   title: string;
   unit: string;
   /** One series per wheel/pad (4 lines) or a single aggregate series. */
   series: ChartSeries[];
   health: CoherentHealth;
-  /** Window span (ms) for readable time ticks. */
-  windowMs: number;
+  /** Fixed visible x-axis window (ms), stable from startup through death. */
+  timeWindowMs: number;
   /** True when the simulator is not streaming (idle). */
   idle: boolean;
-  yRange: { min?: number; max?: number };
+  yRange?: { min?: number; max?: number };
   color: string;
   /** Per-wheel/pad rows for the expand dialog (worst-first). */
   wheelEntries?: WheelHealthEntry[];
   /** Worst-wheel label shown in the card summary (e.g. 'FL flat'). */
   worstWheelLabel?: string;
+  stopped?: boolean;
+  dead?: boolean;
 }
 
 /**
@@ -85,7 +102,7 @@ interface PmChartCardProps {
  * renders a "start to see live data" placeholder instead of a flat line —
  * a stopped sim must never auto-draw a flatline that reads as real data.
  */
-function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, color, wheelEntries, worstWheelLabel }: PmChartCardProps) {
+function PmChartCard({ title, unit, series, health, timeWindowMs, idle, yRange, color, wheelEntries, worstWheelLabel, stopped = false, dead = false }: PmChartCardProps) {
   const theme = useChartTheme();
   const [expanded, setExpanded] = useState(false);
 
@@ -93,8 +110,9 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
   // current-value + trend; the per-wheel series are drawn beneath it.
   const primary = series[series.length - 1];
   const pts = primary?.points ?? [];
-  const last = pts.length ? pts[pts.length - 1].y : null;
-  const prev = pts.length > 1 ? pts[pts.length - 2].y : null;
+  const numericPoints = pts.filter((point) => point.y !== null);
+  const last = numericPoints.length ? numericPoints[numericPoints.length - 1].y : null;
+  const prev = numericPoints.length > 1 ? numericPoints[numericPoints.length - 2].y : null;
   const trend =
     last === null || prev === null || last === prev
       ? null
@@ -105,7 +123,7 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
   const bandLabel = HEALTH_BAND_LABEL[health.severity];
 
   // Idle = no live samples. Don't draw a flat line — show the placeholder.
-  const showChart = !idle && pts.length >= 2;
+  const showChart = !idle && numericPoints.length >= 2;
 
   return (
     <>
@@ -149,6 +167,11 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
           </div>
         </CardHeader>
         <CardContent className="pt-1">
+          {stopped && (
+            <div className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-amber-600">
+              {dead ? 'Vehicle stopped — final recorded history' : 'Simulator stopped — final recorded history'}
+            </div>
+          )}
           {showChart ? (
             <>
               <div className="h-36">
@@ -165,7 +188,8 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
                   animated={false}
                   height="100%"
                   yRange={yRange}
-                  timeWindowMs={windowMs}
+                  timeWindowMs={timeWindowMs}
+                  spanGaps={false}
                 />
               </div>
               {series.length > 1 && (
@@ -239,7 +263,8 @@ function PmChartCard({ title, unit, series, health, windowMs, idle, yRange, colo
                 units={Object.fromEntries(series.map((s) => [s.key, unit]))}
                 height="100%"
                 yRange={yRange}
-                timeWindowMs={windowMs}
+                timeWindowMs={timeWindowMs}
+                spanGaps={false}
               />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-1.5 rounded border border-dashed border-border/50 text-center">
@@ -296,10 +321,16 @@ export interface WheelHealthEntry {
 
 export interface PmChartsProps {
   samples: PmSample[];
+  /** Fixed x-axis window used by every card. */
+  timeWindowMs: number;
   /** Per-component coherent health (merged PM + live). */
   health: Record<string, CoherentHealth>;
   /** True when the simulator is stopped / not streaming. */
   idle: boolean;
+  /** A stopped simulator with retained samples should keep rendering them. */
+  stopped?: boolean;
+  /** Distinguishes end-of-life from an ordinary manual stop. */
+  dead?: boolean;
   /**
    * Per-wheel/pad PM entries (worst-first), keyed by component. The expand
    * dialog lists these rows; the tires/brake card summary shows the worst
@@ -315,7 +346,7 @@ export interface PmChartsProps {
  * placeholders instead of flatlines. Y-ranges are death-state aware so the
  * degradation climax stays on-plot.
  */
-export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) {
+export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false, dead = false, wheelHealth }: PmChartsProps) {
   const series = useMemo<Record<string, ChartSeries[]>>(() => {
     const make = (
       key: string,
@@ -328,7 +359,8 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
       key,
       label,
       color,
-      points: samples.map((s) => ({ x: s.t, y: pick(s) ?? null })).filter((p) => p.y !== null),
+      stepped: key === 'health',
+      points: samples.map((s) => ({ x: s.t, y: pick(s) ?? null })),
     });
     // Per-wheel/pad series: one line per corner so asymmetric degradation is
     // visible in the chart itself (FL dying while FR holds 2.3 bar). The
@@ -370,12 +402,6 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
     };
   }, [samples]);
 
-  // Window span for readable time ticks (HH:mm:ss for short windows).
-  const windowMs = useMemo(() => {
-    if (samples.length < 2) return 0;
-    return samples[samples.length - 1].t - samples[0].t;
-  }, [samples]);
-
   const b = health['battery'] ?? { score: 100, severity: 'healthy', provisional: true, reason: '' };
   const br = health['brake'] ?? { score: 100, severity: 'healthy', provisional: true, reason: '' };
   const t = health['tires'] ?? { score: 100, severity: 'healthy', provisional: true, reason: '' };
@@ -387,9 +413,11 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
         unit="%"
         series={series.health}
         health={b}
-        windowMs={windowMs}
+        timeWindowMs={timeWindowMs}
         idle={idle}
-        yRange={{ min: 0, max: 100 }}
+        stopped={stopped}
+        dead={dead}
+        yRange={autoYRange(series.health, '%')}
         color={COLORS.health}
       />
       <PmChartCard
@@ -397,9 +425,11 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
         unit="V"
         series={series.voltage}
         health={b}
-        windowMs={windowMs}
+        timeWindowMs={timeWindowMs}
         idle={idle}
-        yRange={{ min: 10.4, max: 12.8 }}
+        stopped={stopped}
+        dead={dead}
+        yRange={autoYRange(series.voltage, 'V')}
         color={COLORS.voltage}
       />
       <PmChartCard
@@ -407,9 +437,11 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
         unit="%"
         series={series.brake}
         health={br}
-        windowMs={windowMs}
+        timeWindowMs={timeWindowMs}
         idle={idle}
-        yRange={{ min: 0, max: 100 }}
+        stopped={stopped}
+        dead={dead}
+        yRange={autoYRange(series.brake, '%')}
         color={COLORS.brake}
         wheelEntries={wheelHealth?.brake}
         worstWheelLabel={
@@ -423,9 +455,11 @@ export function PmCharts({ samples, health, idle, wheelHealth }: PmChartsProps) 
         unit="bar"
         series={series.tires}
         health={t}
-        windowMs={windowMs}
+        timeWindowMs={timeWindowMs}
         idle={idle}
-        yRange={{ min: 0.9, max: 2.5 }}
+        stopped={stopped}
+        dead={dead}
+        yRange={autoYRange(series.tires, 'bar')}
         color={COLORS.tires}
         wheelEntries={wheelHealth?.tires}
         worstWheelLabel={

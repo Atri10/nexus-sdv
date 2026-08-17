@@ -14,10 +14,12 @@ import { severityColor, type PmMessage } from '@/lib/pm-types';
 import {
   coherentHealth,
   clearPmState,
+  deriveDeathCause,
   worstWheel,
   friendlyAlert,
   WHEELS,
   type CoherentHealth,
+  type DeathCause,
   type Wheel,
 } from '@/lib/pm-health';
 import type { PmSample } from '@/components/pm/pm-charts';
@@ -74,6 +76,12 @@ export default function PmPage() {
   const simState = useSimulatorState();
   const simVin = simState.vin;
   const sim = simState.sim;
+  const simRef = useRef(sim);
+  const simVinRef = useRef(simVin);
+  const latestPerComponentRef = useRef<Map<string, PmMessage>>(new Map());
+  const selectedVinRef = useRef(selectedVin);
+  const lastPublishedRef = useRef<number | null>(null);
+  const wasRunningRef = useRef(false);
 
   // Follow the discovered sim for the default selection (user pick wins).
   useEffect(() => {
@@ -92,6 +100,8 @@ export default function PmPage() {
     if (simVin === null) return;
     if (prevSimVin.current !== null && prevSimVin.current !== simVin) {
       lastSamples.current = [];
+      lastPublishedRef.current = null;
+      wasRunningRef.current = false;
       clearPmState({ setMessages: clearAlerts, setSamples });
       // The selection follows the new sim only if the user never picked a
       // vehicle explicitly; otherwise keep viewing what the user chose.
@@ -117,6 +127,13 @@ export default function PmPage() {
     }
     return map;
   }, [selectedMessages]);
+
+  useEffect(() => {
+    simRef.current = sim;
+    simVinRef.current = simVin;
+    selectedVinRef.current = selectedVin;
+    latestPerComponentRef.current = latestPerComponent;
+  }, [sim, simVin, selectedVin, latestPerComponent]);
 
   // Summary messages per component: the WORST wheel/pad instance drives the
   // badge (min health_score) so a single flat tire is never masked by four
@@ -199,7 +216,7 @@ export default function PmPage() {
         setBusy(false);
       }
     },
-    [simVin, selectedVin, simState]
+    [sim, simVin, selectedVin, simState]
   );
 
   // ---- Demo speed + reset ---------------------------------------------------
@@ -235,6 +252,8 @@ export default function PmPage() {
         return;
       }
       lastSamples.current = [];
+      lastPublishedRef.current = null;
+      wasRunningRef.current = false;
       setSamples([]);
       // The reset restores the vehicle to healthy — wipe the accumulated
       // alert list too so the PM events section doesn't show a dead
@@ -250,34 +269,60 @@ export default function PmPage() {
   }, [simVin, simState, clearAlerts]);
 
   // ---- Live sample buffer (charts) ----------------------------------------
-  // Append a sample every poll from the freshest available source. When the
-  // selected VIN is NOT the running sim (or the sim is down), skip appending
-  // entirely — null samples would pollute the charts (BUG-8).
+  // Append one sample per simulator publish counter, rather than one sample
+  // per browser poll. The status endpoint polls every 3s while the simulator
+  // ticks every 2s, so the counter prevents duplicate snapshots and makes the
+  // chart's point count reflect actual simulator updates.
   const recordSample = useCallback(() => {
-    // Skip when the selection isn't the sim OR the sim isn't running:
-    // a stopped sim's frozen last values would flatline the charts and
-    // age real history out of the window (BUG-P3-1).
-    if (simVin && selectedVin && simVin !== selectedVin) return;
-    if (!sim?.running) return;
+    const currentSim = simRef.current;
+    const currentSimVin = simVinRef.current;
+    const currentSelectedVin = selectedVinRef.current;
+    if (currentSimVin && currentSelectedVin && currentSimVin !== currentSelectedVin) return;
+
     const t = Date.now();
-    const gt = sim?.ground_truth ?? {};
-    const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
-    const prev = lastSamples.current;
-    if (prev.length && t - prev[prev.length - 1].t < 500) return;
+    const canShowSnapshot = currentSim?.running === true || currentSim?.dead === true;
+    const previous = lastSamples.current;
+    if (!canShowSnapshot) {
+      if (wasRunningRef.current && previous.length > 0 && !previous[previous.length - 1].gap) {
+        lastSamples.current = [
+          ...previous,
+          { t, gap: true, health: null, voltage: null, brakeWear: null, tirePressure: null },
+        ].slice(-MAX_SAMPLES);
+        setSamples(lastSamples.current);
+      }
+      wasRunningRef.current = false;
+      return;
+    }
+
+    const published = Number(currentSim.published);
+    if (!Number.isFinite(published)) return;
+    if (lastPublishedRef.current === published) {
+      if (currentSim.dead && previous.length > 0 && !previous[previous.length - 1].gap) {
+        lastSamples.current = [
+          ...previous,
+          { t, gap: true, health: null, voltage: null, brakeWear: null, tirePressure: null },
+        ].slice(-MAX_SAMPLES);
+        setSamples(lastSamples.current);
+      }
+      wasRunningRef.current = currentSim.running === true;
+      return;
+    }
+
+    lastPublishedRef.current = published;
+    wasRunningRef.current = currentSim.running === true;
+    const gt = currentSim.ground_truth ?? {};
+    const liveVals = (currentSim.live ?? {}) as Record<string, unknown>;
     const voltage = Number(liveVals.battery_voltage ?? NaN);
-    // Battery health series: authoritative PM score when available, otherwise
-    // the live-derived provisional score — so the health chart never sits
-    // empty while voltage shows the death arc.
+    // Battery health is a 60s detector value once available. The chart marks
+    // this series as stepped so repeated values are understood as a held
+    // detector state, not a smooth stream of measurements.
     const health =
-      latestPerComponent.get('battery')?.health_score ??
+      latestPerComponentRef.current.get('battery')?.health_score ??
       (Number.isFinite(voltage)
         ? Math.round(Math.max(0, Math.min(100, ((voltage - 10.5) / (12.63 - 10.5)) * 100)))
         : null);
-    const brakeWear =
-      (gt.brake as Record<string, unknown> | undefined)?.wear_fraction !== undefined
-        ? Number((gt.brake as Record<string, unknown>).wear_fraction)
-        : null;
-    // Per-pad ground truth (worst pad) drives the brake line when available.
+    const brakeGt = gt.brake as Record<string, unknown> | undefined;
+    const brakeWear = brakeGt?.wear_fraction !== undefined ? Number(brakeGt.wear_fraction) : null;
     const gtBrakes = (gt.brakes ?? {}) as Record<string, unknown>;
     const padWears = WHEELS.map((w) => {
       const padGt = gtBrakes[w] as Record<string, unknown> | undefined;
@@ -285,29 +330,20 @@ export default function PmPage() {
       return typeof f === 'number' && Number.isFinite(f) ? f : NaN;
     }).filter((f) => Number.isFinite(f));
     const brakeWearSample = padWears.length > 0 ? Math.max(...padWears) : brakeWear;
-    // Per-wheel ground truth (worst wheel) drives the tires line when
-    // available; fall back to the legacy single-channel live value.
     const gtTires = (gt.tires ?? {}) as Record<string, unknown>;
     const wheelPressures = WHEELS.map((w) => {
       const wheelGt = gtTires[w] as Record<string, unknown> | undefined;
       const p = wheelGt && typeof wheelGt === 'object' ? wheelGt.pressure_bar : undefined;
       return typeof p === 'number' && Number.isFinite(p) ? p : NaN;
     }).filter((p) => Number.isFinite(p));
-    const tirePressure =
-      wheelPressures.length > 0
-        ? Math.min(...wheelPressures)
-        : Number(liveVals.tire_pressure_bar ?? NaN);
-    // Per-wheel pressures + per-pad wears from ground truth — one line each
-    // on the chart so asymmetric degradation is visible (FL flat, FR fine).
-    const gtTiresWheels = (gt.tires ?? {}) as Record<string, unknown>;
-    const gtBrakesWheels = (gt.brakes ?? {}) as Record<string, unknown>;
+    const tirePressure = wheelPressures.length > 0 ? Math.min(...wheelPressures) : Number(liveVals.tire_pressure_bar ?? NaN);
     const tirePressures: Partial<Record<Wheel, number | null>> = {};
     const brakeWears: Partial<Record<Wheel, number | null>> = {};
     for (const w of WHEELS) {
-      const tw = gtTiresWheels[w] as Record<string, unknown> | undefined;
+      const tw = gtTires[w] as Record<string, unknown> | undefined;
       const p = tw && typeof tw === 'object' ? tw.pressure_bar : undefined;
       tirePressures[w] = typeof p === 'number' && Number.isFinite(p) ? p : null;
-      const bw = gtBrakesWheels[w] as Record<string, unknown> | undefined;
+      const bw = gtBrakes[w] as Record<string, unknown> | undefined;
       const f = bw && typeof bw === 'object' ? bw.wear_fraction : undefined;
       brakeWears[w] = typeof f === 'number' && Number.isFinite(f) ? f : null;
     }
@@ -320,9 +356,17 @@ export default function PmPage() {
       tirePressures,
       brakeWears,
     };
-    lastSamples.current = [...prev, next].slice(-MAX_SAMPLES);
+    lastSamples.current = [...previous, next].slice(-MAX_SAMPLES);
     setSamples(lastSamples.current);
-  }, [sim, latestPerComponent, simVin, selectedVin]);
+    if (currentSim.dead) {
+      lastSamples.current = [
+        ...lastSamples.current,
+        { t: t + 1, gap: true, health: null, voltage: null, brakeWear: null, tirePressure: null },
+      ].slice(-MAX_SAMPLES);
+      setSamples(lastSamples.current);
+      wasRunningRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     recordSample();
@@ -347,7 +391,6 @@ export default function PmPage() {
   }, [samples, wallClock]);
 
   // ---- Derived display values ----------------------------------------------
-  const vehicle = vehicles.find((v) => v.deviceId === selectedVin);
   const liveVals = (sim?.live ?? {}) as Record<string, unknown>;
   const speedMs = Number(liveVals.velocity_m_s ?? NaN);
   const speedKmh = Number.isFinite(speedMs) ? speedMs * 3.6 : NaN;
@@ -423,11 +466,36 @@ export default function PmPage() {
     }),
     [batteryMsg, brakeMsg, tiresMsg, batteryV, tireBar, tirePressures, worstPadWearFrac]
   );
+  const deathCause = useMemo<DeathCause | null>(() => {
+    if (!sim?.dead) return null;
+
+    if (sim.dead_component === 'battery') return { component: 'battery' };
+    if (sim.dead_component === 'tires') {
+      const wheel = WHEELS.find((candidate) => candidate === sim.dead_wheel);
+      if (wheel) {
+        const values = (sim.ground_truth?.tires?.[wheel] ?? {}) as Record<string, unknown>;
+        const pressure = Number(values.pressure_bar);
+        return {
+          component: 'tires',
+          wheel,
+          pressureBar: Number.isFinite(pressure) ? pressure : undefined,
+        };
+      }
+    }
+    return deriveDeathCause(sim.ground_truth);
+  }, [sim]);
   // P3-2: 'live' must be false when the sim is stopped OR the selection isn't
   // the sim — the KPI row shows sim.live values, so it must not present them
   // as live when they're frozen or belong to a different vehicle. (The old
   // `Number(x) !== undefined` was always true — NaN !== undefined.)
   const live = sim?.running === true && simVin === selectedVin && Number.isFinite(Number(liveVals.velocity_m_s));
+  const frozen = !live;
+  const deathMessage =
+    deathCause?.component === 'tires' && deathCause.wheel
+      ? `Vehicle stopped — ${wheelLabel(deathCause.wheel)} tire pressure collapsed to ${deathCause.pressureBar?.toFixed(2) ?? 'critical'} bar.`
+      : deathCause?.component === 'battery'
+        ? 'Vehicle stopped — the 12V battery reached end of life.'
+        : 'Vehicle reached end-of-life — simulation stopped';
 
   return (
     <AppLayout>
@@ -448,6 +516,8 @@ export default function PmPage() {
                   userPicked.current = true;
                   setSelectedVin(e.target.value);
                   lastSamples.current = [];
+                  lastPublishedRef.current = null;
+                  wasRunningRef.current = false;
                   setSamples([]);
                 }}
                 aria-label="Select vehicle"
@@ -494,7 +564,7 @@ export default function PmPage() {
             {sim?.dead && (
               <div className="flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm">
                 <AlertTriangle className="h-4 w-4 text-red-500" />
-                <span className="font-medium text-red-500">Vehicle reached end-of-life — simulation stopped</span>
+                <span className="font-medium text-red-500">{deathMessage}</span>
                 <span className="text-xs text-muted-foreground">Reset + Start to restore it</span>
               </div>
             )}
@@ -563,33 +633,39 @@ export default function PmPage() {
           {/* Live KPIs — values come from the running simulator. When viewing
               a different vehicle, the caption says so. */}
           <div className="text-sm font-mono text-muted-foreground">
-            {simVin && selectedVin !== simVin
+            {sim?.dead && simVin
+              ? `VALUES AT STOP · ${simVin}`
+              : simVin && selectedVin !== simVin
               ? `LIVE VALUES · ${simVin} (simulator) · PM STATE · ${selectedVin}`
               : simVin
                 ? `LIVE VALUES · ${simVin}`
                 : 'SIMULATOR STOPPED — start it to see live values'}
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <Kpi label="Speed" value={Number.isFinite(speedKmh) ? `${speedKmh.toFixed(1)} km/h` : '—'} />
+            <Kpi label="Speed" value={Number.isFinite(speedKmh) ? `${speedKmh.toFixed(1)} km/h` : '—'} stale={frozen} />
             <Kpi
               label="Battery voltage"
               value={Number.isFinite(batteryV) ? `${batteryV.toFixed(2)} V` : '—'}
               tone={severityColor(coherent.battery.severity)}
+              stale={frozen}
             />
             <Kpi
               label="Battery health"
               value={coherent.battery.score !== null ? `${coherent.battery.score}%` : '—'}
               tone={severityColor(coherent.battery.severity)}
+              stale={frozen}
             />
             <Kpi
               label="Brake wear"
               value={`${(worstPadWearFrac * 100).toFixed(0)}%`}
               tone={severityColor(coherent.brake.severity)}
+              stale={frozen}
             />
             <Kpi
               label="Tire pressure"
               value={Number.isFinite(worstTireBar) ? `${worstTireBar.toFixed(2)} bar` : '—'}
               tone={severityColor(coherent.tires.severity)}
+              stale={frozen}
             />
           </div>
         </Section>
@@ -597,9 +673,9 @@ export default function PmPage() {
         {/* ============ SECTION: COMPONENT HEALTH ============ */}
         <Section title="Component health" meta={selectedVin ?? undefined}>
           <div className="flex flex-wrap items-center gap-3">
-            <ComponentBadge label="Battery" health={coherent.battery} />
-            <ComponentBadge label="Brakes" health={coherent.brake} />
-            <ComponentBadge label="Tires" health={coherent.tires} />
+            <ComponentBadge label="Battery" health={coherent.battery} stale={Boolean(sim?.dead)} />
+            <ComponentBadge label="Brakes" health={coherent.brake} stale={Boolean(sim?.dead)} />
+            <ComponentBadge label="Tires" health={coherent.tires} stale={Boolean(sim?.dead)} />
           </div>
 
           {/* Live charts */}
@@ -607,7 +683,10 @@ export default function PmPage() {
             <PmCharts
               samples={windowedSamples}
               health={coherent}
-              idle={!live}
+              idle={!live && windowedSamples.length < 2}
+              stopped={!live && windowedSamples.length >= 2}
+              dead={Boolean(sim?.dead)}
+              timeWindowMs={CHART_WINDOW_MS}
               wheelHealth={{
                 tires: componentSummary.tireWheels
                   .slice()
@@ -736,14 +815,19 @@ function Kpi({
   label,
   value,
   tone,
+  stale = false,
 }: {
   label: string;
   value: string;
   tone?: string;
+  stale?: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-border/60 bg-card/50 px-3 py-2.5">
-      <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+    <div className={`rounded-lg border border-border/60 bg-card/50 px-3 py-2.5 ${stale ? 'opacity-75' : ''}`}>
+      <div className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <span>{label}</span>
+        {stale && <span className="text-[9px] tracking-widest text-amber-500">STOPPED</span>}
+      </div>
       <div
         className="mt-1 font-mono text-xl font-semibold tabular-nums"
         style={tone ? { color: tone } : undefined}
@@ -754,10 +838,10 @@ function Kpi({
   );
 }
 
-function ComponentBadge({ label, health }: { label: string; health: CoherentHealth }) {
+function ComponentBadge({ label, health, stale = false }: { label: string; health: CoherentHealth; stale?: boolean }) {
   return (
     <div
-      className="flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5"
+      className={`flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 ${stale ? 'opacity-75' : ''}`}
       title={health.reason}
     >
       <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>
@@ -770,4 +854,8 @@ function ComponentBadge({ label, health }: { label: string; health: CoherentHeal
       </span>
     </div>
   );
+}
+
+function wheelLabel(wheel: Wheel): string {
+  return ({ FL: 'front-left', FR: 'front-right', RL: 'rear-left', RR: 'rear-right' })[wheel];
 }

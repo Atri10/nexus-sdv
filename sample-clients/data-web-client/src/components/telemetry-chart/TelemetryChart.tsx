@@ -27,6 +27,8 @@ interface TelemetryChartProps {
   animated?: boolean;
   /** Wrapper height (CSS). Grid cards pass 100% to fill their fixed card area. */
   height?: string;
+  /** Draw across missing values. PM charts disable this to preserve stop gaps. */
+  spanGaps?: boolean;
   /**
    * Data window span in ms (e.g. 10 min). When the data covers less than a
    * few minutes, tick labels switch to HH:mm:ss so a short live window is
@@ -101,6 +103,7 @@ export default function TelemetryChart({
   yRange,
   animated = true,
   height = '400px',
+  spanGaps = true,
   timeWindowMs,
 }: TelemetryChartProps) {
   const chartRef = useRef<ChartJS<'line'>>(null);
@@ -139,13 +142,14 @@ export default function TelemetryChart({
             ? (ctx: ScriptableContext<'line'>) => areaFill(ctx, s.color)
             : s.color,
         yAxisID: isRight ? 'y1' : 'y',
-        spanGaps: true,
+        spanGaps,
         borderWidth: 2,
         // Compare VINs render dashed so series stay distinguishable beyond color.
         borderDash: isCompare ? [6, 4] : undefined,
         pointRadius: type === 'bar' ? 2 : 0,
         pointHoverRadius: 5,
-        tension: 0.25,
+        tension: 0,
+        stepped: s.stepped,
         fill: type === 'area',
         // Tooltip suffix; undefined for series without a unit.
         unit: units[s.key],
@@ -164,6 +168,13 @@ export default function TelemetryChart({
     datasets: datasets as ChartData<'line'>['datasets'],
   };
 
+  const dataEnd = series
+    .flatMap((s) => s.points.map((point) => point.x))
+    .reduce((latest, timestamp) => Math.max(latest, timestamp), 0);
+  const xWindow = timeWindowMs && dataEnd > 0
+    ? { min: dataEnd - timeWindowMs, max: dataEnd }
+    : undefined;
+
   const options: ChartOptions<'line'> = {
     responsive: true,
     maintainAspectRatio: false,
@@ -175,6 +186,7 @@ export default function TelemetryChart({
     scales: {
       x: {
         type: 'time',
+        ...xWindow,
         time: {
           tooltipFormat: 'HH:mm:ss',
           // Tick label defaults (overridden per-tick by the Intl callback);
@@ -249,7 +261,7 @@ export default function TelemetryChart({
       // plugin itself (supportsDecimation); decimation applies at render —
       // acceptable alongside zoom (zooming below the threshold restores the
       // raw points naturally).
-      decimation: { enabled: true, algorithm: 'lttb', threshold: 400, samples: 100 },
+      decimation: { enabled: true, algorithm: 'lttb', threshold: 600, samples: 300 },
       zoom: zoomEnabled
         ? {
             zoom: { wheel: { enabled: true }, drag: { enabled: true }, mode: 'x' },

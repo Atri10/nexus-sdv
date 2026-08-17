@@ -28,6 +28,39 @@ export interface CoherentHealth {
 export const WHEELS = ['FL', 'FR', 'RL', 'RR'] as const;
 export type Wheel = (typeof WHEELS)[number];
 
+export interface DeathCause {
+  component: 'battery' | 'tires' | 'unknown';
+  wheel?: Wheel;
+  pressureBar?: number;
+}
+
+/**
+ * Reconstruct the simulator's end-of-life cause from the status payload.
+ * This is a compatibility fallback for older simulator builds that expose
+ * only `dead`, not `dead_component` and `dead_wheel`.
+ */
+export function deriveDeathCause(
+  groundTruth: Record<string, Record<string, unknown>> | undefined
+): DeathCause {
+  const tires = (groundTruth?.tires ?? {}) as Record<string, Record<string, unknown>>;
+  for (const wheel of WHEELS) {
+    const values = tires[wheel];
+    const pressure = values && Number(values.pressure_bar);
+    if (Number.isFinite(pressure) && pressure <= 1.2) {
+      return { component: 'tires', wheel, pressureBar: pressure };
+    }
+  }
+
+  const battery = (groundTruth?.battery ?? {}) as Record<string, unknown>;
+  const daysToFailure = Number(battery.days_to_failure);
+  const wearFraction = Number(battery.wear_fraction);
+  if (daysToFailure === 0 || (Number.isFinite(wearFraction) && wearFraction >= 1)) {
+    return { component: 'battery' };
+  }
+
+  return { component: 'unknown' };
+}
+
 /**
  * Parse a PM NATS subject into its identity parts. Tires/brake subjects are
  * pm.{VIN}.{component}.{wheel} (4 tokens); battery stays pm.{VIN}.{component}

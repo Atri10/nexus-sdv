@@ -126,7 +126,7 @@ prerendered, because it streams live data and touches browser-only APIs
 | Piece | Component / logic |
 |---|---|
 | Vehicle picker | Inline `<select>` in `page.tsx`, populated by polling `GET /api/devices` every 5s plus the simulator's currently-adopted VIN (discovered separately — see §6). Manually picking a VIN sets `userPicked.current = true` so the picker stops auto-following whichever VIN the simulator adopts. |
-| Live charts (10-min window) | `src/components/pm/pm-charts.tsx` (`PmCharts`), loaded via `next/dynamic(..., { ssr: false })` because Chart.js touches browser APIs at module load. Window size (`CHART_WINDOW_MS = 10 * 60 * 1000`) and sample cap (`MAX_SAMPLES = 600`) are constants in `page.tsx`. |
+| Live charts (10-min window) | `src/components/pm/pm-charts.tsx` (`PmCharts`), loaded via `next/dynamic(..., { ssr: false })` because Chart.js touches browser APIs at module load. Window size (`CHART_WINDOW_MS = 10 * 60 * 1000`) and sample cap (`MAX_SAMPLES = 600`) are constants in `page.tsx`; samples are accepted only when the simulator's `published` counter advances. |
 | Route/lap panel | `src/components/pm/route-panel.tsx` (`RoutePanel`) — an SVG projection of the simulator's fixed route (`src/lib/pm-route.ts`) with an animated position marker and lap/progress readout. |
 | PM events feed | Inline "PM events" section in `page.tsx`, rendering the 20 newest messages through `friendlyAlert()` (`src/lib/pm-health.ts`), which turns raw evidence into a plain-language headline plus a technical detail line. |
 | Clear alerts | Inline button in the PM events section calling `clearAlerts()` from the shared hook, with a toast confirmation. |
@@ -139,6 +139,54 @@ telemetry; the simulator-discovery mechanism tells you which one VIN is
 (e.g. right after a fresh stack start, before you've clicked Start), so
 the page treats simulator discovery as authoritative for the *default*
 selection, while still letting a human override it by hand.
+
+### 3.1 Chart fidelity and stopped vehicles
+
+`PmPage.recordSample()` uses the simulator status reply's `published` counter
+as the sample identity. The browser still polls status every three seconds,
+but the page does not append the same simulator snapshot twice when the poll
+interval overlaps the simulator's two-second publish tick. This means chart
+point density represents observed simulator updates rather than browser
+polls.
+
+The four physical series (voltage, tire pressure, and brake wear) are built
+from the simulator's rounded `live`/`ground_truth` values. Battery health is
+the detector score when a PM message exists, otherwise the voltage-derived
+provisional score. Because the detector refreshes much more slowly than the
+simulator, the battery-health dataset uses stepped rendering with zero curve
+smoothing; the flat segments are an honest held detector state, not invented
+measurements between PM polls.
+
+Each chart auto-scales around the values currently visible in the ten-minute
+window with a small unit-aware margin. It no longer reserves the entire
+healthy-to-dead lifecycle on every chart, so a real drift such as 2.30 → 2.24
+bar is visible. The x-axis is explicitly clamped to the same ten-minute
+window from the newest observed sample, including during the first minute of
+a session.
+
+When the simulator stops, the page inserts an explicit null sample. PM charts
+keep the final history visible and label it as stopped (or end-of-life), while
+the null sample prevents Chart.js from drawing a fabricated straight line if
+the simulator is restarted later. KPI captions change from `LIVE VALUES` to
+`VALUES AT STOP`, and the values are visually muted so the last snapshot is
+not mistaken for a current reading.
+
+### 3.2 End-of-life attribution
+
+The simulator's status reply exposes `dead_component` and `dead_wheel` after
+the death-stop. `dead_component` is `battery` or `tires`; a tire stop also
+identifies the first failing wheel in publish order (`FL`, `FR`, `RL`, or
+`RR`). The source of truth is `controlState.deathCauseLocked()` and the
+fields are serialized by `controlState.stateLocked()` in
+`sample-clients/vehicle-client/main.go`.
+
+`PmPage` prefers those authoritative fields. For compatibility with an older
+simulator, `deriveDeathCause()` in `src/lib/pm-health.ts` falls back to the
+already-published ground truth: tire pressure `<= 1.2` bar identifies a tire
+and wheel, while battery `days_to_failure === 0` identifies a battery stop.
+The banner therefore explains the incident — for example, "front-left tire
+pressure collapsed to 1.00 bar" — instead of merely saying that the vehicle
+reached end-of-life.
 
 ---
 
@@ -294,7 +342,7 @@ component, not modifying an existing one.
 |---|---|
 | `__tests__/api/pm/stream.test.ts` | `pm.>` (not `pm.*`) subject correctness, 401 when unauthenticated, SSE headers, protobuf decode → JSON, 4-token subject → `wheel` field attachment |
 | `src/hooks/usePmMessages.test.ts` | sessionStorage hydration (including legacy/corrupted entries), `clearAlerts()`, dedup of reconnect-replay duplicates |
-| `src/lib/pm-health.test.ts` | `pmMessageFromSubject()` parsing, `worstWheel()` selection, `coherentHealth()` tire aggregation, `clearPmState()` |
+| `src/lib/pm-health.test.ts` | `pmMessageFromSubject()` parsing, `deriveDeathCause()` fallback attribution, `worstWheel()` selection, `coherentHealth()` tire aggregation, `clearPmState()` |
 | `src/lib/pm-types.test.ts` | `parsePmMessage()` valid/malformed cases, `severityColor()` mapping |
 | `__tests__/demo/component-panel.test.tsx` | Per-component card rendering, offline state, toggle callback |
 | `__tests__/demo/vehicle-schematic.test.tsx` | Node + sensor-chip rendering (does not specifically assert the PM `alertState` pulsing-dot path — a gap worth closing if you touch that code) |
