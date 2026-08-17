@@ -126,7 +126,7 @@ prerendered, because it streams live data and touches browser-only APIs
 | Piece | Component / logic |
 |---|---|
 | Vehicle picker | Inline `<select>` in `page.tsx`, populated by polling `GET /api/devices` every 5s plus the simulator's currently-adopted VIN (discovered separately — see §6). Manually picking a VIN sets `userPicked.current = true` so the picker stops auto-following whichever VIN the simulator adopts. |
-| Live charts (10-min window) | `src/components/pm/pm-charts.tsx` (`PmCharts`), loaded via `next/dynamic(..., { ssr: false })` because Chart.js touches browser APIs at module load. Window size (`CHART_WINDOW_MS = 10 * 60 * 1000`) and sample cap (`MAX_SAMPLES = 600`) are constants in `page.tsx`; samples are accepted only when the simulator's `published` counter advances. |
+| Live charts (10-min window) | `src/components/pm/pm-charts.tsx` (`PmCharts`), loaded via `next/dynamic(..., { ssr: false })` because Chart.js touches browser APIs at module load. Window size (`CHART_WINDOW_MS = 10 * 60 * 1000`) and sample cap (`MAX_SAMPLES = 600`) are constants in `page.tsx`; samples use the simulator status frame's `observed_at` and are accepted only when the physical frame or PM health score changes. |
 | Route/lap panel | `src/components/pm/route-panel.tsx` (`RoutePanel`) — an SVG projection of the simulator's fixed route (`src/lib/pm-route.ts`) with an animated position marker and lap/progress readout. |
 | PM events feed | Inline "PM events" section in `page.tsx`, rendering the 20 newest messages through `friendlyAlert()` (`src/lib/pm-health.ts`), which turns raw evidence into a plain-language headline plus a technical detail line. |
 | Clear alerts | Inline button in the PM events section calling `clearAlerts()` from the shared hook, with a toast confirmation. |
@@ -150,14 +150,39 @@ point density represents observed simulator updates rather than browser
 polls.
 
 The four physical series (voltage, tire pressure, and brake wear) are built
-from the simulator's rounded `live`/`ground_truth` values. Battery health is
-the detector score when a PM message exists, otherwise a ground-truth wear
-score or voltage-derived provisional score. At terminal battery wear, the
-ground-truth `wear_fraction=1` overrides a stale detector message and the
-health chart reaches `0%`. Because the detector refreshes much more slowly
-than the simulator, non-terminal detector values use stepped rendering with
-zero curve smoothing; the flat segments are an honest held detector state,
-not invented measurements between PM polls.
+from one simulator status frame. Battery health uses the same
+`coherentHealth()` result for the KPI, component badge, chart header, and chart
+sample: the detector score when available, otherwise ground-truth wear or the
+voltage-derived provisional score. At terminal battery wear, the ground-truth
+`wear_fraction=1` overrides a stale detector message and the health chart
+reaches `0%`. Because the detector refreshes much more slowly than the
+simulator, non-terminal detector values use stepped rendering with zero curve
+smoothing; the flat segments are an honest held detector state, not invented
+measurements between PM polls.
+
+### 3.1.1 Cross-page live-frame synchronization
+
+`controlState.stateLocked()` returns `observed_at`, `live`, and `ground_truth`
+from the same simulator tick. `src/lib/telemetry-snapshot.ts`
+(`mergeLiveSnapshot()` and `liveValueForColumn()`) maps that frame to the
+canonical telemetry column names. `/demo` and `/device` pass the frame into
+`useTelemetryData()`, which overlays it onto historical/WebSocket series;
+`/fleet` applies the same mapping to the simulator row. `/pm` consumes the
+normalized frame through `liveSignalsFromSimulator()`.
+
+This makes a displayed live voltage, SoC, speed, tire pressure, temperature,
+brake wear, or drive signal traceable to one VIN and one timestamp. Older
+historical values are not rewritten, and non-simulator VINs continue to use
+Bigtable/chart-service data only.
+
+The dashboard's display unit is also normalized in this same shared path:
+`VELOCITY` is stored and published as metres per second for detector physics,
+then converted to kilometres per hour for `/demo`, `/device`, and any other
+telemetry chart that labels the signal `km/h`. `/pm` applies the same
+conversion when it renders its speed KPI. This keeps the number and unit
+consistent instead of showing the same vehicle speed as `m/s` in one place and
+`km/h` in another. The same contract exposes engine power as kW in the
+dashboard metadata, matching the simulator's generated drive value.
 
 Each chart auto-scales around the values currently visible in the ten-minute
 window with a small unit-aware margin. It no longer reserves the entire
@@ -222,8 +247,10 @@ Main file: `src/app/demo/page.tsx`, `DemoPage`.
 - **Health gauges** — `src/components/demo/component-panel.tsx`
   (`ComponentPanel`), containing a local `HealthGauge` (an SVG donut,
   stroke color from `severityColor(severity)` in `src/lib/pm-types.ts`).
-  `DemoPage` feeds it a `latestByComponent` map built from
-  `usePmMessages()`, filtered to the selected VIN.
+  `DemoPage` combines the selected VIN's PM messages with
+  `liveSignalsFromSimulator()` and `coherentHealth()` from
+  `src/lib/pm-health.ts`, so its component score uses the same live-frame
+  normalization as `/pm`.
 - **Alert chips on the vehicle schematic** —
   `src/components/demo/vehicle-schematic.tsx` (`VehicleSchematic`) accepts
   an `alertState` prop keyed by component id; any component whose latest

@@ -313,6 +313,8 @@ func TestAdoptRepointsPublishSubjects(t *testing.T) {
 
 func TestStatusReplyCarriesGroundTruth(t *testing.T) {
 	ctl, replies := newTestControl("battery")
+	observedAt := time.Date(2026, time.August, 17, 16, 18, 8, 642954007, time.UTC)
+	ctl.setLiveAt(map[string]any{"battery_voltage": 12.1}, observedAt)
 	ctl.setGroundTruth(map[string]map[string]any{
 		"battery": {"wear_fraction": 0.42, "days_to_failure": 69},
 		"brake":   {"wear_fraction": 0.12, "energy_joules": int64(7.2e8)},
@@ -330,6 +332,13 @@ func TestStatusReplyCarriesGroundTruth(t *testing.T) {
 	brk := gt["brake"].(map[string]any)
 	if brk["wear_fraction"] != 0.12 {
 		t.Errorf("brake ground truth wrong: %#v", brk)
+	}
+	if r["observed_at"] != observedAt.Format(time.RFC3339Nano) {
+		t.Errorf("observed_at = %v, want %s", r["observed_at"], observedAt.Format(time.RFC3339Nano))
+	}
+	live := r["live"].(map[string]any)
+	if live["battery_voltage"] != 12.1 {
+		t.Errorf("live battery voltage = %v, want 12.1", live["battery_voltage"])
 	}
 }
 

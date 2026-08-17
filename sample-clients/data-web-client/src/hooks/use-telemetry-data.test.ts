@@ -21,6 +21,12 @@ describe('shapeRows', () => {
     expect(series[0].points[0].y).toBeNull();
   });
 
+  it('converts vehicle velocity from stored m/s to the dashboard km/h unit', () => {
+    const rows = [{ timestamp: '2026-07-19T10:00:00Z', values: { 'dynamic:VELOCITY': '23.52' } }];
+    const series = shapeRows('VIN1', rows);
+    expect(series[0].points[0].y).toBeCloseTo(84.672, 8);
+  });
+
   it('carries non-numeric strings as raw values (static readings)', () => {
     const rows = [
       { timestamp: '2026-07-19T10:00:00Z', values: { 'static:make': 'Nexus SDV', 'static:index': '42' } },

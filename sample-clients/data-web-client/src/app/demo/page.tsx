@@ -20,6 +20,7 @@ import { FadeIn } from '@/components/motion/fade-in';
 import type { TimeRange } from '@/types/telemetry';
 import { usePmMessages } from '@/hooks/usePmMessages';
 import { severityColor, type PmMessage } from '@/lib/pm-types';
+import { coherentHealth, liveSignalsFromSimulator, worstWheel } from '@/lib/pm-health';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -54,7 +55,12 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     : null;
 
   const theme = useChartTheme();
-  const { series } = useTelemetryData({ vin, range });
+  const { series } = useTelemetryData({
+    vin,
+    range,
+    liveSnapshot: simulatorVin === vin ? simState.sim : null,
+    liveSnapshotAt: simState.lastUpdated,
+  });
 
   // Follow the discovered sim for the default vehicle (user pick wins).
   useEffect(() => {
@@ -140,12 +146,30 @@ export default function DemoPage({ searchParams }: { searchParams: Promise<{ vin
     [pmMessages, vin]
   );
   const latestByComponent = useMemo(() => {
-    const m = new Map<string, PmMessage>();
-    for (const msg of selectedPm) if (!m.has(msg.component)) m.set(msg.component, msg);
-    return m;
+    const battery = selectedPm.find((msg) => msg.component === 'battery');
+    const brake = worstWheel(selectedPm.filter((msg) => msg.component === 'brake'));
+    const tires = worstWheel(selectedPm.filter((msg) => msg.component === 'tires'));
+    return new Map(
+      [battery, brake, tires]
+        .filter((msg): msg is PmMessage => msg !== undefined && msg !== null)
+        .map((msg) => [msg.component, msg]),
+    );
   }, [selectedPm]);
-  const health = Object.fromEntries([...latestByComponent.entries()].map(([k, v]) => [k, { score: v.health_score, severity: v.severity }]));
-  const alertState = Object.fromEntries([...latestByComponent.entries()].map(([k, v]) => [k, { severity: v.severity }]));
+  const livePmSignals = liveSignalsFromSimulator(simulatorVin === vin ? simState.sim : null);
+  const coherentByComponent = {
+    battery: coherentHealth('battery', latestByComponent.get('battery'), livePmSignals),
+    brake: coherentHealth('brake', latestByComponent.get('brake'), livePmSignals),
+    tires: coherentHealth('tires', latestByComponent.get('tires'), livePmSignals),
+  };
+  const health = Object.fromEntries(
+    Object.entries(coherentByComponent).map(([component, value]) => [component, {
+      score: value.score,
+      severity: value.severity,
+    }]),
+  );
+  const alertState = Object.fromEntries(
+    Object.entries(coherentByComponent).map(([component, value]) => [component, { severity: value.severity }]),
+  );
   // useReducedMotion is null during SSR/first paint; treat null as "not
   // reduced" so the prerendered page stays deterministic and the 3D scene
   // mounts before framer-motion resolves the media query.

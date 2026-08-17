@@ -13,6 +13,7 @@ import FleetScene from '@/components/scene/fleet-scene';
 import type { FleetVehicle } from '@/components/scene/fleet-scene';
 import type { DevicesResponse, DeviceRow } from '@/types/telemetry';
 import { useSimulatorState } from '@/hooks/use-simulator-state';
+import { liveValueForColumn } from '@/lib/telemetry-snapshot';
 
 // Live fleet board: never statically prerender (live data + demo-mode
 // session bypass must resolve at request time, not build time).
@@ -97,7 +98,19 @@ export default function FleetPage() {
     load();
   }, [load]);
 
-  const vehicles = useMemo(() => devices.map(toFleetVehicle), [devices]);
+  const vehicles = useMemo(
+    () => devices.map((device) => {
+      if (device.deviceId !== simVin || !sim.sim) return toFleetVehicle(device);
+      const columns = Object.fromEntries(
+        Object.entries(device.columns).map(([column, storedValue]) => {
+          const liveValue = liveValueForColumn(column, sim.sim!);
+          return [column, liveValue === null ? storedValue : String(liveValue)];
+        }),
+      );
+      return toFleetVehicle({ ...device, columns });
+    }),
+    [devices, sim.sim, simVin],
+  );
 
   // Live detection (fresh telemetry within ~2× publish interval) is deferred
   // to T9 polish; an empty set renders vehicles without pulse rings for now.
@@ -119,14 +132,25 @@ export default function FleetPage() {
 
   const tableColumnKeys = ['deviceId', 'lastSeen', ...(simVin ? ['simulator'] : []), ...allColumnKeys];
 
-  const tableData = devices.map((d) => ({
-    deviceId: d.deviceId,
-    lastSeen: formatLastSeen(d.lastSeen),
-    ...(d.deviceId === simVin
-      ? { simulator: simRunning ? '● RUNNING' : '○ STOPPED' }
-      : {}),
-    ...d.columns,
-  }));
+  const tableData = devices.map((d) => {
+    const isLiveSimulator = d.deviceId === simVin && sim.sim !== null;
+    const columns = isLiveSimulator
+      ? Object.fromEntries(
+          Object.entries(d.columns).map(([column, storedValue]) => {
+            const liveValue = liveValueForColumn(column, sim.sim!);
+            return [column, liveValue === null ? storedValue : String(liveValue)];
+          }),
+        )
+      : d.columns;
+    return {
+      deviceId: d.deviceId,
+      lastSeen: formatLastSeen(isLiveSimulator ? sim.sim?.observed_at ?? d.lastSeen : d.lastSeen),
+      ...(d.deviceId === simVin
+        ? { simulator: simRunning ? '● RUNNING' : '○ STOPPED' }
+        : {}),
+      ...columns,
+    };
+  });
 
   const state = error ? 'error' : loading ? 'loading' : devices.length === 0 ? 'empty' : 'ready';
 

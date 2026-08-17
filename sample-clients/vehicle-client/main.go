@@ -584,7 +584,7 @@ func (v *VehicleClient) groundTruth(battery batteryState, drive driveState) map[
 		brakeDeg = &DegradationConfig{}
 	}
 	gt["brake"] = map[string]any{
-		"wear_fraction": math.Round(brakeDeg.BrakeWearFraction(drive.brakeEnergyJ)*1000) / 1000,
+		"wear_fraction": math.Round(brakeDeg.BrakeWearFraction(drive.brakeEnergyJ)*10000) / 10000,
 		"energy_joules": int64(drive.brakeEnergyJ),
 	}
 	// Per-pad brake wear: the same accumulator scaled per pad (front pads do
@@ -595,7 +595,7 @@ func (v *VehicleClient) groundTruth(battery batteryState, drive driveState) map[
 	brakes := map[string]any{}
 	for _, wheel := range wheels {
 		brakes[wheel] = map[string]any{
-			"wear_fraction": math.Round(brakeDeg.BrakeWearAt(wheel, drive.brakeEnergyJ)*1000) / 1000,
+			"wear_fraction": math.Round(brakeDeg.BrakeWearAt(wheel, drive.brakeEnergyJ)*10000) / 10000,
 		}
 	}
 	gt["brakes"] = brakes
@@ -726,9 +726,13 @@ type controlState struct {
 	// computation.
 	routeDist float64
 	// live carries the current drive-state values the /pm console displays:
-	// velocity (m/s), tire pressure (bar), GPS position and battery voltage.
-	// Set by the publish loop each tick (see setLive).
+	// velocity (m/s), tire pressure (bar), GPS position, battery readings and
+	// the other dynamic signals. Set by the publish loop each tick (see
+	// setLiveAt).
 	live map[string]any
+	// observedAt is the telemetry tick represented by live and groundTruth.
+	// Web clients use it to align every live chart to one coherent frame.
+	observedAt string
 	// resetFn re-initializes the drive/battery state owned by the publish
 	// loop (battery age 0, fresh drive cycle, zeroed brake accumulator).
 	// Set once by PublishTelemetryContinuously; "reset" control action calls
@@ -805,6 +809,7 @@ func newControlState(vin, messageType string) *controlState {
 		degradation:      degradation,
 		groundTruth:      map[string]map[string]any{},
 		live:             map[string]any{},
+		observedAt:       "",
 		speed:            speed,
 		degradationAccel: accel,
 		components: map[string]*componentState{
@@ -829,7 +834,7 @@ func newControlState(vin, messageType string) *controlState {
 			"powertrain": {
 				id: "powertrain", label: "Powertrain",
 				sensors: []sensorInfo{
-					{Name: "ENGINE_POWER", Label: "Power", Unit: "W"},
+					{Name: "ENGINE_POWER", Label: "Power", Unit: "kW"},
 					{Name: "ENGINE_RPM", Label: "RPM", Unit: "rpm"},
 					{Name: "FUEL_CAPACITY", Label: "Fuel capacity", Unit: "L"},
 					{Name: "FUEL_LEVEL", Label: "Fuel", Unit: "%"},
@@ -838,7 +843,7 @@ func newControlState(vin, messageType string) *controlState {
 			"chassis": {
 				id: "chassis", label: "Chassis",
 				sensors: []sensorInfo{
-					{Name: "VELOCITY", Label: "Velocity", Unit: "m/s"},
+					{Name: "VELOCITY", Label: "Velocity", Unit: "km/h"},
 					{Name: "TIRE_PRESSURE", Label: "Tire pressure", Unit: "bar"},
 					{Name: "TIRE_PRESSURE.FL", Label: "Tire pressure FL", Unit: "bar"},
 					{Name: "TIRE_PRESSURE.FR", Label: "Tire pressure FR", Unit: "bar"},
@@ -993,6 +998,7 @@ func (c *controlState) adopt(vin string) error {
 	c.groundTruth = map[string]map[string]any{}
 	c.routeDist = 0
 	c.live = map[string]any{}
+	c.observedAt = ""
 	reset := c.resetFn
 	c.mu.Unlock()
 	if reset != nil {
@@ -1017,6 +1023,7 @@ func (c *controlState) resetSimulation(msg *nats.Msg) {
 	c.groundTruth = map[string]map[string]any{}
 	c.routeDist = 0
 	c.live = map[string]any{}
+	c.observedAt = ""
 	for _, deg := range c.degradation {
 		deg.HorizonDays = defaultDegradationConfig(deg.Component, poolIndex(c.vin)).HorizonDays
 	}
@@ -1136,6 +1143,7 @@ func (c *controlState) stateLocked() map[string]any {
 		"dead":              c.dead,
 		"dead_component":    c.deadComponent,
 		"dead_wheel":        c.deadWheel,
+		"observed_at":       c.observedAt,
 		"published":         c.published,
 		"messageType":       c.messageType,
 		"components":        comps,
@@ -1155,9 +1163,17 @@ func (c *controlState) stateLocked() map[string]any {
 // by the publish loop each tick. Map values are replaced wholesale — the
 // /pm console polls the status reply for its KPI row.
 func (c *controlState) setLive(vals map[string]any) {
+	c.setLiveAt(vals, time.Now())
+}
+
+// setLiveAt stores all live signal values and the telemetry tick they came
+// from. The timestamp is part of the status contract so chart consumers can
+// replace/append one complete frame instead of mixing independent polls.
+func (c *controlState) setLiveAt(vals map[string]any, observedAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.live = vals
+	c.observedAt = observedAt.UTC().Format(time.RFC3339Nano)
 }
 
 // lap reports the current lap number (0-based from the route loop) and the
@@ -2060,20 +2076,33 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// failure per degradable component, derived from the same curves the
 		// published telemetry walks (so detector-vs-truth stays comparable).
 		now := time.Now()
-		ctl.setGroundTruth(v.groundTruth(battery, drive))
+		groundTruth := v.groundTruth(battery, drive)
+		ctl.setGroundTruth(groundTruth)
 		tireBar := 2.2
+		tireTemp := 28.0
 		if v.tiresDeg != nil {
 			tireBar = v.tiresDeg.TirePressureAt("FL", v.batteryAgeDays)
+			tireTemp = v.tiresDeg.TireTempAt("FL", v.batteryAgeDays)
 		}
-		ctl.setLive(map[string]any{
-			"velocity_m_s":      math.Round(drive.velocity*10) / 10,
-			"tire_pressure_bar": math.Round(tireBar*100) / 100,
-			"lat":               drive.lat,
-			"lng":               drive.lng,
-			"battery_voltage":   math.Round(battery.voltage*100) / 100,
-			"battery_soc":       math.Round(battery.soc*10) / 10,
-			"heading_deg":       math.Round(drive.headingDeg),
-		})
+		ctl.setLiveAt(map[string]any{
+			"velocity_m_s":          math.Round(drive.velocity*100) / 100,
+			"tire_pressure_bar":     math.Round(tireBar*100) / 100,
+			"tire_temp_c":           math.Round(tireTemp*100) / 100,
+			"lat":                   drive.lat,
+			"lng":                   drive.lng,
+			"battery_voltage":       math.Round(battery.voltage*100) / 100,
+			"battery_current":       math.Round(battery.current*100) / 100,
+			"battery_temp":          math.Round(battery.temp*100) / 100,
+			"battery_soc":           math.Round(battery.soc*10) / 10,
+			"heading_deg":           math.Round(drive.headingDeg*100) / 100,
+			"steering_angle_deg":    math.Round(drive.steeringAngle*100) / 100,
+			"accelerator_pedal_pct": math.Round(drive.acceleratorPct*100) / 100,
+			"brake_pedal_pct":       math.Round(drive.brakePct*100) / 100,
+			"engine_power":          math.Round(drive.enginePower*100) / 100,
+			"engine_rpm":            math.Round(drive.engineRPM*100) / 100,
+			"fuel_capacity":         50.0,
+			"fuel_level":            math.Round(drive.fuelLevel*100) / 100,
+		}, now)
 
 		// Death-stop: once the vehicle reaches end-of-life (battery dead or
 		// a tire flat) it stops driving — a dead vehicle publishing laps is

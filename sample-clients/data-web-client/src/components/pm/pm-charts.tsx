@@ -91,6 +91,8 @@ interface PmChartCardProps {
   wheelEntries?: WheelHealthEntry[];
   /** Worst-wheel label shown in the card summary (e.g. 'FL flat'). */
   worstWheelLabel?: string;
+  /** Current value from the same live frame as the page KPI. */
+  currentValue?: number | null;
   stopped?: boolean;
   dead?: boolean;
 }
@@ -102,7 +104,7 @@ interface PmChartCardProps {
  * renders a "start to see live data" placeholder instead of a flat line —
  * a stopped sim must never auto-draw a flatline that reads as real data.
  */
-function PmChartCard({ title, unit, series, health, timeWindowMs, idle, yRange, color, wheelEntries, worstWheelLabel, stopped = false, dead = false }: PmChartCardProps) {
+function PmChartCard({ title, unit, series, health, timeWindowMs, idle, yRange, color, wheelEntries, worstWheelLabel, currentValue, stopped = false, dead = false }: PmChartCardProps) {
   const theme = useChartTheme();
   const [expanded, setExpanded] = useState(false);
 
@@ -112,6 +114,7 @@ function PmChartCard({ title, unit, series, health, timeWindowMs, idle, yRange, 
   const pts = primary?.points ?? [];
   const numericPoints = pts.filter((point) => point.y !== null);
   const last = numericPoints.length ? numericPoints[numericPoints.length - 1].y : null;
+  const displayValue = currentValue !== undefined ? currentValue : last;
   const prev = numericPoints.length > 1 ? numericPoints[numericPoints.length - 2].y : null;
   const trend =
     last === null || prev === null || last === prev
@@ -156,7 +159,7 @@ function PmChartCard({ title, unit, series, health, timeWindowMs, idle, yRange, 
               {health.provisional ? `~${bandLabel}` : bandLabel}
             </span>
             <span className="tabular-nums" style={{ color: bandColor }}>
-              {last !== null ? `${Number(last).toFixed(unit === '%' ? 0 : 2)} ${unit}` : '—'}
+              {displayValue !== null && displayValue !== undefined ? `${Number(displayValue).toFixed(unit === '%' ? 0 : 2)} ${unit}` : '—'}
             </span>
             {trend && (
               <span className={`text-xs ${trend === '▲' ? 'text-emerald-500' : 'text-red-500'}`}>
@@ -243,9 +246,9 @@ function PmChartCard({ title, unit, series, health, timeWindowMs, idle, yRange, 
               >
                 {health.provisional ? `~${bandLabel}` : bandLabel} · {health.score}
               </span>
-              {last !== null && (
+              {displayValue !== null && displayValue !== undefined && (
                 <span className="font-semibold tabular-nums">
-                  {Number(last).toFixed(unit === '%' ? 0 : 2)} {unit}
+                  {Number(displayValue).toFixed(unit === '%' ? 0 : 2)} {unit}
                 </span>
               )}
             </DialogTitle>
@@ -337,6 +340,8 @@ export interface PmChartsProps {
    * one. Optional — legacy callers render without per-wheel detail.
    */
   wheelHealth?: Partial<Record<'tires' | 'brake', WheelHealthEntry[]>>;
+  /** Current values from the same live frame as the page KPI row. */
+  currentValues?: Partial<Record<'health' | 'voltage' | 'brake' | 'tires', number | null>>;
 }
 
 /**
@@ -346,7 +351,7 @@ export interface PmChartsProps {
  * placeholders instead of flatlines. Y-ranges are death-state aware so the
  * degradation climax stays on-plot.
  */
-export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false, dead = false, wheelHealth }: PmChartsProps) {
+export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false, dead = false, wheelHealth, currentValues }: PmChartsProps) {
   const series = useMemo<Record<string, ChartSeries[]>>(() => {
     const make = (
       key: string,
@@ -419,6 +424,7 @@ export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false,
         dead={dead}
         yRange={autoYRange(series.health, '%')}
         color={COLORS.health}
+        currentValue={currentValues?.health}
       />
       <PmChartCard
         title="Battery voltage"
@@ -431,6 +437,7 @@ export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false,
         dead={dead}
         yRange={autoYRange(series.voltage, 'V')}
         color={COLORS.voltage}
+        currentValue={currentValues?.voltage}
       />
       <PmChartCard
         title="Brake wear"
@@ -443,6 +450,7 @@ export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false,
         dead={dead}
         yRange={autoYRange(series.brake, '%')}
         color={COLORS.brake}
+        currentValue={currentValues?.brake}
         wheelEntries={wheelHealth?.brake}
         worstWheelLabel={
           wheelHealth?.brake?.[0]
@@ -461,6 +469,7 @@ export function PmCharts({ samples, timeWindowMs, health, idle, stopped = false,
         dead={dead}
         yRange={autoYRange(series.tires, 'bar')}
         color={COLORS.tires}
+        currentValue={currentValues?.tires}
         wheelEntries={wheelHealth?.tires}
         worstWheelLabel={
           wheelHealth?.tires?.[0]

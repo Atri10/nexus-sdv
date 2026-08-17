@@ -149,10 +149,18 @@ advances at `DEMO_SPEED`. The status reply reports lap number + progress.
   `BRAKE_WEAR.{FL,FR,RL,RR}` (the per-wheel path the connector stores as
   `dynamic:<sensor>` columns, which the PM detector polls).
 
-The **status reply** (`stateLocked`) carries the live values + ground truth:
-`tires.{wheel}.{pressure_bar,temp_c}`, `brakes.{wheel}.wear_fraction`,
-`battery.{voltage,wear_fraction,days_to_failure}`, route/lap/speed. The
-dashboards and the PM evaluator read this to show + verify per-wheel health.
+The **status reply** (`stateLocked`) carries the live values + ground truth and
+an `observed_at` timestamp. `observed_at` identifies the one simulator tick
+represented by `live` and `ground_truth`, so dashboards can render all current
+signals as one frame instead of mixing values from different polls. The reply
+includes `tires.{wheel}.{pressure_bar,temp_c}`,
+`brakes.{wheel}.wear_fraction`, `battery.{voltage,wear_fraction,days_to_failure}`,
+the dynamic drive signals, route/lap/speed, and `observed_at`. The status
+component metadata describes dashboard display units (`VELOCITY` as km/h and
+`ENGINE_POWER` as kW); the underlying telemetry payload remains in its
+engineering units (`VELOCITY` is published as m/s) and the web client converts
+it once in the shared telemetry-series pipeline. The dashboards and PM
+evaluator read this to show + verify per-wheel health.
 
 ## 6. The control protocol (start/stop/status/reset)
 

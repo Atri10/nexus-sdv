@@ -52,6 +52,15 @@ export function columnQualifier(column: string): string {
 }
 
 /**
+ * Convert stored engineering units into the units shown by the dashboard.
+ * VELOCITY is persisted and published by the vehicle in m/s, while the
+ * dashboard's shared metadata presents it as km/h.
+ */
+export function displayValueForColumn(column: string, value: number): number {
+  return columnQualifier(column).toUpperCase() === 'VELOCITY' ? value * 3.6 : value;
+}
+
+/**
  * Unit lookup for chart series: maps each series key to the unit declared in
  * the shared component metadata (DEMO_COMPONENTS), keyed by column qualifier.
  * Only series with a declared unit appear — GPS/static series are omitted.

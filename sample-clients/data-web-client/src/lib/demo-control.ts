@@ -35,6 +35,8 @@ export interface DegradationStatus {
 
 export interface DemoControlReply {
   vin: string;
+  /** Simulator tick timestamp shared by all live signal values in this reply. */
+  observed_at?: string;
   running: boolean;
   /** True when the vehicle reached end-of-life (battery dead / tire flat) and the sim stopped itself. */
   dead?: boolean;
@@ -53,7 +55,7 @@ export interface DemoControlReply {
   route?: RouteStatus;
   /** Live ground truth (battery wear, brake wear, tire pressure). */
   ground_truth?: Record<string, Record<string, unknown>>;
-  /** Live drive values (velocity, tire pressure, GPS, battery voltage). */
+  /** Live drive, chassis, GPS, battery, and powertrain values for one tick. */
   live?: Record<string, unknown>;
   error?: string;
 }

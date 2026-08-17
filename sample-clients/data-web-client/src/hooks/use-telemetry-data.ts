@@ -1,7 +1,8 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChartSeries, vinColorFamily } from '@/lib/telemetry-chart-utils';
-
+import { ChartSeries, displayValueForColumn, vinColorFamily } from '@/lib/telemetry-chart-utils';
+import type { DemoControlReply } from '@/lib/demo-control';
+import { mergeLiveSnapshot } from '@/lib/telemetry-snapshot';
 
 export interface TelemetryRow {
   timestamp: string;
@@ -24,7 +25,7 @@ export function shapeRows(vin: string, rows: TelemetryRow[]): ChartSeries[] {
     points: rows.map((r) => {
       const raw = r.values[col];
       const num = raw != null && raw !== '---' && raw !== '' ? Number(raw) : NaN;
-      if (isFinite(num)) return { x: Date.parse(r.timestamp), y: num };
+      if (isFinite(num)) return { x: Date.parse(r.timestamp), y: displayValueForColumn(col, num) };
       if (raw != null && raw !== '' && raw !== '---') {
         return { x: Date.parse(r.timestamp), y: null, raw };
       }
@@ -44,6 +45,10 @@ export interface UseTelemetryDataOptions {
   vin: string;
   range: '1h' | '6h' | '24h' | '7d';
   compareVins?: string[];
+  /** Latest simulator frame for the primary VIN, when it is the live sim. */
+  liveSnapshot?: DemoControlReply | null;
+  /** Client arrival time fallback for older simulator builds without observed_at. */
+  liveSnapshotAt?: number | null;
 }
 
 export interface TelemetryDataResult {
@@ -54,7 +59,7 @@ export interface TelemetryDataResult {
 }
 
 export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataResult {
-  const { vin, range, compareVins = [] } = opts;
+  const { vin, range, compareVins = [], liveSnapshot = null, liveSnapshotAt = null } = opts;
   const compareKey = compareVins.join('|');
   const [series, setSeries] = useState<ChartSeries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -141,7 +146,8 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
           const cols = Object.keys(msg.values);
           const additions = cols.map((col, i) => {
             const raw = msg.values[col];
-            const num = raw != null && raw !== '---' ? Number(raw) : NaN;
+            const rawNum = raw != null && raw !== '---' ? Number(raw) : NaN;
+            const num = isFinite(rawNum) ? displayValueForColumn(col, rawNum) : rawNum;
             const key = `${vin}|${col}`;
             const existing = prev.find((s) => s.key === key);
             const point: ChartSeries['points'][number] = isFinite(num)
@@ -200,5 +206,6 @@ export function useTelemetryData(opts: UseTelemetryDataOptions): TelemetryDataRe
     };
   }, [vin, range, compareKey, load]);
 
-  return { series, loading, error, refetch: load };
+  const synchronizedSeries = mergeLiveSnapshot(series, liveSnapshot, liveSnapshotAt);
+  return { series: synchronizedSeries, loading, error, refetch: load };
 }
