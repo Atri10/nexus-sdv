@@ -396,6 +396,14 @@ toggles accept an optional `component` field on the same control subject
 component (legacy behavior). See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
 control flow.
 
+For deliberate PM failure testing, open `/pm` and use **Test fault**. Select
+`Battery failure`, `Tire failure`, or `Brake wear`, choose `Progressive` or
+`Failure test`, then click **Apply + reset**. The control applies a complete
+scenario: the selected component receives the chosen preset and the other
+modeled components (`battery`, `tires`, `brake`) are reset to `healthy`. Battery
+and tire failures stop the vehicle at their end-of-life condition; brake wear
+continues driving so the per-pad PM alert can be inspected.
+
 > **Pre-branch installs:** if your stack predates this branch (existing
 > `keycloak-data` volume / `.env.infra`), run `make clean && make go` once so
 > the realm VIN pool and the connector `commands.>` permission are applied.
@@ -435,15 +443,17 @@ The `/pm` page is the predictive-maintenance fleet view:
 The detector service polls the data-api per pool VIN every 60 s
 (`POLL_INTERVAL_SECONDS`) and publishes `pm.{VIN}.{component}` only when a
 component leaves `healthy` or its severity/health band changes (Task 3
-§publish-cadence — healthy VINs publish nothing). Aging is exactly real-time:
-each 2 s simulator tick advances the simulated age by 2 s (1 sim day per 24 h
-wall), so a `critical` VIN's battery reaches the 12.0 V failure floor only
-after ~60 wall-clock days, tires floor out at ~day 67, and 80% brake wear
-needs days of simulated braking. With the default `DEGRADATION_PRESET=demo`
-the pool's first VIN (`VIN1001`) is on the `critical` preset and the first
-alert appears once the detector has ~5+ resting battery samples (a few minutes
-of wall time — not within one poll cycle); run the stack with
+§publish-cadence — healthy VINs publish nothing). The compose demo advances
+simulated age at `DEMO_SPEED × DEGRADATION_ACCEL` (`5 × 1200`), so a selected
+critical battery or tire scenario reaches its terminal condition within a
+short showcase rather than after real-time months. Sensor values remain at
+physical scale; only the rate of the lifecycle is accelerated. Brake failure
+testing uses a separate pad-wear multiplier and does not stop the vehicle.
+With the default `DEGRADATION_PRESET=degrading`, the pool starts with a mixed
+fleet; use `/pm` Test fault to isolate one component, or run the stack with
 `DEGRADATION_PRESET=critical` for a deterministic publish on every pool VIN.
+The `/pm` Test fault control is the preferred way to isolate one component;
+the simulator status reply exposes the active presets under `degradation`.
 
 **Offline validation numbers** come from
 `sample-services/predictive-maintenance/scripts/evaluate_detectors.py` — run

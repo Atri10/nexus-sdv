@@ -11,6 +11,8 @@ import type { PmMessage } from '@/lib/pm-types';
  * can never disagree:
  *
  *   - PM message present  -> use its health_score + severity (authoritative)
+ *   - A terminal battery ground-truth label -> force 0 health even if the
+ *     detector's last 60-second message is stale
  *   - No PM message yet   -> derive a provisional score/severity from the
  *     live values (mirroring the detector's thresholds)
  */
@@ -125,6 +127,22 @@ function batteryFromVoltage(v: number | null): CoherentHealth {
   return { score, severity: severity === 'action' ? 'critical' : severity, provisional: true, reason: label };
 }
 
+/** Battery ground truth is SoH loss, not a voltage reading. */
+function batteryFromWear(wearFrac: number): CoherentHealth {
+  const wear = Math.max(0, Math.min(1, wearFrac));
+  const score = Math.round((1 - wear) * 100);
+  const severity = wear >= 1 ? 'critical' : wear >= 0.85 ? 'action' : wear >= 0.6 ? 'advisory' : 'healthy';
+  return {
+    score,
+    severity,
+    provisional: wear < 1,
+    reason:
+      wear >= 1
+        ? 'ground truth: battery wear is 100%; battery health is 0%'
+        : `ground truth: battery wear is ${Math.round(wear * 100)}%`,
+  };
+}
+
 /** Tires: 2.3 bar healthy -> ~1.0 bar flat. Mirrors detectors.py. */
 function tiresFromPressure(p: number | null): CoherentHealth {
   if (p === null || !Number.isFinite(p)) {
@@ -168,6 +186,8 @@ function brakesFromWear(wearFrac: number | null): CoherentHealth {
 
 export interface LiveSignals {
   batteryVoltage: number | null;
+  /** Battery SoH loss from simulator ground truth (0..1), when available. */
+  batteryWearFrac?: number | null;
   tirePressure: number | null;
   /** Per-wheel pressures (bar); the tires aggregate uses the worst wheel. */
   tirePressures?: Partial<Record<Wheel, number | null>>;
@@ -183,6 +203,15 @@ export function coherentHealth(
   pm: PmMessage | undefined,
   live: LiveSignals,
 ): CoherentHealth {
+  if (
+    component === 'battery' &&
+    live.batteryWearFrac !== null &&
+    live.batteryWearFrac !== undefined &&
+    Number.isFinite(live.batteryWearFrac) &&
+    live.batteryWearFrac >= 1
+  ) {
+    return batteryFromWear(live.batteryWearFrac);
+  }
   if (pm) {
     return {
       score: pm.health_score,
@@ -192,7 +221,12 @@ export function coherentHealth(
     };
   }
   switch (component) {
-    case 'battery': return batteryFromVoltage(live.batteryVoltage);
+    case 'battery': {
+      if (live.batteryWearFrac !== null && live.batteryWearFrac !== undefined && Number.isFinite(live.batteryWearFrac)) {
+        return batteryFromWear(live.batteryWearFrac);
+      }
+      return batteryFromVoltage(live.batteryVoltage);
+    }
     case 'tires': {
       // Aggregate from per-wheel pressures when available: the worst wheel
       // drives the badge so a single flat tire is never masked by four

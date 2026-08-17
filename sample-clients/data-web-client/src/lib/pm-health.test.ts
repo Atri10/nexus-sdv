@@ -124,6 +124,24 @@ describe('coherentHealth tires aggregate (worst wheel drives the badge)', () => 
   });
 });
 
+describe('coherentHealth battery ground truth', () => {
+  it('shows zero health at terminal battery wear even with a stale PM message', () => {
+    const h = coherentHealth('battery', {
+      vin: 'VIN1', component: 'battery', health_score: 55, severity: 'action',
+      evidence: {}, explanation: 'last detector poll', timestamp: 't',
+    }, {
+      batteryVoltage: 12.0,
+      batteryWearFrac: 1,
+      tirePressure: null,
+      brakeWearFrac: null,
+    });
+    expect(h.score).toBe(0);
+    expect(h.severity).toBe('critical');
+    expect(h.provisional).toBe(false);
+    expect(h.reason).toContain('battery health is 0%');
+  });
+});
+
 describe('clearPmState', () => {
   it('empties messages, health and sample buffers', () => {
     let messages: PmMessage[] = [{ vin: 'VIN1', component: 'battery', health_score: 40, severity: 'critical', evidence: {}, explanation: 'x', timestamp: 't' }];

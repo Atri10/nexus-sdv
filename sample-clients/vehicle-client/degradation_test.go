@@ -107,6 +107,40 @@ func TestHealthyTirePressureStable(t *testing.T) {
 	}
 }
 
+func TestBrakeFaultMultiplier(t *testing.T) {
+	energy := brakeEnergyBudgetJ / 8
+	healthy := &DegradationConfig{Component: "brake", Preset: "healthy"}
+	degrading := &DegradationConfig{Component: "brake", Preset: "degrading"}
+	critical := &DegradationConfig{Component: "brake", Preset: "critical"}
+
+	base := healthy.BrakeWearAt("FL", energy)
+	if got := critical.BrakeWearFraction(energy); got != 0.5 {
+		t.Fatalf("critical overall brake wear = %.3f, want 0.5", got)
+	}
+	if got := degrading.BrakeWearAt("FL", energy); got <= base || math.Abs(got/base-2) > 0.01 {
+		t.Fatalf("degrading brake wear = %.3f, want 2x healthy %.3f", got, base)
+	}
+	if got := critical.BrakeWearAt("FL", energy); got <= degrading.BrakeWearAt("FL", energy) || math.Abs(got/base-4) > 0.01 {
+		t.Fatalf("critical brake wear = %.3f, want 4x healthy %.3f", got, base)
+	}
+}
+
+func TestGroundTruthBatteryTerminalState(t *testing.T) {
+	deg := &DegradationConfig{Component: "battery", Preset: "critical", HorizonDays: 60}
+	client := &VehicleClient{}
+	gt := client.groundTruth(batteryState{deg: deg, ageDays: 60}, driveState{})
+	battery, ok := gt["battery"]
+	if !ok {
+		t.Fatal("terminal battery ground truth is missing")
+	}
+	if battery["wear_fraction"] != 1.0 {
+		t.Fatalf("terminal battery wear = %v, want 1.0", battery["wear_fraction"])
+	}
+	if battery["days_to_failure"] != 0 {
+		t.Fatalf("terminal battery days_to_failure = %v, want 0", battery["days_to_failure"])
+	}
+}
+
 // TestTireWheelStagger: tires fail per wheel — the FL corner (offset 0) hits
 // flat first, while FR (offset 15d) / RR (offset 45d) lag at the same day,
 // so the demo/PM feed can show an asymmetric failure.
@@ -160,6 +194,10 @@ func TestDegradationControlAction(t *testing.T) {
 	deg = ctl.degradationFor("battery")
 	if deg.Preset != "critical" {
 		t.Fatalf("battery preset = %v, want unchanged critical", deg.Preset)
+	}
+	send(ctl, `{"action":"degradation","component":"brake","preset":"degrading"}`)
+	if deg := ctl.degradationFor("brake"); deg == nil || deg.Preset != "degrading" {
+		t.Fatalf("brake preset = %v, want degrading", deg)
 	}
 }
 

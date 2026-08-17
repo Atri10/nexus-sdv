@@ -24,6 +24,13 @@ import {
 } from '@/lib/pm-health';
 import type { PmSample } from '@/components/pm/pm-charts';
 import { DEMO_ROUTE_TOTAL_M } from '@/lib/pm-route';
+import {
+  commandsForScenario,
+  FAULT_SCENARIO_HELP,
+  FAULT_SCENARIO_LABELS,
+  type FaultIntensity,
+  type FaultScenario,
+} from '@/lib/pm-degradation';
 import { RotateCcw, Square, Play, Zap, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -70,6 +77,8 @@ export default function PmPage() {
   const [selectedVin, setSelectedVin] = useState<string | null>(null);
   const [samples, setSamples] = useState<PmSample[]>([]);
   const [busy, setBusy] = useState(false);
+  const [faultScenario, setFaultScenario] = useState<FaultScenario>('healthy');
+  const [faultIntensity, setFaultIntensity] = useState<FaultIntensity>('critical');
   const lastSamples = useRef<PmSample[]>([]);
   const userPicked = useRef(false);
   // Shared simulator state — one poll loop, every page agrees.
@@ -239,6 +248,47 @@ export default function PmPage() {
     [simVin, simState]
   );
 
+  const applyFaultScenario = useCallback(async () => {
+    if (!simVin) {
+      toast.error('No simulator detected — is the local stack running?');
+      return;
+    }
+    setBusy(true);
+    try {
+      const wasRunning = sim?.running === true;
+      if (wasRunning) {
+        const stopped = await simState.command('stop');
+        if (!stopped || stopped.error) throw new Error(stopped?.error ?? 'Simulator did not stop');
+      }
+
+      // Apply a complete scenario from a fresh age/energy baseline. This
+      // prevents a previous tire fault or brake accumulator from contaminating
+      // the component the engineer is trying to test.
+      const reset = await simState.command('reset');
+      if (!reset || reset.error) throw new Error(reset?.error ?? 'Simulator did not reset');
+      for (const command of commandsForScenario(faultScenario, faultIntensity)) {
+        const reply = await simState.command('degradation', command.preset, command.component);
+        if (!reply || reply.error) throw new Error(reply?.error ?? `Could not configure ${command.component}`);
+      }
+
+      lastSamples.current = [];
+      lastPublishedRef.current = null;
+      wasRunningRef.current = false;
+      setSamples([]);
+      clearAlerts();
+
+      if (wasRunning) {
+        const started = await simState.command('start', undefined, undefined, selectedVin ?? simVin);
+        if (!started || started.error) throw new Error(started?.error ?? 'Simulator did not restart');
+      }
+      toast.success(`${FAULT_SCENARIO_LABELS[faultScenario]} scenario applied`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to configure degradation');
+    } finally {
+      setBusy(false);
+    }
+  }, [clearAlerts, faultIntensity, faultScenario, selectedVin, sim, simState, simVin]);
+
   const resetDemo = useCallback(async () => {
     if (!simVin) {
       toast.error('No simulator detected — nothing to reset.');
@@ -296,14 +346,15 @@ export default function PmPage() {
 
     const published = Number(currentSim.published);
     if (!Number.isFinite(published)) return;
-    if (lastPublishedRef.current === published) {
-      if (currentSim.dead && previous.length > 0 && !previous[previous.length - 1].gap) {
-        lastSamples.current = [
-          ...previous,
-          { t, gap: true, health: null, voltage: null, brakeWear: null, tirePressure: null },
-        ].slice(-MAX_SAMPLES);
-        setSamples(lastSamples.current);
-      }
+    // A death-stop writes one final status snapshot but does not increment
+    // published because it intentionally sends no telemetry payload. Accept
+    // that one terminal snapshot; later identical polls are ignored after the
+    // explicit gap has been appended below.
+    if (currentSim.dead && previous.length > 0 && previous[previous.length - 1].gap) {
+      wasRunningRef.current = currentSim.running === true;
+      return;
+    }
+    if (lastPublishedRef.current === published && !currentSim.dead) {
       wasRunningRef.current = currentSim.running === true;
       return;
     }
@@ -313,14 +364,20 @@ export default function PmPage() {
     const gt = currentSim.ground_truth ?? {};
     const liveVals = (currentSim.live ?? {}) as Record<string, unknown>;
     const voltage = Number(liveVals.battery_voltage ?? NaN);
+    const batteryGt = (gt.battery ?? {}) as Record<string, unknown>;
+    const batteryWear = Number(batteryGt.wear_fraction ?? NaN);
     // Battery health is a 60s detector value once available. The chart marks
     // this series as stepped so repeated values are understood as a held
     // detector state, not a smooth stream of measurements.
-    const health =
-      latestPerComponentRef.current.get('battery')?.health_score ??
-      (Number.isFinite(voltage)
-        ? Math.round(Math.max(0, Math.min(100, ((voltage - 10.5) / (12.63 - 10.5)) * 100)))
-        : null);
+    // Terminal ground truth wins over the last detector message so a battery
+    // failure is charted as 0% health immediately, not as the detector's
+    // previous 60-second score.
+    const health = Number.isFinite(batteryWear)
+      ? Math.round(Math.max(0, Math.min(100, (1 - batteryWear) * 100)))
+      : latestPerComponentRef.current.get('battery')?.health_score ??
+        (Number.isFinite(voltage)
+          ? Math.round(Math.max(0, Math.min(100, ((voltage - 10.5) / (12.63 - 10.5)) * 100)))
+          : null);
     const brakeGt = gt.brake as Record<string, unknown> | undefined;
     const brakeWear = brakeGt?.wear_fraction !== undefined ? Number(brakeGt.wear_fraction) : null;
     const gtBrakes = (gt.brakes ?? {}) as Record<string, unknown>;
@@ -395,6 +452,9 @@ export default function PmPage() {
   const speedMs = Number(liveVals.velocity_m_s ?? NaN);
   const speedKmh = Number.isFinite(speedMs) ? speedMs * 3.6 : NaN;
   const batteryV = Number(liveVals.battery_voltage ?? NaN);
+  const batterySoc = Number(liveVals.battery_soc ?? NaN);
+  const batteryGroundTruth = (sim?.ground_truth?.battery ?? {}) as Record<string, unknown>;
+  const batteryWearFrac = Number(batteryGroundTruth.wear_fraction ?? NaN);
   const tireBar = Number(liveVals.tire_pressure_bar ?? NaN);
   const batteryMsg = componentSummary.battery;
   const brakeMsg = componentSummary.brake;
@@ -449,6 +509,7 @@ export default function PmPage() {
     () => ({
       battery: coherentHealth('battery', batteryMsg, {
         batteryVoltage: Number.isFinite(batteryV) ? batteryV : null,
+        batteryWearFrac: Number.isFinite(batteryWearFrac) ? batteryWearFrac : null,
         tirePressure: null,
         brakeWearFrac: null,
       }),
@@ -464,7 +525,7 @@ export default function PmPage() {
         brakeWearFrac: null,
       }),
     }),
-    [batteryMsg, brakeMsg, tiresMsg, batteryV, tireBar, tirePressures, worstPadWearFrac]
+    [batteryMsg, brakeMsg, tiresMsg, batteryV, batteryWearFrac, tireBar, tirePressures, worstPadWearFrac]
   );
   const deathCause = useMemo<DeathCause | null>(() => {
     if (!sim?.dead) return null;
@@ -494,8 +555,12 @@ export default function PmPage() {
     deathCause?.component === 'tires' && deathCause.wheel
       ? `Vehicle stopped — ${wheelLabel(deathCause.wheel)} tire pressure collapsed to ${deathCause.pressureBar?.toFixed(2) ?? 'critical'} bar.`
       : deathCause?.component === 'battery'
-        ? 'Vehicle stopped — the 12V battery reached end of life.'
+        ? `Vehicle stopped — the 12V battery reached end of life (0% health${Number.isFinite(batteryV) ? `; ${batteryV.toFixed(2)} V terminal reading` : ''}).`
         : 'Vehicle reached end-of-life — simulation stopped';
+  const activeDegradation = Object.entries(sim?.degradation ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([component, config]) => `${component} ${config.preset}`)
+    .join(' · ');
 
   return (
     <AppLayout>
@@ -558,6 +623,49 @@ export default function PmPage() {
               ))}
             </div>
 
+            {/* Controlled fault injection: reset first so one test cannot
+                inherit a prior component's degradation or brake energy. */}
+            <div className="flex flex-wrap items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/5 p-1">
+              <span className="px-1.5 text-xs font-semibold uppercase tracking-wider text-amber-600">
+                Test fault
+              </span>
+              <select
+                value={faultScenario}
+                onChange={(e) => setFaultScenario(e.target.value as FaultScenario)}
+                disabled={busy || !simVin}
+                aria-label="Component fault scenario"
+                title={FAULT_SCENARIO_HELP[faultScenario]}
+                className="rounded border border-border bg-card px-1.5 py-1 font-mono text-xs text-foreground outline-none focus:border-amber-500"
+              >
+                {(Object.keys(FAULT_SCENARIO_LABELS) as FaultScenario[]).map((scenario) => (
+                  <option key={scenario} value={scenario}>
+                    {FAULT_SCENARIO_LABELS[scenario]}
+                  </option>
+                ))}
+              </select>
+              {faultScenario !== 'healthy' && (
+                <select
+                  value={faultIntensity}
+                  onChange={(e) => setFaultIntensity(e.target.value as FaultIntensity)}
+                  disabled={busy || !simVin}
+                  aria-label="Fault intensity"
+                  className="rounded border border-border bg-card px-1.5 py-1 font-mono text-xs text-foreground outline-none focus:border-amber-500"
+                >
+                  <option value="degrading">Progressive</option>
+                  <option value="critical">Failure test</option>
+                </select>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={applyFaultScenario}
+                disabled={busy || !simVin}
+                className="h-7 px-2 text-xs"
+              >
+                Apply + reset
+              </Button>
+            </div>
+
             {/* End-of-life banner: the vehicle died (battery dead / tire
                 flat) and the sim stopped itself — a dead vehicle must not
                 keep driving. Reset + Start restores it. */}
@@ -618,6 +726,14 @@ export default function PmPage() {
                 FAST DEMO · {speedMult}×
               </span>
             )}
+            {sim?.degradation && (
+              <span
+                className="rounded border border-border/60 bg-card/50 px-2 py-0.5 text-muted-foreground"
+                title="These are the simulator presets currently used by the battery, tire and brake models."
+              >
+                ACTIVE PRESETS · {activeDegradation || 'healthy'}
+              </span>
+            )}
           </div>
 
           {/* Route + lap */}
@@ -641,7 +757,7 @@ export default function PmPage() {
                 ? `LIVE VALUES · ${simVin}`
                 : 'SIMULATOR STOPPED — start it to see live values'}
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Speed" value={Number.isFinite(speedKmh) ? `${speedKmh.toFixed(1)} km/h` : '—'} stale={frozen} />
             <Kpi
               label="Battery voltage"
@@ -653,6 +769,12 @@ export default function PmPage() {
               label="Battery health"
               value={coherent.battery.score !== null ? `${coherent.battery.score}%` : '—'}
               tone={severityColor(coherent.battery.severity)}
+              stale={frozen}
+            />
+            <Kpi
+              label="Battery SoC"
+              value={Number.isFinite(batterySoc) ? `${batterySoc.toFixed(0)}%` : '—'}
+              tone={Number.isFinite(batterySoc) && batterySoc <= 10 ? severityColor('critical') : undefined}
               stale={frozen}
             />
             <Kpi

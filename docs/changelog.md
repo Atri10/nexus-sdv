@@ -8,8 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Controlled PM degradation scenarios**: `/pm` can isolate battery, tire, or
+  brake faults with progressive or failure-test intensity, and the simulator
+  status exposes the active presets plus terminal battery ground truth.
 
 ### Changed
+- **Vehicle simulator degradation**: brake wear now has its own preset and
+  battery failure status is written before the vehicle stops, allowing the PM
+  console to verify 0% battery health and 0% SoC without confusing either with
+  a 0 V sensor reading.
 
 ### Removed
 

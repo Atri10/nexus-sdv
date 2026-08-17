@@ -72,10 +72,11 @@ type VehicleClient struct {
 	keycloakURL        string
 	natsURL            string
 
-	// Per-VIN degradation state shared with the control handler: the tires
-	// trajectory (read by buildPayloads → buildChassisReport) and the
-	// vehicle's simulated age (also maintained in batteryState.ageDays).
+	// Per-VIN degradation state shared with the control handler: the tire and
+	// brake trajectories (read by buildPayloads) and the vehicle's simulated
+	// age (also maintained in batteryState.ageDays).
 	tiresDeg       *DegradationConfig
+	brakesDeg      *DegradationConfig
 	batteryAgeDays float64
 
 	// groundTruthLabels is the path of the JSONL file the publish loop
@@ -522,7 +523,7 @@ func (v *VehicleClient) buildPayloads(now time.Time, battery batteryState, drive
 			// (the connector writes dynamic:TIRE_PRESSURE.{wheel} etc.); the
 			// MetricsReport chassis report keeps the legacy single-channel
 			// typed fields for back-compat.
-			if msgs, err := buildChassisWheelTelemetry(v.VIN, drive, v.tiresDeg, v.tiresDeg, v.batteryAgeDays, now); err == nil {
+			if msgs, err := buildChassisWheelTelemetry(v.VIN, drive, v.tiresDeg, v.brakesDeg, v.batteryAgeDays, now); err == nil {
 				for _, msg := range msgs {
 					if payload, err := proto.Marshal(msg); err == nil {
 						emit("telemetry", v.buildTelemetrySubject("chassis"), payload)
@@ -578,18 +579,19 @@ func (v *VehicleClient) groundTruth(battery batteryState, drive driveState) map[
 			"days_to_failure": int(math.Round(daysToFailure)),
 		}
 	}
+	brakeDeg := v.brakesDeg
+	if brakeDeg == nil {
+		brakeDeg = &DegradationConfig{}
+	}
 	gt["brake"] = map[string]any{
-		"wear_fraction": math.Round(drive.brakeWearFraction()*1000) / 1000,
+		"wear_fraction": math.Round(brakeDeg.BrakeWearFraction(drive.brakeEnergyJ)*1000) / 1000,
 		"energy_joules": int64(drive.brakeEnergyJ),
 	}
 	// Per-pad brake wear: the same accumulator scaled per pad (front pads do
 	// more work under braking) so the FL pad — the worst corner — crosses
-	// the detector's action threshold first. BrakeWearAt reads no config
-	// state, so a nil tires config is safe (bare &DegradationConfig{}).
-	brakeDeg := v.tiresDeg
-	if brakeDeg == nil {
-		brakeDeg = &DegradationConfig{}
-	}
+	// the detector's action threshold first. The brake config is independent
+	// from the tire config; a selected brake fault increases pad wear without
+	// changing tire pressure.
 	brakes := map[string]any{}
 	for _, wheel := range wheels {
 		brakes[wheel] = map[string]any{
@@ -772,9 +774,9 @@ func defaultDegradationConfig(component string, poolIndex int) *DegradationConfi
 }
 
 // degradableComponents are the components whose trajectories the simulator
-// walks (battery via publishOnce, tires via buildChassisReport) and that the
-// degradation control action can rewrite.
-var degradableComponents = []string{"battery", "tires"}
+// walks (battery via publishOnce, tires via buildChassisReport, brakes via
+// BrakeWearAt) and that the degradation control action can rewrite.
+var degradableComponents = []string{"battery", "tires", "brake"}
 
 // newControlState builds the component registry. This is the single source
 // of truth for what the simulator can stream; keep in sync with the payload
@@ -873,8 +875,8 @@ func newControlState(vin, messageType string) *controlState {
 //	"preset":"healthy|degrading|critical"}. The component field is optional —
 //
 // without it start/stop apply to every component (legacy behavior).
-// "degradation" rewrites the per-component degradation trajectory (battery
-// and tires) to the requested preset. Replies are JSON {vin, running,
+// "degradation" rewrites the per-component degradation trajectory (battery,
+// tires or brake) to the requested preset. Replies are JSON {vin, running,
 // published, messageType, components, ground_truth} on the request's reply
 // subject, or {"error": ...}.
 func (c *controlState) handle(msg *nats.Msg) {
@@ -1041,7 +1043,7 @@ func (c *controlState) speedMultiplier() float64 {
 
 // applyDegradation handles {"action":"degradation","component":"<id>",
 // "preset":"<preset>"}. The component may be a degradable component
-// (battery|tires), "all", or empty (all). Preset must be healthy, degrading
+// (battery|tires|brake), "all", or empty (all). Preset must be healthy, degrading
 // or critical; anything else is an error. Rewriting a trajectory keeps the
 // existing horizon and resets nothing else — the trajectory is a function of
 // the vehicle's age, so the change takes effect on the next tick.
@@ -1117,6 +1119,17 @@ func (c *controlState) stateLocked() map[string]any {
 			emit(comp)
 		}
 	}
+	degradation := map[string]map[string]any{}
+	for id, deg := range c.degradation {
+		if deg == nil {
+			continue
+		}
+		degradation[id] = map[string]any{
+			"component":    deg.Component,
+			"preset":       deg.Preset,
+			"horizon_days": deg.horizonDays(),
+		}
+	}
 	return map[string]any{
 		"vin":               c.vin,
 		"running":           c.running,
@@ -1126,6 +1139,7 @@ func (c *controlState) stateLocked() map[string]any {
 		"published":         c.published,
 		"messageType":       c.messageType,
 		"components":        comps,
+		"degradation":       degradation,
 		"ground_truth":      c.groundTruth,
 		"speed":             c.speed,
 		"degradation_accel": c.degradationAccel,
@@ -2014,7 +2028,10 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// detector's EWMA (alpha 0.1) then sees a clean physical trend under
 		// plausible sensor scatter instead of uniform jitter.
 		battery.voltage = vRest + gauss(0.010)
-		battery.soc = clamp(85.5-30*((battery.deg.severityFactor()*battery.ageDays/120.0)/1.0)+gauss(0.5), 5, 100)
+		battery.soc = clamp(85.5*(1-battery.deg.severityFactor()*battery.deg.norm(battery.ageDays))+gauss(0.5), 0, 100)
+		if battery.deg.severityFactor() > 0 && battery.ageDays >= float64(battery.deg.horizonDays()) {
+			battery.soc = 0
+		}
 		battery.temp = battery.deg.BatteryTempAt(battery.ageDays) + gauss(0.3)
 		_ = vMin
 		_ = rInt
@@ -2023,35 +2040,21 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 
 		// Advance the randomized drive cycle (velocity, engine, GPS, dynamics).
 		driveCycleStep(&drive, float64(intervalSeconds), speed)
-		ctl.mu.Lock()
-		ctl.routeDist = drive.tripDist
-		ctl.batteryAgeDays = battery.ageDays
-		// Death-stop: once the vehicle reaches end-of-life (battery dead or
-		// a tire flat) it stops driving — a dead vehicle publishing laps is
-		// logically incoherent. Stop the components, mark dead, and publish
-		// one final status so the dashboards show "vehicle dead, stopped".
-		if !ctl.dead && ctl.isDeadLocked() {
-			ctl.deadComponent, ctl.deadWheel = ctl.deathCauseLocked()
-			ctl.dead = true
-			for _, comp := range ctl.components {
-				comp.enabled = false
-			}
-			ctl.running = false
-			ctl.mu.Unlock()
-			log.Println("Vehicle reached end-of-life (battery dead / tire flat) — stopping simulation")
-			return
-		}
-		ctl.mu.Unlock()
-
 		// Mirror the live degradation state onto the client so the chassis
 		// report and ground truth use the same config the battery walks
 		// (control actions rewrite ctl.degradation; pick it up each tick).
 		// The active VIN too — adopt() swaps ctl.vin at runtime, and publish
 		// subjects read v.VIN, so the client mirrors it before each tick's
 		// payloads are built (subjects then repoint to the adopted VIN).
-		v.VIN = ctl.vin
+		ctl.mu.Lock()
+		activeVIN := ctl.vin
+		ctl.routeDist = drive.tripDist
+		ctl.batteryAgeDays = battery.ageDays
+		ctl.mu.Unlock()
+		v.VIN = activeVIN
 		v.batteryAgeDays = battery.ageDays
 		v.tiresDeg = ctl.degradationFor("tires")
+		v.brakesDeg = ctl.degradationFor("brake")
 
 		// Ground truth for the status reply: wear fractions and days to
 		// failure per degradable component, derived from the same curves the
@@ -2068,8 +2071,27 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 			"lat":               drive.lat,
 			"lng":               drive.lng,
 			"battery_voltage":   math.Round(battery.voltage*100) / 100,
+			"battery_soc":       math.Round(battery.soc*10) / 10,
 			"heading_deg":       math.Round(drive.headingDeg),
 		})
+
+		// Death-stop: once the vehicle reaches end-of-life (battery dead or
+		// a tire flat) it stops driving — a dead vehicle publishing laps is
+		// logically incoherent. Ground truth/live were written first so the
+		// final status exposes the terminal battery and tire readings.
+		ctl.mu.Lock()
+		if !ctl.dead && ctl.isDeadLocked() {
+			ctl.deadComponent, ctl.deadWheel = ctl.deathCauseLocked()
+			ctl.dead = true
+			for _, comp := range ctl.components {
+				comp.enabled = false
+			}
+			ctl.running = false
+			ctl.mu.Unlock()
+			log.Println("Vehicle reached end-of-life (battery dead / tire flat) — stopping simulation")
+			return
+		}
+		ctl.mu.Unlock()
 
 		// Offline evaluator labels: one JSONL object per VIN per tick (no-op
 		// when no GROUND_TRUTH_LABELS path is configured).
@@ -2131,10 +2153,15 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 			if deg := ctl.degradationFor("battery"); deg != nil {
 				battery.deg = deg
 			}
+			v.tiresDeg = ctl.degradationFor("tires")
+			v.brakesDeg = ctl.degradationFor("brake")
 			battery.ageDays += 1.0 // one simulated day per backfill row
 			vRest, _, _ := battery.deg.BatteryAt(battery.ageDays)
 			battery.voltage = clamp(vRest+(mathrand.Float64()-0.5)*0.025, 10.5, 14.5)
-			battery.soc = clamp(85.5-30*(battery.deg.severityFactor()*battery.ageDays/120.0), 5, 100)
+			battery.soc = clamp(85.5*(1-battery.deg.severityFactor()*battery.deg.norm(battery.ageDays)), 0, 100)
+			if battery.deg.severityFactor() > 0 && battery.ageDays >= float64(battery.deg.horizonDays()) {
+				battery.soc = 0
+			}
 			battery.temp = battery.deg.BatteryTempAt(battery.ageDays)
 
 			now := time.Now().Add(-time.Duration(backfillDays-i) * 24 * time.Hour)

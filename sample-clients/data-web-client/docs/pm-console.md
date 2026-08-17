@@ -130,7 +130,7 @@ prerendered, because it streams live data and touches browser-only APIs
 | Route/lap panel | `src/components/pm/route-panel.tsx` (`RoutePanel`) — an SVG projection of the simulator's fixed route (`src/lib/pm-route.ts`) with an animated position marker and lap/progress readout. |
 | PM events feed | Inline "PM events" section in `page.tsx`, rendering the 20 newest messages through `friendlyAlert()` (`src/lib/pm-health.ts`), which turns raw evidence into a plain-language headline plus a technical detail line. |
 | Clear alerts | Inline button in the PM events section calling `clearAlerts()` from the shared hook, with a toast confirmation. |
-| Simulator controls | Start/Stop, speed presets, Reset demo — see §6. |
+| Simulator controls | Start/Stop, speed presets, controlled Test fault scenarios, Reset demo — see §6. |
 
 **In plain terms — why the picker has two sources of truth**: the device
 list (`/api/devices`) tells you every VIN that has ever reported
@@ -151,11 +151,13 @@ polls.
 
 The four physical series (voltage, tire pressure, and brake wear) are built
 from the simulator's rounded `live`/`ground_truth` values. Battery health is
-the detector score when a PM message exists, otherwise the voltage-derived
-provisional score. Because the detector refreshes much more slowly than the
-simulator, the battery-health dataset uses stepped rendering with zero curve
-smoothing; the flat segments are an honest held detector state, not invented
-measurements between PM polls.
+the detector score when a PM message exists, otherwise a ground-truth wear
+score or voltage-derived provisional score. At terminal battery wear, the
+ground-truth `wear_fraction=1` overrides a stale detector message and the
+health chart reaches `0%`. Because the detector refreshes much more slowly
+than the simulator, non-terminal detector values use stepped rendering with
+zero curve smoothing; the flat segments are an honest held detector state,
+not invented measurements between PM polls.
 
 Each chart auto-scales around the values currently visible in the ten-minute
 window with a small unit-aware margin. It no longer reserves the entire
@@ -187,6 +189,29 @@ and wheel, while battery `days_to_failure === 0` identifies a battery stop.
 The banner therefore explains the incident — for example, "front-left tire
 pressure collapsed to 1.00 bar" — instead of merely saying that the vehicle
 reached end-of-life.
+
+### 3.3 Controlled component-failure testing
+
+The **Test fault** control in `PmPage` sends the simulator's
+`degradation` action through `useSimulatorState.command()`. It offers:
+
+- **No induced fault** — battery, tires, and brake return to their healthy
+  baseline.
+- **Battery failure** — only battery aging is enabled. At the terminal
+  horizon, status ground truth is `battery.wear_fraction=1`,
+  `battery.days_to_failure=0`, and `live.battery_soc=0`; the physical voltage
+  remains a terminal voltage reading rather than becoming `0 V`.
+- **Tire failure** — only tire aging is enabled. The first wheel at or below
+  `1.2 bar` stops the vehicle and is named in `dead_wheel`.
+- **Brake wear** — only the brake fault multiplier is enabled. The vehicle
+  continues driving because worn brakes are a PM finding, not an automatic
+  simulator death condition.
+
+`Progressive` uses the degrading preset; `Failure test` uses critical. **Apply
++ reset** stops a running simulator, resets age/energy, applies all three
+component presets so no previous fault leaks into the test, and restarts only
+if the simulator was running before the change. The active presets are shown
+in the Simulator section from the status reply's `degradation` field.
 
 ---
 
@@ -257,7 +282,7 @@ point of confusion.
 | Action | What it touches | Where |
 |---|---|---|
 | **Clear alerts** | Empties the in-memory message list and `sessionStorage['pmMessages']`, then bumps a shared `pmMessages.gen` generation timestamp | `usePmMessages.ts` · `clearAlerts()` |
-| **Reset demo** (`/pm` only) | Sends a `reset` control command to the simulator (re-seeds battery age/tire wear server-side) **and** clears the local chart sample buffer **and** calls `clearAlerts()` | `src/app/pm/page.tsx` · `resetDemo()` |
+| **Reset demo** (`/pm` only) | Sends a `reset` control command to the simulator (re-seeds battery age, tire wear, and brake energy while keeping the active presets) **and** clears the local chart sample buffer **and** calls `clearAlerts()` | `src/app/pm/page.tsx` · `resetDemo()` |
 
 The `pmMessages.gen` generation marker is the mechanism that keeps `/pm`
 and `/demo`'s two independent "Clear alerts" buttons from fighting each
@@ -269,12 +294,13 @@ resurrecting it on its next write.
 
 **In plain terms:** "Clear alerts" is purely a UI action — wipe what's
 currently displayed. "Reset demo" is the "start the whole story over"
-action — the simulated vehicle itself becomes healthy again, and the
-displayed alert history is wiped to match, since old alerts from before a
-reset don't mean the freshly-reset vehicle is still failing. Clicking
-"Clear alerts" alone doesn't make a dying vehicle healthy again — it just
-hides the evidence that it's dying, which is why the feed will immediately
-repopulate on the next poll if the vehicle is still actually degrading.
+action — the simulated vehicle returns to age/energy zero while keeping the
+selected degradation scenario, and the displayed alert history is wiped to
+match. Use **Apply + reset** when the component presets themselves must
+change. Clicking "Clear alerts" alone doesn't make a dying vehicle healthy
+again — it just hides the evidence that it's dying, which is why the feed will
+immediately repopulate on the next poll if the vehicle is still actually
+degrading.
 
 `src/lib/pm-health.ts` also exports a shared `clearPmState()` helper
 (messages + chart samples together, no simulator command), used
@@ -298,7 +324,7 @@ page agrees on the simulator's current state."
   `POST /api/demo/vehicle` with `{action: 'status', vin}` for the full
   status payload.
 - `command(action, preset?, component?, targetVin?)` is the single write
-  path for `start | stop | speed | reset`. Every button — `/pm`'s
+  path for `start | stop | speed | reset | degradation`. Every button — `/pm`'s
   Start/Stop, speed presets, and Reset demo; `/demo`'s Start/Stop and
   per-component toggle switches — ultimately calls this one function.
 - `command()` posts to `/api/demo/vehicle` (`src/app/api/demo/vehicle/route.ts`),
@@ -313,6 +339,12 @@ page agrees on the simulator's current state."
   reaches NATS the moment a subsequent Start command names it as
   `targetVin`, which is the mechanism behind "runtime VIN switching"
   described in the vehicle-simulator docs (`controlState.adopt`).
+
+The `/pm` **Test fault** control sends three sequential `degradation` commands
+after a reset: one for each of `battery`, `tires`, and `brake`. The selected
+component receives `degrading` or `critical`; the other two receive
+`healthy`. This complete write prevents a previous fault from remaining
+active when an engineer switches from testing tires to testing battery.
 
 **In plain terms:** every control button in this app is really just "send
 a small JSON message to the simulator over NATS, and use whatever it
@@ -342,11 +374,12 @@ component, not modifying an existing one.
 |---|---|
 | `__tests__/api/pm/stream.test.ts` | `pm.>` (not `pm.*`) subject correctness, 401 when unauthenticated, SSE headers, protobuf decode → JSON, 4-token subject → `wheel` field attachment |
 | `src/hooks/usePmMessages.test.ts` | sessionStorage hydration (including legacy/corrupted entries), `clearAlerts()`, dedup of reconnect-replay duplicates |
-| `src/lib/pm-health.test.ts` | `pmMessageFromSubject()` parsing, `deriveDeathCause()` fallback attribution, `worstWheel()` selection, `coherentHealth()` tire aggregation, `clearPmState()` |
+| `src/lib/pm-health.test.ts` | `pmMessageFromSubject()` parsing, `deriveDeathCause()` fallback attribution, `worstWheel()` selection, `coherentHealth()` tire aggregation and terminal battery override, `clearPmState()` |
+| `src/lib/pm-degradation.test.ts` | Complete healthy/battery/tire/brake scenario command mapping |
 | `src/lib/pm-types.test.ts` | `parsePmMessage()` valid/malformed cases, `severityColor()` mapping |
 | `__tests__/demo/component-panel.test.tsx` | Per-component card rendering, offline state, toggle callback |
 | `__tests__/demo/vehicle-schematic.test.tsx` | Node + sensor-chip rendering (does not specifically assert the PM `alertState` pulsing-dot path — a gap worth closing if you touch that code) |
-| `src/lib/demo-control.test.ts` | Control-command plumbing shared by Start/Stop/Speed/Reset |
+| `src/lib/demo-control.test.ts` | Control-command plumbing shared by Start/Stop/Speed/Reset/Degradation |
 
 Not yet covered by a dedicated test: `pm-charts.tsx`'s per-wheel series
 construction, and `/pm`'s `resetDemo()`/`clearAlerts()` as an integrated
