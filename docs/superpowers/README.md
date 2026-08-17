@@ -30,6 +30,32 @@ docs/superpowers/
     └── 2026-08-14-pm-algorithms-tires-first-principles.md
 ```
 
+## Service-level docs (per-service, code-anchored)
+
+Each service in the predictive-maintenance pipeline now has its own
+`docs/` folder with an implementation-focused deep dive (plain-language +
+technical, Mermaid diagrams, file+function citations — no line numbers, so
+they stay valid across refactors):
+
+- `sample-clients/vehicle-client/docs/simulator-data-generation.md` +
+  `simulator-data-generation-deep-dive.md` — the degradation/drive-cycle
+  simulator that produces the telemetry.
+- `base-services/nats-bigtable-connector/docs/pm-telemetry-ingestion.md` —
+  how NATS telemetry becomes Bigtable rows, and the `dynamic:<sensor>`
+  column convention that makes per-wheel detection possible.
+- `base-services/data-api/docs/pm-data-serving.md` — how a 30-day window
+  query becomes a Bigtable row-key-range scan (and why there's no
+  wildcard query for per-wheel sensors).
+- `sample-services/predictive-maintenance/docs/pm-detector-service.md` —
+  the detector service's process architecture, scheduling, publish
+  cadence, and evaluator tooling (links out to the algorithm math below
+  rather than duplicating it).
+- `sample-clients/data-web-client/docs/pm-console.md` — the NATS→SSE
+  bridge and the `/pm` + `/demo` alert-feed UI.
+
+These are the place to start if you're working inside one specific
+service; the docs below are the cross-service narrative.
+
 ## Reading order
 
 1. **Predictive maintenance** — start with the operator guide
