@@ -33,3 +33,34 @@ func TestIsDeadLocked(t *testing.T) {
 	}
 	os.Unsetenv("DEGRADATION_PRESET")
 }
+
+func TestDeathCauseLocked(t *testing.T) {
+	t.Setenv("DEGRADATION_PRESET", "critical")
+
+	battery := newControlState("VIN1001", "both")
+	battery.batteryAgeDays = 200
+	component, wheel := battery.deathCauseLocked()
+	if component != "battery" || wheel != "" {
+		t.Fatalf("battery death cause = (%q, %q), want (battery, empty)", component, wheel)
+	}
+
+	tires := newControlState("VIN1002", "both")
+	tires.degradation["battery"].Preset = "healthy"
+	tires.batteryAgeDays = 120
+	component, wheel = tires.deathCauseLocked()
+	if component != "tires" || wheel != "FL" {
+		t.Fatalf("tire death cause = (%q, %q), want (tires, FL)", component, wheel)
+	}
+
+	state := tires.stateLocked()
+	if state["dead_component"] != "" || state["dead_wheel"] != "" {
+		t.Fatalf("fresh state exposed stale death cause: component=%v wheel=%v", state["dead_component"], state["dead_wheel"])
+	}
+	tires.dead = true
+	tires.deadComponent = component
+	tires.deadWheel = wheel
+	state = tires.stateLocked()
+	if state["dead_component"] != "tires" || state["dead_wheel"] != "FL" {
+		t.Fatalf("state death cause = (%v, %v), want (tires, FL)", state["dead_component"], state["dead_wheel"])
+	}
+}

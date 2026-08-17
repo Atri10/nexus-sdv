@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   clearPmState,
   coherentHealth,
+  deriveDeathCause,
   pmMessageFromSubject,
   worstWheel,
   type CoherentHealth,
@@ -37,6 +38,28 @@ describe('pmMessageFromSubject', () => {
     expect(pmMessageFromSubject('telemetry.VIN1009')).toBeNull();
     expect(pmMessageFromSubject('pm.VIN1009.gearbox')).toBeNull();
     expect(pmMessageFromSubject('pm')).toBeNull();
+  });
+});
+
+describe('deriveDeathCause', () => {
+  it('identifies the first flat wheel from ground truth', () => {
+    expect(deriveDeathCause({
+      tires: {
+        FL: { pressure_bar: 1.0 },
+        FR: { pressure_bar: 2.3 },
+        RL: { pressure_bar: 2.3 },
+        RR: { pressure_bar: 2.3 },
+      },
+      battery: { days_to_failure: 30 },
+    })).toEqual({ component: 'tires', wheel: 'FL', pressureBar: 1 });
+  });
+
+  it('identifies a battery at its failure horizon', () => {
+    expect(deriveDeathCause({ battery: { days_to_failure: 0 } })).toEqual({ component: 'battery' });
+  });
+
+  it('returns unknown when the status payload has no matching evidence', () => {
+    expect(deriveDeathCause({ battery: { days_to_failure: 5 } })).toEqual({ component: 'unknown' });
   });
 });
 

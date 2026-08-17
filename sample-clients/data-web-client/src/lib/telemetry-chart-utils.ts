@@ -7,6 +7,8 @@ export interface ChartSeries {
   label: string;
   color: string;
   points: { x: number; y: number | null; raw?: string }[];
+  /** Render discrete detector updates as an honest step function. */
+  stepped?: boolean | 'before' | 'after' | 'middle';
 }
 
 const VIN_FAMILIES = ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'];

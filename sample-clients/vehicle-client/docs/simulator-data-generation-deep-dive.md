@@ -480,10 +480,19 @@ of two different models drifting apart.
 When this flips true for the first time, the tick loop:
 
 1. Sets `ctl.dead = true`.
-2. Disables every component (`comp.enabled = false` for all), so no more
+2. Records the cause using `controlState.deathCauseLocked()`: `battery`, or
+   `tires` plus the first failing wheel (`FL`, `FR`, `RL`, or `RR`).
+3. Disables every component (`comp.enabled = false` for all), so no more
    telemetry publishes.
-3. Sets `ctl.running = false`.
-4. Logs and returns — no payloads are built or published that tick.
+4. Sets `ctl.running = false`.
+5. Logs and returns — no payloads are built or published that tick.
+
+The status reply produced by `controlState.stateLocked()` retains
+`dead_component` and `dead_wheel` after the loop stops. This is important
+because the final status poll happens after telemetry has stopped: a
+dashboard can explain the incident without guessing from stale KPI values.
+The web console still has a ground-truth fallback for rolling deployments
+where an older simulator reports only `dead`.
 
 This exists because "a dead vehicle publishing new GPS laps and battery
 readings" is logically incoherent for a demo — once you're out of the

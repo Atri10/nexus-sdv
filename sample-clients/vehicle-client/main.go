@@ -705,6 +705,11 @@ type controlState struct {
 	// dead is set once the vehicle reaches end-of-life (battery dead or a
 	// tire flat); the publish loop stops and the status reply exposes it.
 	dead bool
+	// deadComponent and deadWheel identify the condition that stopped the
+	// vehicle. They are retained with dead so status replies remain useful
+	// after the publish loop has stopped.
+	deadComponent string
+	deadWheel     string
 	// groundTruth holds the live simulator values the status reply exposes
 	// (see stateLocked). Set by the publish loop each tick; only components
 	// with an enabled config are populated.
@@ -975,6 +980,8 @@ func (c *controlState) adopt(vin string) error {
 	c.mu.Lock()
 	c.vin = vin
 	c.dead = false
+	c.deadComponent = ""
+	c.deadWheel = ""
 	c.batteryAgeDays = 0
 	for _, deg := range c.degradation {
 		deg.HorizonDays = defaultDegradationConfig(deg.Component, poolIndex(vin)).HorizonDays
@@ -1001,6 +1008,8 @@ func (c *controlState) resetSimulation(msg *nats.Msg) {
 	c.mu.Lock()
 	c.published = 0
 	c.dead = false
+	c.deadComponent = ""
+	c.deadWheel = ""
 	c.batteryAgeDays = 0
 	c.startedAt = time.Now()
 	c.groundTruth = map[string]map[string]any{}
@@ -1112,6 +1121,8 @@ func (c *controlState) stateLocked() map[string]any {
 		"vin":               c.vin,
 		"running":           c.running,
 		"dead":              c.dead,
+		"dead_component":    c.deadComponent,
+		"dead_wheel":        c.deadWheel,
 		"published":         c.published,
 		"messageType":       c.messageType,
 		"components":        comps,
@@ -1208,23 +1219,33 @@ func (c *controlState) stop() {
 	c.running = false
 }
 
-// isDeadLocked reports whether the vehicle has reached its end-of-life state:
-// any degradable component past its horizon (battery dead = ageDays ≥ horizon,
-// tires flat = worst wheel at floor). A dead vehicle stops the simulation.
-func (c *controlState) isDeadLocked() bool {
+// deathCauseLocked returns the first end-of-life condition in the same order
+// used by the simulator: battery failure takes precedence, then the first
+// flat wheel in publish order. The caller must already own c.mu.
+func (c *controlState) deathCauseLocked() (component, wheel string) {
 	deg := c.degradation["battery"]
 	if deg != nil && deg.severityFactor() > 0 && c.batteryAgeDays >= float64(deg.horizonDays()) {
-		return true
+		return "battery", ""
 	}
 	tires := c.degradation["tires"]
 	if tires != nil && tires.severityFactor() > 0 {
 		for _, w := range wheels {
 			if tires.TirePressureAt(w, c.batteryAgeDays) <= 1.2 {
-				return true
+				return "tires", w
 			}
 		}
 	}
-	return false
+	return "", ""
+}
+
+// isDeadLocked reports whether the vehicle has reached its end-of-life state:
+// any degradable component past its horizon (battery dead = ageDays ≥ horizon,
+// tires flat = worst wheel at floor). A dead vehicle stops the simulation.
+// Keep this bool query for existing callers; deathCauseLocked supplies the
+// stable identity when the publish loop records the stop.
+func (c *controlState) isDeadLocked() bool {
+	component, _ := c.deathCauseLocked()
+	return component != ""
 }
 
 func (c *controlState) reply(msg *nats.Msg, body map[string]any) {
@@ -2010,6 +2031,7 @@ func (v *VehicleClient) PublishTelemetryContinuously(intervalSeconds int) error 
 		// logically incoherent. Stop the components, mark dead, and publish
 		// one final status so the dashboards show "vehicle dead, stopped".
 		if !ctl.dead && ctl.isDeadLocked() {
+			ctl.deadComponent, ctl.deadWheel = ctl.deathCauseLocked()
 			ctl.dead = true
 			for _, comp := range ctl.components {
 				comp.enabled = false

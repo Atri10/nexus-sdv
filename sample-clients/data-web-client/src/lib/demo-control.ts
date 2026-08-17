@@ -32,6 +32,10 @@ export interface DemoControlReply {
   running: boolean;
   /** True when the vehicle reached end-of-life (battery dead / tire flat) and the sim stopped itself. */
   dead?: boolean;
+  /** End-of-life component recorded by the simulator (battery or tires). */
+  dead_component?: 'battery' | 'tires' | string;
+  /** End-of-life wheel for a tire failure (FL, FR, RL or RR). */
+  dead_wheel?: string;
   published: number;
   messageType: string;
   components?: ComponentStatus[];
