@@ -345,16 +345,44 @@ console's validation card reads.
 | `SCHEDULED_VINS` | `""` (empty) | comma/whitespace-separated VINs to poll; empty means nothing is scheduled |
 | `POLL_INTERVAL_SECONDS` | `60` | per-VIN polling cadence |
 | `BATTERY_WINDOW_DAYS` | `30` | lookback window for the data-api request — drives tire/brake lookback too, not just battery |
-| `LOG_LEVEL` | `info` | `structlog` level; `debug` switches to a human-readable console renderer instead of JSON lines |
+| `LOG_LEVEL` | `info` | Structured log threshold: `debug`, `info`, `warning`, `error`, or `critical`; case-insensitive and validated at startup |
 
-One implementation note worth flagging: `main.py`'s startup log calls
-`settings.model_dump(context={"redact": True})`, apparently intending to
-redact secrets like `nats_password` from logs — but no custom serializer
-implementing that redaction exists in `config.py`, so this call's actual
-effect (whether it errors, is ignored, or genuinely redacts, depending on
-the pydantic-settings version in use) hasn't been verified against a
-running instance. Don't assume secrets are actually being redacted from
-logs without checking directly.
+### Logging
+
+The service emits newline-delimited JSON to stdout for local Docker logs and
+cloud log collectors. The configured `LOG_LEVEL` is a real threshold, not a
+renderer switch: a level suppresses events below it for both application and
+framework loggers. The event field is a stable event name, while operational
+details such as `vehicle_id`, `component`, `subject`, `health_score`, and
+`payload_bytes` are separate searchable fields.
+
+The main lifecycle is visible through these events:
+
+| Event | Level | Meaning |
+|---|---|---|
+| `service_starting` / `service_stopped` | info | Process lifecycle; startup includes the active level and redacted config |
+| `nats_connecting` / `nats_connected` | info | NATS connection lifecycle |
+| `analysis_started` | info | A VIN poll began, including lookback and requested signal count |
+| `telemetry_collection_complete` | info | Data-api stream ended, including per-signal sample counts |
+| `detector_results_ready` | info | Detector output components available for publication |
+| `pm_result_publishing` / `pm_results_published` | info | PM subject and result publication summary |
+| `pm_message_publishing` / `pm_message_published` | debug | Serialized payload size and NATS publication details |
+| `analysis_no_detector_results` | warning | The poll produced no detector result, usually because telemetry is missing |
+| `*_failed`, `*_disconnected`, or `*_not_connected_*` | warning/error | Dependency or publication problems |
+
+For the local Compose stack, set `PM_LOG_LEVEL` before starting the service;
+Compose maps it to the service's `LOG_LEVEL`:
+
+```bash
+cd local-dev
+PM_LOG_LEVEL=debug docker compose --env-file .env.base-services \
+  --env-file .env.sample-services up -d predictive-maintenance
+docker compose logs -f predictive-maintenance
+```
+
+`NATS_PASSWORD` is replaced with `[REDACTED]` in startup configuration. Raw
+protobuf payloads are not logged; debug output records their byte count and
+metadata instead.
 
 ---
 

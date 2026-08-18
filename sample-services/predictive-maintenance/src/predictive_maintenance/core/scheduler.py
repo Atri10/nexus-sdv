@@ -19,11 +19,11 @@ class PmScheduler:
 
     def start(self):
         self.scheduler.start()
-        logger.info("APScheduler started (In-Memory)")
+        logger.info("scheduler_started", job_store="memory")
 
     def shutdown(self):
         self.scheduler.shutdown()
-        logger.info("APScheduler shut down")
+        logger.info("scheduler_stopped", job_store="memory")
 
     def schedule_analysis(self, vehicle_id: str, interval_seconds: int):
         job = self.scheduler.add_job(
@@ -35,12 +35,17 @@ class PmScheduler:
             replace_existing=True,
             next_run_time=datetime.now()
         )
-        logger.info("Recurring job scheduled", vehicle_id=vehicle_id, interval=interval_seconds)
+        logger.info(
+            "analysis_job_scheduled",
+            vehicle_id=vehicle_id,
+            interval_seconds=interval_seconds,
+            job_id=job.id,
+        )
         return job.id
 
     def stop_analysis(self, vehicle_id: str):
         self.scheduler.remove_job(f"recurring_{vehicle_id}")
-        logger.info("Recurring job removed", vehicle_id=vehicle_id)
+        logger.info("analysis_job_removed", vehicle_id=vehicle_id)
 
     def retrieve_jobs(self):
         jobs = self.scheduler.get_jobs(jobstore="default")
@@ -49,5 +54,5 @@ class PmScheduler:
         return job_list
 
     async def _execute_analysis(self, vehicle_id: str):
-        logger.debug("Running predictive-maintenance analysis", vehicle_id=vehicle_id)
+        logger.debug("analysis_job_started", vehicle_id=vehicle_id)
         await self._processor.run(vehicle_id)

@@ -13,23 +13,22 @@ class DataApiConnector:
         self.client: TelemetryDataApiStub | None = None
 
     async def is_healthy(self) -> bool:
-        logger.info(f"Checking connection to Data-Api", target=settings.data_api_grpc_addr)
+        logger.debug("data_api_healthcheck_started", target=settings.data_api_grpc_addr)
         if not self._channel:
-            logger.error(f"Channel not initialized", target=settings.data_api_grpc_addr)
+            logger.error("data_api_channel_not_initialized", target=settings.data_api_grpc_addr)
             return False
 
         try:
             await asyncio.wait_for(self._channel.__connect__(), timeout=15)
-            logger.info(f"Successfully connected to Data-API", target=settings.data_api_grpc_addr)
+            logger.debug("data_api_healthcheck_succeeded", target=settings.data_api_grpc_addr)
             return True
-        except (asyncio.TimeoutError, Exception):
-            logger.error(f"Could not establish connection to Data-Api", target=settings.data_api_grpc_addr)
+        except Exception:
+            logger.exception("data_api_healthcheck_failed", target=settings.data_api_grpc_addr)
             return False
 
     async def connect(self):
         """Initializes the connection to the external gRPC service."""
-        logger.info(f"Initializing connection with Data-Api: {settings.data_api_grpc_addr}",
-                    target=settings.data_api_grpc_addr)
+        logger.info("data_api_connecting", target=settings.data_api_grpc_addr)
         host, port = settings.data_api_grpc_addr.split(":")
 
         self._channel = Channel(host, int(port))
@@ -42,4 +41,4 @@ class DataApiConnector:
         """Gracefully closes the channel."""
         if self._channel:
             self._channel.close()
-            logger.info("gRPC channel closed")
+            logger.info("data_api_connection_closed")

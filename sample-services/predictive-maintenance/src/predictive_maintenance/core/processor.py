@@ -53,7 +53,12 @@ class Processor:
             ],
             last_duration=timedelta(seconds=settings.battery_window_days * 86400),
         )
-        logger.info("Polling data-api for predictive-maintenance analysis", vehicle_id=vin)
+        logger.info(
+            "analysis_started",
+            vehicle_id=vin,
+            window_days=settings.battery_window_days,
+            requested_signal_count=len(request.data_types),
+        )
         rest, crank, brake_energy, tires = [], [], 0.0, []
         # Per-wheel collectors: one (t, P_bar, T_kelvin) series per tire and
         # one wear_fraction per brake pad. Keyed by the wheel label (FL/FR/RL/RR).
@@ -100,9 +105,18 @@ class Processor:
                             if a < -0.5 and v_avg > 0.5:
                                 brake_energy += VEHICLE_MASS_KG * abs(a) * v_avg * dt
                     prev_brake = (t, vel)
-        except Exception as e:
-            logger.error("Data poll failed", vehicle_id=vin, error=repr(e))
+        except Exception:
+            logger.exception("telemetry_collection_failed", vehicle_id=vin)
             return
+        logger.info(
+            "telemetry_collection_complete",
+            vehicle_id=vin,
+            battery_samples=len(rest),
+            legacy_tire_samples=len(tires),
+            tire_samples_by_wheel={wheel: len(samples) for wheel, samples in tires_by_wheel.items()},
+            brake_samples_by_pad={pad: len(samples) for pad, samples in brake_wear_by_pad.items()},
+            brake_energy_j=round(brake_energy, 2),
+        )
         results = {}
         if rest:
             # Temperature-compensate resting voltages to the 30 °C reference
@@ -128,14 +142,28 @@ class Processor:
                 results[f"brake.{w}"] = detect_brake(min(1.0, max(0.0, wear)), pad=w)
         elif brake_energy > 0:
             results["brake"] = detect_brake(min(1.0, brake_energy / BRAKE_ENERGY_BUDGET_J))  # E_budget 6 GJ
+        logger.info(
+            "detector_results_ready",
+            vehicle_id=vin,
+            result_count=len(results),
+            components=list(results),
+        )
+        if not results:
+            logger.warning(
+                "analysis_no_detector_results",
+                vehicle_id=vin,
+                battery_samples=len(rest),
+                tire_samples=len(tires),
+                brake_energy_j=round(brake_energy, 2),
+            )
         if not self._nats.is_connected:
             try:
                 await self._nats.connect()  # awaits the dial; no publish-before-connect race
-            except Exception as e:
-                logger.warning("NATS connect failed; skipping publish", vehicle_id=vin, error=repr(e))
+            except Exception:
+                logger.exception("nats_connect_failed_during_analysis", vehicle_id=vin)
                 return
         if not self._nats.is_connected:
-            logger.warning("NATS not connected; skipping publish", vehicle_id=vin)
+            logger.warning("nats_not_connected_skip_publish", vehicle_id=vin)
             return
         try:
             for component, r in results.items():
@@ -147,14 +175,29 @@ class Processor:
                 # (and the legacy "tires"/"brake" fallbacks) — interpolating
                 # them into the subject yields the 3-token pm.{vin}.{component}
                 # or the 4-token pm.{vin}.{component}.{wheel} form.
+                subject = f"pm.{vin}.{component}"
+                logger.info(
+                    "pm_result_publishing",
+                    vehicle_id=vin,
+                    subject=subject,
+                    component=component,
+                    health_score=r.health_score,
+                    severity=r.severity,
+                )
                 await self._nats.publish_message(
-                    f"pm.{vin}.{component}",
+                    subject,
                     PmMessage(vin=vin, component=component, health_score=r.health_score,
                               severity=r.severity, evidence=r.evidence,
                               explanation=r.explanation,
                               timestamp=datetime.now().isoformat()))
-        except Exception as e:
-            logger.error("Publish failed", vehicle_id=vin, error=repr(e))
+            logger.info(
+                "pm_results_published",
+                vehicle_id=vin,
+                result_count=len(results),
+                components=list(results),
+            )
+        except Exception:
+            logger.exception("pm_publish_failed", vehicle_id=vin)
 
     @staticmethod
     def _band_of(score: int) -> str:
