@@ -135,3 +135,7 @@ Tire leak detection runs per wheel (x4, `tires.{wheel}` / `pm.{VIN}.tires.{wheel
 - **Implementation** — theory→code map, exact constants, and the live deltas: `2026-08-14-pm-algorithms-implementation.md`
 - **Battery first principles** — resting-voltage trend + cranking signature: `2026-08-14-pm-algorithms-battery-first-principles.md`
 - **Brake first principles** — friction-work wear model: `2026-08-14-pm-algorithms-brake-first-principles.md`
+
+## 9. Sources
+
+The ideal-gas temperature compensation (`P_comp = P·T_ref/T`, `T_ref = 293.15 K`) is the ideal-gas law applied to tire pressure; the slow-leak physics (a ~0.05 bar/month permeation baseline, a ±0.078 bar per 10 °C sensitivity) is standard radial-tire behavior. The **UNECE R64** regulation (indirect TPMS — per-wheel speed comparison) is the documented future path for localizing leaks when per-wheel *speed* signals exist (per-wheel pressure/temp are already shipped). Full source list, links, and calibration notes: `2026-08-18-pm-algorithms-sources.md`.

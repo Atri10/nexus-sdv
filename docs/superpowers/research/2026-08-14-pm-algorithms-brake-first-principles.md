@@ -210,3 +210,8 @@ Brake wear is modeled **per pad**: the simulator publishes `BRAKE_WEAR.{pad}` fr
 - **Implementation** — theory→code map, exact constants, and the live deltas: `2026-08-14-pm-algorithms-implementation.md`
 - **Battery first principles** — resting-voltage trend + cranking signature: `2026-08-14-pm-algorithms-battery-first-principles.md`
 - **Tires first principles** — ideal-gas pressure compensation: `2026-08-14-pm-algorithms-tires-first-principles.md`
+
+
+## 10. Sources
+
+The friction-work model (pad wear ∝ dissipated braking energy, `W = ∫ m·a·v dt` against a 6 GJ per-pad-set budget for a 1500 kg passenger car) is a standard physics-derived wear estimator; the energy-budget calibration (`E_budget ≈ 6 GJ` from m·a·d over ~40,000 km at 10 % braking) is a literature-typical value, not a fleet-calibrated constant. Full source list, links, and the calibration notes (budget, mass, the unimplemented RUL / driving-style extensions): `2026-08-18-pm-algorithms-sources.md`.

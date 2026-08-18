@@ -263,3 +263,5 @@ The honest framing (implementation doc §8.1): because the sim is the source of 
 - **Brake first principles** — friction work, energy integral, 6 GJ budget: `docs/superpowers/research/2026-08-14-pm-algorithms-brake-first-principles.md`
 - **Tires first principles** — ideal-gas compensation, leak physics, blind spot: `docs/superpowers/research/2026-08-14-pm-algorithms-tires-first-principles.md`
 - **Implementation** — theory→code map, constants, worked examples, known gaps: `docs/superpowers/research/2026-08-14-pm-algorithms-implementation.md`
+
+- **External sources** — the Geotab/Verizon battery patent family, AXIS, UNECE R64, business statistics, and calibration constants: `docs/superpowers/research/2026-08-18-pm-algorithms-sources.md`

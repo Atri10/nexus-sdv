@@ -620,3 +620,5 @@ Described in §3.9: when resting data exists, the explanation is always the fixe
 - **Battery first principles** — why OCV ↔ SoH, why EWMA + OLS, the OCV→SoC table, β and the 30 °C India reference: `docs/superpowers/research/2026-08-14-pm-algorithms-battery-first-principles.md`
 - **Brake first principles** — friction work, the energy integral, the 6 GJ budget derivation, the wear-rate RUL extension this build does not wire: `docs/superpowers/research/2026-08-14-pm-algorithms-brake-first-principles.md`
 - **Tires first principles** — ideal-gas compensation, the 10 °C ≈ 0.08 bar sensitivity argument, steady-driving sampling rationale (currently unimplemented): `docs/superpowers/research/2026-08-14-pm-algorithms-tires-first-principles.md`
+
+- **External sources** — the Geotab/Verizon battery-health patent family (US20110082621A1, US11742681), AXIS (arXiv:2509.24378), UNECE R64, AAA/OxMaint/McKinsey business statistics, and the literature-typical calibration constants: `docs/superpowers/research/2026-08-18-pm-algorithms-sources.md`

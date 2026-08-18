@@ -209,3 +209,8 @@ The battery detector is a two-speed physics-informed detector: a **slow trend ch
 - **Implementation** — theory→code map, exact constants, and the live deltas: `2026-08-14-pm-algorithms-implementation.md`
 - **Brake first principles** — friction-work wear model: `2026-08-14-pm-algorithms-brake-first-principles.md`
 - **Tires first principles** — ideal-gas pressure compensation: `2026-08-14-pm-algorithms-tires-first-principles.md`
+
+
+## 10. Sources
+
+The dual-channel detector (resting-OCV trend + cranking V_min/R_int) originates in the Geotab telematics battery-health patent family — **US20110082621A1** ("Method and system for predicting battery life based on vehicle battery, usage, and environmental data"; Geotab is now part of **Verizon Connect**) and its continuation **US11742681** ("Methods for analysis of vehicle battery health"). The "deterministic detection first, LLM validates/narrates only" decision is grounded in **AXIS** (arXiv:2509.24378). Full list, links, and the literature-typical calibration constants (β = −0.011 V/°C, the OCV→SoC curve, the 30 °C India reference): `2026-08-18-pm-algorithms-sources.md`.
