@@ -29,7 +29,8 @@ docs/superpowers/
     ├── 2026-08-14-pm-algorithms-brake-first-principles.md
     ├── 2026-08-14-pm-algorithms-tires-first-principles.md
     ├── 2026-08-15-pm-use-case-end-to-end.md                 # physics → proto → pipeline → UI
-    └── 2026-08-18-pm-algorithms-sources.md                  # external sources (patents, papers, stats)
+    ├── 2026-08-18-pm-algorithms-sources.md                  # external sources (patents, papers, stats)
+    └── 2026-08-18-indian-vehicle-telemetry-availability.md  # what real Indian cars expose + how to get it
 ```
 
 ## Service-level docs (per-service, code-anchored)
