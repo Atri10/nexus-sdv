@@ -92,7 +92,7 @@ All settings are environment-driven (pydantic-settings). See `example.env`.
 | `SCHEDULED_VINS` | (empty) | comma/whitespace-separated VINs to monitor; empty = none |
 | `POLL_INTERVAL_SECONDS` | `60` | per-VIN poll cadence |
 | `BATTERY_WINDOW_DAYS` | `30` | battery trend lookback (days) |
-| `LOG_LEVEL` | `info` | structlog level |
+| `LOG_LEVEL` | `info` | Structured log threshold: `debug`, `info`, `warning`, `error`, or `critical` (case-insensitive) |
 
 ## Interfaces
 
@@ -116,6 +116,24 @@ The service runs in the local stack as `predictive-maintenance`
 cd local-dev
 make pm-demo        # stack + simulator + detector + open http://localhost:3000/pm
 ```
+
+The service writes one JSON object per log line to stdout. `LOG_LEVEL` is
+validated at startup and filters both PM application logs and framework logs;
+the default is `info`. For the local Compose stack, provide the service-level
+override before starting the detector:
+
+```bash
+cd local-dev
+PM_LOG_LEVEL=debug docker compose --env-file .env.base-services \
+  --env-file .env.sample-services up -d predictive-maintenance
+docker compose logs -f predictive-maintenance
+```
+
+Use `debug` to trace telemetry collection and NATS payload sizes. Use `info`
+for lifecycle, polling, detector-result, and publish summaries. `warning`,
+`error`, and `critical` progressively reduce output to operational problems.
+Startup configuration is logged with credentials redacted. The service never
+logs raw protobuf payloads or the NATS password.
 
 ## Deployment
 

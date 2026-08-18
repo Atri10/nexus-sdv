@@ -7,11 +7,11 @@ from predictive_maintenance.api.router import api_router
 from predictive_maintenance.client.DataApiConnector import DataApiConnector
 from predictive_maintenance.client.nats_client import NatsConnector
 from predictive_maintenance.config.config import settings
-from predictive_maintenance.config.logging import setup_logging, logger
+from predictive_maintenance.config.logging import SERVICE_NAME, setup_logging, logger
 from predictive_maintenance.core.processor import Processor
 from predictive_maintenance.core.scheduler import PmScheduler
 
-setup_logging()
+ACTIVE_LOG_LEVEL = setup_logging()
 
 
 def split_comma_string(v: Union[str, List[str]]) -> List[str]:
@@ -23,8 +23,13 @@ def split_comma_string(v: Union[str, List[str]]) -> List[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Application starting",
-                config=settings.model_dump(context={"redact": True}))  # Log config for debugging
+    scheduled_vins = split_comma_string(settings.scheduled_vins)
+    logger.info(
+        "service_starting",
+        service=SERVICE_NAME,
+        log_level=ACTIVE_LOG_LEVEL,
+        config=settings.public_dict(),
+    )
 
     app.state.nats_client = NatsConnector()
     await app.state.nats_client.connect()
@@ -39,15 +44,17 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     scheduler.start()
 
-    vins_to_schedule = split_comma_string(settings.scheduled_vins)
-    for vin in vins_to_schedule:
+    logger.info("scheduler_configured", vehicle_count=len(scheduled_vins))
+    for vin in scheduled_vins:
         app.state.scheduler.schedule_analysis(vin, settings.poll_interval_seconds)
 
     yield
 
+    logger.info("service_stopping", service=SERVICE_NAME)
     scheduler.shutdown()
     await app.state.data_api.close()
     await app.state.nats_client.close()
+    logger.info("service_stopped", service=SERVICE_NAME)
 
 
 # 2. Initialize the App

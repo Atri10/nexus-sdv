@@ -124,7 +124,7 @@ services:
       - NATS_PASSWORD=connector-pass
       - SCHEDULED_VINS=${VIN_POOL}
       - POLL_INTERVAL_SECONDS=60
-      - LOG_LEVEL=info
+      - LOG_LEVEL=${PM_LOG_LEVEL:-info}
     depends_on:
       - data-api
     networks:

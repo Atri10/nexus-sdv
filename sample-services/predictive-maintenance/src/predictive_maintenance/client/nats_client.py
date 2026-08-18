@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 
 import nats
 from nats.js import JetStreamContext
@@ -29,7 +28,12 @@ class NatsConnector:
             raise
 
     async def _do_connect(self):
-        logger.info("Connecting to NATS...", nats_host=settings.nats_host, nats_port=settings.nats_port)
+        logger.info(
+            "nats_connecting",
+            host=settings.nats_host,
+            port=settings.nats_port,
+            user=settings.nats_user,
+        )
         nats_url = f'nats://{settings.nats_host}:{settings.nats_port}'
         try:
             self.nc = await nats.connect(
@@ -45,17 +49,38 @@ class NatsConnector:
             )
             # Initialize JetStream for durable messaging
             self.js = self.nc.jetstream()
-            logger.info("NATS connected", url=nats_url, user=settings.nats_user)
-        except Exception as e:
-            logger.error("NATS connection failed", url=nats_url, user=settings.nats_user, error=str(e))
-            raise e
+            logger.info(
+                "nats_connected",
+                host=settings.nats_host,
+                port=settings.nats_port,
+                user=settings.nats_user,
+            )
+        except Exception:
+            logger.exception(
+                "nats_connection_failed",
+                host=settings.nats_host,
+                port=settings.nats_port,
+                user=settings.nats_user,
+            )
+            raise
 
     async def publish_message(self, subject: str, message: PmMessage):
-        logger.info("Publishing Message: ", message=message, subject=subject)
         raw_bytes = message.SerializeToString()
+        logger.debug(
+            "pm_message_publishing",
+            subject=subject,
+            component=message.component,
+            health_score=message.health_score,
+            severity=message.severity,
+            payload_bytes=len(raw_bytes),
+        )
         await self.nc.publish(subject, raw_bytes)
         await self.nc.flush()
-        logger.debug(f"[NATS] Telemetry sent to {subject}, bytes: {raw_bytes}, {len(raw_bytes)}")
+        logger.debug(
+            "pm_message_published",
+            subject=subject,
+            payload_bytes=len(raw_bytes),
+        )
 
     async def close(self):
         # 1. Cancel the background connection task if it's still running
@@ -66,25 +91,25 @@ class NatsConnector:
             try:
                 await task
             except asyncio.CancelledError:
-                logger.info("NATS background connection task cancelled")
+                logger.info("nats_background_connection_cancelled")
 
         # 2. Drain and close the actual connection if it exists
         if self.nc and self.nc.is_connected:
             await self.nc.drain()
-            logger.info("NATS connection drained")
+            logger.info("nats_connection_drained")
         elif self.nc:
             await self.nc.close()
-            logger.info("NATS connection closed")
+            logger.info("nats_connection_closed")
 
     # Callbacks for GKE observability
     async def _error_cb(self, e):
-        logger.error("NATS error", error=str(e))
+        logger.error("nats_error", error=str(e))
 
     async def _disconnected_cb(self):
-        logger.warning("NATS disconnected")
+        logger.warning("nats_disconnected")
 
     async def _reconnected_cb(self):
-        logger.info("NATS reconnected")
+        logger.info("nats_reconnected")
 
     @property
     def is_connected(self) -> bool:
