@@ -1,13 +1,13 @@
-ARG DOCKER_HUB_MIRROR=europe-west4-docker.pkg.dev/horizon-sdv-lal/docker-hub
-FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:latest AS builder
+ARG DOCKER_HUB_MIRROR=docker.io
+FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:1.25-alpine AS builder
 
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOTOOLCHAIN=auto go mod download
 
-COPY api ./api
 COPY src ./src
+COPY api ./api
 
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /server ./src

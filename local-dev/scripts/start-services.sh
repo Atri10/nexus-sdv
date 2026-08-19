@@ -15,7 +15,7 @@ log "Starting application services..."
 docker compose --env-file configs/base-services.template --env-file configs/sample-services.template up -d
 
 log "Waiting for services to be healthy..."
-"$SCRIPTS_DIR/wait-for-services.sh"
+./scripts/wait-for-services.sh
 
 log "All services started!"
 echo "  auth-callout: connected to NATS"

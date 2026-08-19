@@ -15,7 +15,7 @@ NC='\033[0m'
 log() { echo -e "${GREEN}[generate-certs]${NC} $*"; }
 warn() { echo -e "${YELLOW}[generate-certs]${NC} $*"; }
 
-mkdir -p "$CERTS_DIR"/{ca,registration,nats,keycloak,clients}
+mkdir -p "$CERTS_DIR/ca" "$CERTS_DIR/registration" "$CERTS_DIR/nats" "$CERTS_DIR/keycloak" "$CERTS_DIR/clients"
 
 # Check if already generated
 if [[ -f "$CERTS_DIR/ca/ca.crt.pem" ]]; then

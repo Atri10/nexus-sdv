@@ -1,5 +1,7 @@
 # local-dev/docker-compose.yml
 # Application services: base-services + sample-services
+# Note: Depends on infrastructure services from docker-compose.infra.yml
+# Start infrastructure first, then services
 
 services:
   auth-callout:
@@ -14,9 +16,6 @@ services:
       - NATS_USER=${NATS_USER}
       - NATS_PASSWORD=${NATS_PASSWORD}
       - LOG_LEVEL=DEBUG
-    depends_on:
-      nats:
-        condition: service_healthy
     networks:
       - nexus-local
 
@@ -34,9 +33,6 @@ services:
       - LOG_LEVEL=debug
     ports:
       - "8080:8080"
-    depends_on:
-      bigtable-emulator:
-        condition: service_healthy
     networks:
       - nexus-local
 
@@ -54,11 +50,6 @@ services:
       - NATS_PASSWORD=${NATS_PASSWORD}
     volumes:
       - ./config/data-converter.yaml:/config/config.yaml:ro
-    depends_on:
-      nats:
-        condition: service_healthy
-      mosquitto:
-        condition: service_healthy
     networks:
       - nexus-local
 
@@ -80,11 +71,6 @@ services:
       - "8888:8888"  # HTTP health
     volumes:
       - ./certs/registration:/certs/registration:ro
-    depends_on:
-      nats:
-        condition: service_healthy
-      keycloak:
-        condition: service_healthy
     networks:
       - nexus-local
 
