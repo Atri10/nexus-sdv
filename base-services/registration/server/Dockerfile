@@ -1,4 +1,4 @@
-ARG DOCKER_HUB_MIRROR=europe-west4-docker.pkg.dev/horizon-sdv-lal/docker-hub
+ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/rust:bookworm AS builder
 
 # Install cross-compilation toolchains for both target architectures
@@ -15,9 +15,9 @@ RUN rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 
 WORKDIR /app
 
-COPY ./base-services/registration/server/ ./registration/server/
+COPY . .
 
-WORKDIR /app/registration/server
+WORKDIR /app
 
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in \

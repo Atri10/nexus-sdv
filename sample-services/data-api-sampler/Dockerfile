@@ -1,5 +1,5 @@
 # --- Stage 1: Build ---
-ARG DOCKER_HUB_MIRROR=europe-west4-docker.pkg.dev/horizon-sdv-lal/docker-hub
+ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 

@@ -19,7 +19,7 @@ services:
       - NATS_CONNECTOR_PASSWORD=${NATS_CONNECTOR_PASSWORD}
       - NATS_AUTH_CALLOUT_NKEY_PUB=${NATS_AUTH_CALLOUT_NKEY_PUB}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8222/healthz"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -90,4 +90,5 @@ services:
 
 networks:
   nexus-local:
+    name: nexus-local
     driver: bridge

@@ -4,11 +4,14 @@ service:
 
 nats:
   url: "nats://nats:4222"
+  user: "connector"
+  password: "connector-pass"
 
-mqtt:
-  broker: "tcp://mosquitto:1883"
-  clientId: "nexus-data-converter"
-  bufferSize: 1000
+adapters:
+  mqtt:
+    broker: "tcp://mosquitto:1883"
+    client_id: "nexus-data-converter"
+    buffer_size: 1000
 
 converters:
   - name: telemetry-sensors
@@ -27,7 +30,7 @@ converters:
       subject_pattern: 'telemetry.{{ .subject_prefix }}.{{ .device_id }}.{{ .sensor }}'
 
 secrets:
-  natsUser: "${NATS_USER}"
-  natsPassword: "${NATS_PASSWORD}"
+  natsUser: "connector"
+  natsPassword: "connector-pass"
   mqttUser: ""
   mqttPassword: ""

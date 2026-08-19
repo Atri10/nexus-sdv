@@ -93,7 +93,11 @@ func (s *Server) buildRowRange(vin string, startTime, endTime time.Time) bigtabl
 
 // Creates a Bigtable filter to retrieve only the one specified column.
 func (s *Server) buildSingleColumnFilter(data_type string) bigtable.Filter {
-	parts := strings.Split(data_type, ":")
+	parts := strings.SplitN(data_type, ":", 2)
+	if len(parts) != 2 {
+		qualifierRegex := fmt.Sprintf("^(%s)$", regexp.QuoteMeta(data_type))
+		return bigtable.ColumnFilter(qualifierRegex)
+	}
 	family, qualifier := parts[0], parts[1]
 
 	qualifierRegex := fmt.Sprintf("^(%s)$", qualifier)

@@ -1,27 +1,43 @@
-.PHONY: help setup start infra services logs stop clean query test
+.PHONY: help go setup setup-auto start infra services logs stop clean query test status shell
 
+# ============================================================================
+# FASTEST WAY TO START (One command!)
+# ============================================================================
+go:
+	@bash go.sh
+
+# ============================================================================
+# Traditional setup methods
+# ============================================================================
 help:
-	@echo "Nexus SDV Local Development - Quick Commands"
+	@echo "Nexus SDV Local Development - Commands"
 	@echo ""
-	@echo "Setup & Start:"
-	@echo "  make setup    - One-time setup (certs, configs, networks)"
-	@echo "  make start    - Start all services (infra + app)"
-	@echo "  make infra    - Start only infrastructure"
-	@echo "  make services - Start only application services"
+	@echo "FASTEST START (Fully Automatic):"
+	@echo "  make go              - One command setup + start (RECOMMENDED)"
+	@echo ""
+	@echo "Manual Control:"
+	@echo "  make setup-auto      - Fully automated setup (no token copying)"
+	@echo "  make setup           - Traditional setup (manual steps)"
+	@echo "  make start           - Start all services"
+	@echo "  make stop            - Stop all services"
 	@echo ""
 	@echo "Inspection:"
-	@echo "  make logs     - Tail all logs (Ctrl+C to stop)"
-	@echo "  make query    - Query Bigtable for telemetry data"
-	@echo "  make test     - Run end-to-end test flow"
+	@echo "  make logs            - Tail all logs in real-time"
+	@echo "  make query           - Query Bigtable for telemetry"
+	@echo "  make test            - Run end-to-end test"
+	@echo "  make status          - Show service status"
+	@echo "  make shell           - Open shell in data-api container"
 	@echo ""
 	@echo "Cleanup:"
-	@echo "  make stop     - Stop all containers (keeps volumes)"
-	@echo "  make clean    - Stop containers and remove volumes"
+	@echo "  make clean           - Stop and remove all volumes"
 	@echo ""
+
+setup-auto:
+	@bash setup-automated.sh
 
 setup:
 	@bash scripts/setup-local-dev.sh
-	@docker network create nexus-local 2>/dev/null || echo "Network already exists"
+	@docker network create nexus-local 2>/dev/null || true
 
 start: infra services
 	@echo "✓ All services started!"
@@ -36,13 +52,15 @@ logs:
 	docker compose logs -f
 
 stop:
-	docker compose -f docker-compose.infra.yml down
-	docker compose down
+	docker compose -f docker-compose.infra.yml down 2>/dev/null || true
+	docker compose down 2>/dev/null || true
+	@echo "✓ Services stopped"
 
 clean:
-	docker compose -f docker-compose.infra.yml down -v
-	docker compose down -v
-	@echo "✓ All containers stopped and volumes removed"
+	docker compose -f docker-compose.infra.yml down -v 2>/dev/null || true
+	docker compose down -v 2>/dev/null || true
+	rm -f .env.infra .env.base-services .env.sample-services
+	@echo "✓ All containers and volumes removed"
 
 query:
 	@bash scripts/query-bigtable.sh
@@ -54,3 +72,6 @@ status:
 	@docker compose ps
 	@echo ""
 	@docker compose -f docker-compose.infra.yml ps
+
+shell:
+	docker compose exec data-api /bin/sh

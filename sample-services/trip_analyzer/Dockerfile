@@ -1,4 +1,4 @@
-ARG DOCKER_HUB_MIRROR=europe-west4-docker.pkg.dev/horizon-sdv-lal/docker-hub
+ARG DOCKER_HUB_MIRROR=docker.io
 FROM ${DOCKER_HUB_MIRROR}/python:3.13-slim AS base
 
 RUN pip install uv

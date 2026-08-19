@@ -1,6 +1,6 @@
 # --- Stage 1: The Builder ---
 # This stage compiles the Go application into a static binary.
-ARG DOCKER_HUB_MIRROR=europe-west4-docker.pkg.dev/horizon-sdv-lal/docker-hub
+ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:1.24-alpine AS builder
 
 # Set the working directory inside the container

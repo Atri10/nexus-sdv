@@ -13,8 +13,8 @@ services:
       - JWT_ACC_SIGNING_KEY=${JWT_ACC_SIGNING_KEY}
       - KEYCLOAK_JWK_B64=${KEYCLOAK_JWK_B64}
       - NATS_URL=${NATS_URL}
-      - NATS_USER=${NATS_USER}
-      - NATS_PASSWORD=${NATS_PASSWORD}
+      - NATS_USER=auth-callout-service
+      - NATS_PASSWORD=auth-callout-pass
       - LOG_LEVEL=DEBUG
     networks:
       - nexus-local
@@ -32,7 +32,7 @@ services:
       - BT_TABLE=${BT_TABLE}
       - LOG_LEVEL=debug
     ports:
-      - "8080:8080"
+      - "9090:8080"
     networks:
       - nexus-local
 
@@ -46,8 +46,8 @@ services:
       - NATS_HOST=${NATS_HOST}
       - MQTT_HOST=${MQTT_HOST}
       - NATS_TOKEN=${NATS_TOKEN}
-      - NATS_USER=${NATS_USER}
-      - NATS_PASSWORD=${NATS_PASSWORD}
+      - NATS_USER=connector
+      - NATS_PASSWORD=connector-pass
     volumes:
       - ./config/data-converter.yaml:/config/config.yaml:ro
     networks:
@@ -67,10 +67,11 @@ services:
       - NATS_URL=${NATS_URL}
       - KEYCLOAK_URL=${KEYCLOAK_URL}
     ports:
-      - "8443:8443"  # HTTPS
+      - "8444:8443"  # HTTPS (maps to 8444 to avoid conflict with Keycloak)
       - "8888:8888"  # HTTP health
     volumes:
       - ./certs/registration:/certs/registration:ro
+      - ./certs/registration:/certificates:ro
     networks:
       - nexus-local
 
@@ -80,7 +81,7 @@ services:
       dockerfile: Dockerfile
     container_name: nexus-data-api-sampler
     environment:
-      - DATA_API_GRPC_ADDR=${DATA_API_GRPC_ADDR}
+      - DATA_API_URL=${DATA_API_GRPC_ADDR}
     depends_on:
       - data-api
     networks:
