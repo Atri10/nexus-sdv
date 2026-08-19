@@ -1,19 +1,17 @@
 # Nexus SDV Local Development Environment
 
-Complete local development setup with all infrastructure and application services running in Docker.
+Complete local development setup with all infrastructure and application services running in Docker. Fully automated — one command generates certs, keys, tokens, and starts everything.
 
-## Quick Start (Single Command)
+## Quick Start
 
 ```bash
 cd local-dev
-make setup
-make start
+make go
 ```
 
-Or use the all-in-one setup script:
-```bash
-bash scripts/setup-all.sh
-```
+This runs `setup-automated.sh` (first time only) and starts every service. No manual token copying, no hardcoded secrets — TLS certs, the NATS NKey pair, and the Keycloak JWKS token are all generated and injected automatically. Takes about 2-3 minutes on a first run.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together and what each setup phase does.
 
 ## Architecture
 
@@ -31,33 +29,23 @@ bash scripts/setup-all.sh
 - **Data API Sampler** - Sample data generator
 - **Trip Analyzer** - Trip analysis service
 
+`data-api` and `data-converter` build with the repo root as their Docker build context (see `local-dev/docker-compose.yml`), so their Dockerfiles can generate Go protobuf/gRPC stubs directly from the shared `../proto/*.proto` files at build time. Nothing under `proto/` needs to be copied into a service directory by hand, and there's no generated code to commit — `docker compose build` (or `make go`) regenerates the stubs fresh every time.
+
 ## Usage
 
-### Setup Commands
-
 ```bash
-# One-time initial setup (generates certs, configs, networks)
-make setup
-
-# Or individual steps:
-bash scripts/setup-local-dev.sh      # Generate certs
-bash scripts/generate-nkeys.sh       # Generate NATS NKey
-bash scripts/generate-nats-config.sh # Generate NATS config
+make go       # First-time setup + start everything (recommended)
+make logs     # Tail all logs
+make query    # Query Bigtable telemetry data
+make test     # Run end-to-end test flow
+make stop     # Stop all containers (keeps volumes)
+make clean    # Stop containers and remove volumes + env files
+make status   # Show service health
+make shell    # Shell into the data-api container
+make help     # Full command list
 ```
 
-### Start Services
-
-```bash
-# Start everything (infrastructure + services)
-make start
-
-# Or in stages:
-make infra                # Start infrastructure only
-make services             # Start application services
-
-# Start with output
-docker compose logs -f
-```
+If you need finer-grained control, `make setup-auto` runs just the automated setup (certs, keys, tokens, env files) without starting services — you can then bring services up yourself with `docker compose -f docker-compose.infra.yml up -d` followed by `docker compose up -d`.
 
 ### Inspect Data
 
@@ -77,35 +65,19 @@ docker compose logs data-api
 ### Test End-to-End Flow
 
 ```bash
-# Run test flow (vehicle registration, token generation, telemetry)
 make test
-
-# Or manually:
-bash scripts/test-local-flow.sh
-```
-
-### Cleanup
-
-```bash
-# Stop all containers (keep volumes/data)
-make stop
-
-# Stop and remove all volumes
-make clean
-
-# Remove only app services (keep infrastructure)
-docker compose down
+# or: bash scripts/test-local-flow.sh
 ```
 
 ## Environment Files
 
-Three `.env` files are automatically created during setup:
+Three `.env` files are generated automatically by `setup-automated.sh` — never edited by hand:
 
-- `.env.infra` - Infrastructure credentials (NATS, Keycloak, etc.)
-- `.env.base-services` - Base services config (keys, URLs)
+- `.env.infra` - Infrastructure credentials (NATS NKey, Keycloak admin, etc.)
+- `.env.base-services` - Base services config (signing keys, service URLs)
 - `.env.sample-services` - Sample services config
 
-**These files contain secrets - do NOT commit to Git**
+These are gitignored and contain secrets — do not commit them.
 
 ## Service URLs & Credentials
 
@@ -135,9 +107,8 @@ Three `.env` files are automatically created during setup:
 
 ### Containers not starting
 ```bash
-# Check logs for specific service
 docker compose logs auth-callout
-docker compose logs -f docker-compose.infra.yml keycloak
+docker compose -f docker-compose.infra.yml logs keycloak
 
 # Rebuild images (clears cache)
 docker compose build --no-cache
@@ -145,10 +116,7 @@ docker compose build --no-cache
 
 ### Network errors
 ```bash
-# Ensure network exists
 docker network create nexus-local
-
-# List networks
 docker network ls
 ```
 
@@ -161,46 +129,56 @@ docker network ls
 
 ### Bigtable issues
 ```bash
-# Check if emulator is healthy
 docker compose logs bigtable-emulator
-
-# Try querying:
 make query
+```
+`make query` runs `cbt` inside the `bigtable-emulator` container (installing it as a gcloud component on first use). `setup-automated.sh`'s `phase_bigtable_schema` creates the `telemetry` table with `dynamic` and `static` column families (the same schema `data-api`'s integration tests bootstrap) right after infra comes up, so a `table ... not found` error means that phase didn't run — re-run `make setup-auto` or check its output.
+
+`make query` returning no rows is expected on a fresh environment even once the table exists: **nothing in local dev currently writes telemetry into Bigtable**. `data-converter` only forwards MQTT → NATS; there is no NATS → Bigtable writer running locally, so `data-api` has nothing to read unless you write rows yourself, e.g.:
+```bash
+docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 nexus-bigtable-emulator \
+  cbt -project test-project -instance test-instance set telemetry \
+  "VIN123#$(date -u +%Y-%m-%dT%H:%M:%S.000000000Z)" dynamic:temp=25.5
+```
+
+### Full reset
+```bash
+make clean && make go
 ```
 
 ## File Structure
 
 ```
 local-dev/
-├── Makefile                          # Quick command shortcuts
-├── README.md                         # This file
-├── setup-all.sh                      # All-in-one setup
-├── docker-compose.yml                # App services
-├── docker-compose.infra.yml          # Infrastructure
-├── docker-compose.certs.yml          # Cert generation
-├── certs/                            # Generated certificates
-│   ├── ca/                          # Root CA
-│   ├── registration/                # Registration server certs
-│   ├── nats/                        # NATS server certs
-│   ├── keycloak/                    # Keycloak certs + JWKS
-│   └── clients/                     # Client certificates
-├── config/                           # Service configs
-│   ├── nats.conf                    # NATS config (generated)
-│   ├── mosquitto.conf               # Mosquitto config
-│   └── data-converter.yaml          # Data converter pipeline
-├── keycloak/                        # Keycloak realm imports
-│   └── nexus-realm.json            # Realm config
+├── Makefile                  # All commands ('make help')
+├── README.md                 # This file
+├── ARCHITECTURE.md           # System design, data flow, diagrams
+├── go.sh                     # Entry point for 'make go'
+├── setup-automated.sh        # 10-phase automated setup pipeline
+├── docker-compose.yml        # App services
+├── docker-compose.infra.yml  # Infrastructure
+├── docker-compose.certs.yml  # Cert generation
+├── certs/                    # Generated certificates (gitignored)
+│   ├── ca/
+│   ├── registration/
+│   ├── nats/
+│   ├── keycloak/
+│   └── clients/
+├── config/                   # Service configs
+│   ├── nats.conf            # Generated by setup-automated.sh
+│   ├── mosquitto.conf
+│   └── data-converter.yaml
+├── configs/                   # Env file templates (source of truth for defaults)
+│   ├── infra.template
+│   ├── base-services.template
+│   └── sample-services.template
+├── keycloak/
+│   └── nexus-realm.json     # Realm import
 └── scripts/
-    ├── setup-local-dev.sh           # Initial setup
-    ├── generate-certs.sh            # Cert generation
-    ├── generate-nkeys.sh            # NATS NKey generation
-    ├── generate-nats-config.sh      # NATS config generation
-    ├── start-infra.sh               # Start infrastructure
-    ├── start-services.sh            # Start app services
-    ├── generate-keycloak-jwks.sh    # Extract Keycloak JWKS
-    ├── test-local-flow.sh           # End-to-end test
-    ├── wait-for-services.sh         # Health check
-    └── query-bigtable.sh            # Bigtable query tool
+    ├── generate-certs.sh     # Run inside the cert-generator container (docker-compose.certs.yml)
+    ├── query-bigtable.sh     # Bigtable query tool
+    ├── test-local-flow.sh    # End-to-end test
+    └── wait-for-services.sh  # Health check polling
 ```
 
 ## Data Flow
@@ -227,20 +205,14 @@ Telemetry Query → Data API (gRPC) → Bigtable
    docker compose exec data-api /bin/sh
    ```
 
-3. **View environment variables:**
-   ```bash
-   docker compose config | grep -A 20 "auth-callout:"
-   ```
-
-4. **Rebuild a specific service:**
+3. **Rebuild a specific service:**
    ```bash
    docker compose build --no-cache data-api
    docker compose up -d data-api
    ```
 
-5. **Push test telemetry:**
+4. **Push test telemetry (requires mosquitto_pub):**
    ```bash
-   # Requires mosquitto_pub or similar MQTT client
    mosquitto_pub -h localhost -t "telemetry/VIN123/sensors/temp" \
      -m '{"name":"temp","value":25.5,"unit":"C"}'
    ```
@@ -251,47 +223,31 @@ Telemetry Query → Data API (gRPC) → Bigtable
 |-------|----------|
 | `network nexus-local not found` | Run `docker network create nexus-local` |
 | Port already in use | Change port in docker-compose file or stop conflicting service |
-| Keycloak cert errors | Regenerate certs: `make clean && make setup` |
+| Keycloak cert errors | `make clean && make go` to regenerate |
 | NATS auth failures | Check `.env.infra` for correct NKey values |
-| Bigtable not responding | Wait 30s for emulator to start, check health: `docker compose logs bigtable-emulator` |
-| Build failures | Clear cache: `docker builder prune && make clean` |
+| Bigtable not responding | Wait 30s for emulator to start, check `docker compose logs bigtable-emulator` |
+| Build failures | `docker builder prune` then `make clean && make go` |
 
 ## Monitoring & Debugging
 
-### NATS Monitoring
 ```bash
-# View NATS connections and subscriptions
+# NATS connections and subscriptions
 curl http://localhost:8222/connz
 curl http://localhost:8222/subsz
-```
 
-### Keycloak Health
-```bash
+# Keycloak health
 curl http://localhost:8080/health/ready
-```
 
-### Container Health
-```bash
-docker compose ps  # Shows health status
-```
+# Container health
+docker compose ps
 
-### Network Inspection
-```bash
+# Network inspection
 docker network inspect nexus-local
-docker network inspect docker-compose logs
 ```
-
-## Next Steps
-
-- Deploy to Kubernetes (see `k8s/` directory)
-- Configure external services (real Bigtable, Cloud Keycloak)
-- Add custom protobuf definitions
-- Integrate with CI/CD pipeline
 
 ## Support
 
-For issues or questions:
 1. Check logs: `make logs`
 2. Inspect environment: `docker compose config`
-3. Review service health: `docker compose ps`
-4. Check setup state: `ls -la local-dev/certs/ local-dev/.env*`
+3. Review service health: `make status`
+4. Full reset: `make clean && make go`

@@ -2,38 +2,47 @@
 set -euo pipefail
 
 # local-dev/scripts/query-bigtable.sh
-# Query Bigtable emulator for telemetry data
+# Query Bigtable emulator for telemetry data.
+#
+# Runs 'cbt' inside the nexus-bigtable-emulator container (the
+# gcr.io/google.com/cloudsdktool/cloud-sdk image it's built from ships
+# gcloud, so 'cbt' is installed there as a gcloud component on first use)
+# rather than requiring a local Go toolchain / gcloud install on the host.
 
 SCRIPTS_DIR="$(dirname "$0")"
 LOCAL_DEV_DIR="$SCRIPTS_DIR/.."
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log() { echo -e "${GREEN}[bigtable]${NC} $*"; }
 info() { echo -e "${BLUE}[info]${NC} $*"; }
-warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 
 cd "$LOCAL_DEV_DIR"
 
-# Check if cbt is installed
-if ! command -v cbt &> /dev/null; then
-    warn "cbt (Cloud Bigtable CLI) not found. Installing..."
-    go install github.com/googleapis/cloud-bigtable/cmd/cbt@latest
-    # Add to PATH if needed
-    export PATH="$PATH:$(go env GOPATH)/bin"
-fi
-
-# Configuration
+CONTAINER="nexus-bigtable-emulator"
 PROJECT="test-project"
 INSTANCE="test-instance"
 TABLE="telemetry"
-BIGTABLE_HOST="${BIGTABLE_EMULATOR_HOST:-localhost:8086}"
+
+if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+    echo "ERROR: $CONTAINER is not running. Start it with 'make go' first." >&2
+    exit 1
+fi
+
+exec_in_container() {
+    docker exec -e BIGTABLE_EMULATOR_HOST=localhost:8086 "$CONTAINER" "$@"
+}
+
+# Ensure cbt is available inside the container (installed once, then cached
+# for the life of the container).
+if ! exec_in_container which cbt > /dev/null 2>&1; then
+    log "cbt not found in $CONTAINER, installing gcloud component..."
+    exec_in_container gcloud components install cbt --quiet > /dev/null
+fi
 
 log "Querying Bigtable Emulator"
-log "Host: $BIGTABLE_HOST"
 log "Project: $PROJECT"
 log "Instance: $INSTANCE"
 log "Table: $TABLE"
@@ -44,11 +53,11 @@ ROW_KEY="${1:-}"
 
 if [ -n "$ROW_KEY" ]; then
     info "Reading row: $ROW_KEY"
-    BIGTABLE_EMULATOR_HOST="$BIGTABLE_HOST" cbt -project "$PROJECT" -instance "$INSTANCE" read "$TABLE" "$ROW_KEY"
+    exec_in_container cbt -project "$PROJECT" -instance "$INSTANCE" read "$TABLE" "$ROW_KEY"
 else
     info "Reading all rows from table..."
     echo ""
-    BIGTABLE_EMULATOR_HOST="$BIGTABLE_HOST" cbt -project "$PROJECT" -instance "$INSTANCE" read "$TABLE" | head -100
+    exec_in_container cbt -project "$PROJECT" -instance "$INSTANCE" read "$TABLE"
     echo ""
     info "Use './scripts/query-bigtable.sh <row-key>' to read a specific row"
     info "Example: './scripts/query-bigtable.sh VIN123/2026-07-13'"

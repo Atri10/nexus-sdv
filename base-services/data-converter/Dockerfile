@@ -1,3 +1,5 @@
+# Build context is the repo root (see local-dev/docker-compose.yml) so this
+# Dockerfile can pull shared .proto definitions from the top-level proto/ dir.
 ARG DOCKER_HUB_MIRROR=docker.io
 FROM --platform=$BUILDPLATFORM ${DOCKER_HUB_MIRROR}/golang:1.25-alpine AS builder
 
@@ -8,16 +10,15 @@ RUN apk add --no-cache protobuf protobuf-dev && \
     go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
     go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-COPY go.mod go.sum ./
+COPY base-services/data-converter/go.mod base-services/data-converter/go.sum ./
 RUN go mod download
 
-COPY proto ./proto
-COPY src ./src
+COPY proto/telemetry.proto api/telemetry.proto
+COPY base-services/data-converter/src ./src
 
 # Generate protobuf files
 ENV PATH="/root/go/bin:${PATH}"
 RUN mkdir -p api/gen/telemetry && \
-    cp proto/telemetry.proto api/ && \
     protoc --go_out=api/gen/telemetry --go_opt=paths=source_relative \
         -I api \
         api/telemetry.proto

@@ -21,8 +21,8 @@ services:
 
   data-api:
     build:
-      context: ../base-services/data-api
-      dockerfile: Dockerfile
+      context: ../
+      dockerfile: base-services/data-api/Dockerfile
     container_name: nexus-data-api
     environment:
       - GRPC_ADDR=${GRPC_ADDR}
@@ -38,8 +38,8 @@ services:
 
   data-converter:
     build:
-      context: ../base-services/data-converter
-      dockerfile: Dockerfile
+      context: ../
+      dockerfile: base-services/data-converter/Dockerfile
     container_name: nexus-data-converter
     environment:
       - CONFIG_PATH=${CONFIG_PATH}
