@@ -153,3 +153,14 @@ sample-clients/telemetry-subscriber/telemetry-subscriber
 # gh token for release
 set-gh-token-for-release-dae.sh
 tmp/**
+
+# Local development (generated certs and env files)
+local-dev/certs/
+local-dev/.env.local
+local-dev/env/.env.infra
+local-dev/env/.env.base-services
+local-dev/env/.env.sample-services
+!local-dev/scripts/
+!local-dev/config/
+!local-dev/keycloak/
+!local-dev/env/*.template

@@ -1,0 +1,4 @@
+# local-dev/env/sample-services.template
+# Sample services configuration - COPY TO .env.sample-services
+
+DATA_API_GRPC_ADDR=data-api:8080
